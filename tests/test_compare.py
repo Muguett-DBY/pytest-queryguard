@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +103,7 @@ def test_the_report_leads_with_new_findings_and_more_statements() -> None:
     text = compare.markdown(compare.compare(BASE, HEAD))
     assert text.startswith(compare.MARKER + "\n")
     assert (
-        "3 tests compared: 55 → 45 statements (-10). **1** run more, 1 fewer; "
+        "3 tests compared: 55 -> 45 statements (-10). **1** run more, 1 fewer; "
         "**2** new findings, 1 fixed."
     ) in text
     assert "Not compared: 1 new tests, 1 tests not in this run." in text
@@ -133,7 +134,7 @@ def test_long_tables_are_cut() -> None:
     head = _doc({f"t.py::t{n:02}": {"statements": 2 + n} for n in range(30)})
     text = compare.markdown(compare.compare(base, head), rows=5)
     assert text.count("| `t.py::t") == 5
-    assert "…and 25 more." in text
+    assert "...and 25 more." in text
     # the biggest increase first
     assert text.index("t.py::t29") < text.index("t.py::t28")
 
@@ -157,7 +158,7 @@ def test_the_cli_writes_the_report_and_rejects_other_files(
     base.write_text(json.dumps(BASE))
     head.write_text(json.dumps(HEAD))
     assert compare.main([str(base), str(head), "--output", str(out)]) == 0
-    assert capsys.readouterr().out == out.read_text() != ""
+    assert capsys.readouterr().out == out.read_text(encoding="utf-8") != ""
     (tmp_path / "x.json").write_text('{"version": 2}')
     assert compare.main([str(base), str(tmp_path / "x.json")]) == 2
     assert "not a pytest-queryguard JSON file" in capsys.readouterr().err
@@ -192,7 +193,7 @@ def test_two_real_runs_are_compared(pytester: pytest.Pytester) -> None:
         "-p", "no:cacheprovider", "--queryguard-json=head.json"
     )
     result = pytester.run(
-        "python", "-m", "pytest_queryguard.compare", "base.json", "head.json"
+        sys.executable, "-m", "pytest_queryguard.compare", "base.json", "head.json"
     )
     assert result.ret == 0
     result.stdout.fnmatch_lines(
@@ -228,3 +229,10 @@ def test_a_finding_moved_into_the_baseline_is_not_fixed() -> None:
     # and taken out of the baseline again it is not new either
     result = compare.compare(head, base)
     assert result.fixed == [] and result.new == []
+
+
+def test_the_report_is_ascii_so_any_console_prints_it() -> None:
+    # a Windows console with cp1252 cannot print arrows or ellipses
+    base = _doc({f"t.py::t{n:02}": {"statements": 1} for n in range(30)})
+    head = _doc({f"t.py::t{n:02}": {"statements": 2} for n in range(30)})
+    assert compare.markdown(compare.compare(base, head), rows=2).isascii()

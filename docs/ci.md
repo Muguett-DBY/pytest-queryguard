@@ -92,7 +92,7 @@ comment:
 ```
 ### pytest-queryguard: queries compared with the base branch
 
-412 tests compared: 3120 → 3187 statements (+67). 2 run more, 1 fewer; 1 new findings, 0 fixed.
+412 tests compared: 3120 -> 3187 statements (+67). 2 run more, 1 fewer; 1 new findings, 0 fixed.
 
 #### New findings
 | Kind | Label | Where | Times | Tests |

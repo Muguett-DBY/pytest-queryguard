@@ -148,7 +148,7 @@ def compare(base: dict[str, Any], head: dict[str, Any]) -> Comparison:
 def _code(text: str) -> str:
     text = " ".join(text.split())
     if len(text) > 120:
-        text = text[:120] + "…"
+        text = text[:120] + "..."
     return "`" + text.replace("`", "'").replace("|", "\\|") + "`"
 
 
@@ -173,7 +173,7 @@ def markdown(result: Comparison, *, rows: int = _ROWS, key: str = "") -> str:
     delta = result.total_after - result.total_before
     sign = "+" if delta > 0 else ""
     lines.append(
-        f"{result.compared_tests} tests compared: {result.total_before} → "
+        f"{result.compared_tests} tests compared: {result.total_before} -> "
         f"{result.total_after} statements ({sign}{delta}). "
         f"**{len(result.more)}** run more, {len(result.fewer)} fewer; "
         f"**{len(result.new)}** new findings, {len(result.fixed)} fixed."
@@ -236,7 +236,7 @@ def markdown(result: Comparison, *, rows: int = _ROWS, key: str = "") -> str:
 
 
 def _more(total: int, shown: int) -> list[str]:
-    return ["", f"…and {total - shown} more."] if total > shown else []
+    return ["", f"...and {total - shown} more."] if total > shown else []
 
 
 def main(argv: list[str] | None = None) -> int:
