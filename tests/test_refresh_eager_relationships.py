@@ -137,6 +137,37 @@ def _create(session: Session, id_: int) -> Author:
     return author
 
 
+class _OverridingSession(Session):
+    """A Session subclass between the lazy loader and the ORM execution."""
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        return super().execute(*args, **kwargs)
+
+
+def _deep(depth: int, fn: Any) -> Any:
+    return _deep(depth - 1, fn) if depth else fn()
+
+
+@pytest.mark.parametrize("session_class", [Session, _OverridingSession])
+def test_creates_with_refresh_deep_in_the_stack_are_clean(
+    engine: Any, session_class: type[Session]
+) -> None:
+    # The loader check walks from the listener to the lazy loader, not up the
+    # whole stack: a test far down the stack and an execute() override in
+    # between change nothing.
+    def body() -> Any:
+        with session_class(engine) as session, record_queries() as log:
+            _create(session, 100)
+            _create(session, 101)
+            for author in session.scalars(select(Author)).unique().all():
+                _ = author.notes
+        return log
+
+    report = _report(_deep(300, body))
+    assert "Author.books" not in report
+    assert "Author.notes was lazy-loaded" in report
+
+
 def test_two_creates_with_refresh_are_clean(engine: Any) -> None:
     with Session(engine) as session, record_queries() as log:
         _create(session, 100)

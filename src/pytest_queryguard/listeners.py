@@ -231,16 +231,39 @@ def _take_pending(
 _BEGIN_CODE = getattr(
     getattr(SessionTransaction, "_connection_for_bind", None), "__code__", None
 )
+# Code of the method that runs every ORM execution (Session.execute, get,
+# scalars, ... and a lazy loader all end up in it). A connection is opened by
+# it, so a begin listener's statement has the begin method between the cursor
+# listener and it; the ORM execution's own SELECT does not. The walks stop at
+# it. A subclass that overrides Session.execute still calls it through super().
+_EXECUTE_CODE = getattr(getattr(Session, "_execute_internal", None), "__code__", None)
+# How many frames up from the cursor listener the begin method or the ORM
+# execution may be. The ORM's SELECT is about eight frames below its
+# execution; a begin listener's statement a few more below the begin method.
+# Without the bound a statement with neither on the stack (a Core read after
+# an ORM execution whose SELECT never ran) would walk the whole pytest stack.
+_MAX_BEGIN_DEPTH = 40
 
 
 def _inside_begin() -> bool:
+    """Whether the statement running now comes from a begin listener.
+
+    Walks up from the cursor listener only as far as the nearest ORM
+    execution (or ``_MAX_BEGIN_DEPTH`` frames): a begin runs inside the
+    execution that opens the connection, never above it.
+    """
     if _BEGIN_CODE is None:
         return False
-    frame = sys._getframe(1)
-    while frame is not None:
-        if frame.f_code is _BEGIN_CODE:
+    frame: Any = sys._getframe(1)
+    for _ in range(_MAX_BEGIN_DEPTH):
+        if frame is None:
+            return False
+        code = frame.f_code
+        if code is _BEGIN_CODE:
             return True
-        frame = frame.f_back  # type: ignore[assignment]
+        if code is _EXECUTE_CODE:
+            return False
+        frame = frame.f_back
     return False
 
 
@@ -256,12 +279,21 @@ _IMMEDIATE_LOADER = getattr(
 _IMMEDIATE_CODE = getattr(
     getattr(_IMMEDIATE_LOADER, "_load_for_path", None), "__code__", None
 )
+# Code of the lazy loader's entry point. The immediate loader calls it
+# directly for each parent, so the frame above the first one found tells
+# whether the load is the immediate loader's: the walk stops there instead of
+# looking further up. None when this SQLAlchemy has no such method (then the
+# walk looks for the immediate loader up to the bound, as before).
+_LAZY_LOADER = getattr(
+    strategies, "_LazyLoader", getattr(strategies, "LazyLoader", None)
+)
+_LAZY_CODE = getattr(getattr(_LAZY_LOADER, "_load_for_state", None), "__code__", None)
 
 
-# How many frames up from the listener the immediate loader may be. It is five
-# or six frames away (listener, event dispatch, Session.execute, the lazy
-# loader); the bound keeps a lazy load outside a refresh from walking the
-# whole pytest stack.
+# How many frames up from the listener the immediate loader may be. It is
+# seven or eight frames away (listener, event dispatch, Session.execute, the
+# lazy loader), more with a subclass that overrides Session.execute; the
+# bound only matters when the lazy loader's entry point is not found.
 _MAX_LOADER_DEPTH = 40
 
 
@@ -279,7 +311,9 @@ def _is_refresh_eager_load(parent: Any, prop: Any) -> bool:
     Only the loader's own query counts: ``parent`` must be one of the states it
     loads and ``prop`` its relationship. A lazy load that user code (a
     reconstructor, a ``load`` event) runs while the loader builds the children
-    is a lazy load like anywhere else.
+    is a lazy load like anywhere else: the walk stops at the innermost lazy
+    loader, the one that runs this load, and the immediate loader must have
+    called it.
     """
     if _IMMEDIATE_CODE is None:
         return False
@@ -287,7 +321,13 @@ def _is_refresh_eager_load(parent: Any, prop: Any) -> bool:
     for _ in range(_MAX_LOADER_DEPTH):
         if frame is None:
             return False
-        if frame.f_code is _IMMEDIATE_CODE:
+        code = frame.f_code
+        if code is _LAZY_CODE:
+            frame = frame.f_back
+            if frame is None or frame.f_code is not _IMMEDIATE_CODE:
+                return False
+            code = _IMMEDIATE_CODE
+        if code is _IMMEDIATE_CODE:
             local = frame.f_locals
             if getattr(local.get("context"), "refresh_state", None) is None:
                 return False

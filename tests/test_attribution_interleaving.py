@@ -193,6 +193,55 @@ def test_an_after_begin_select_does_not_take_the_attribution() -> None:
     assert _child_relationships(log) == {"Parent.children"}
 
 
+def _deep(depth: int, fn: Any) -> Any:
+    return _deep(depth - 1, fn) if depth else fn()
+
+
+class _OverridingSession(Session):
+    """A Session subclass between the lazy loader and the ORM execution."""
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        return super().execute(*args, **kwargs)
+
+
+@pytest.mark.parametrize("session_class", [Session, _OverridingSession])
+def test_a_nested_after_begin_select_deep_in_the_stack_keeps_out(
+    session_class: type[Session],
+) -> None:
+    # The begin check stops at the ORM execution: a listener that reaches its
+    # SELECT through helpers, in a test that runs far down the stack, is still
+    # told apart from the lazy load's own SELECT.
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as seed:
+        seed.add_all(Parent(id=i, children=[Child()]) for i in range(1, 4))
+        seed.commit()
+
+    @event.listens_for(Session, "after_begin")
+    def probe(session: Session, transaction: Any, connection: Any) -> None:
+        _deep(10, lambda: connection.exec_driver_sql("SELECT 1"))
+
+    def body() -> Any:
+        with (
+            session_class(engine, expire_on_commit=False) as session,
+            record_queries() as log,
+        ):
+            parents = session.scalars(select(Parent)).all()
+            session.commit()
+            for parent in parents:
+                _ = parent.children
+                session.commit()
+        return log
+
+    try:
+        log = _deep(300, body)
+    finally:
+        event.remove(Session, "after_begin", probe)
+    assert _child_relationships(log) == {"Parent.children"}
+    _only_child_loads_have_a_relationship(log)
+    assert listeners.internal_error() is None
+
+
 def test_autoflush_writes_before_a_lazy_load_keep_the_attribution() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)

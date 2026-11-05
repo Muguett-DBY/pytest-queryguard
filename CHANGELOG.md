@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A lazy load no longer walks the whole call stack: the check for a refresh
+  of a mapped eager relationship stops at the lazy loader, and the check for
+  a statement of a begin listener stops at the ORM execution (at most 40
+  frames each). The cost of a lazy load no longer grows with the depth of the
+  test's stack (#252).
+
 ## [0.6.0] - 2026-11-05
 
 This release adds strict mode (raise at the lazy load), a new finding kind,
