@@ -74,10 +74,10 @@ queryguard_column_load_threshold = 2
 | `@pytest.mark.queryspy(threshold=3)` | No per-test threshold marker: set the ini option, or use `record_queries()` with `assert_no_nplusone(relationship_threshold=3, repeat_threshold=3)` |
 | `@pytest.mark.queryspy(fail_on=...)` | No per-test equivalent; `queryguard_fail_on` applies to the suite |
 | `with assert_max_queries(2):` | `with max_queries(2):` (raises `QueryBudgetExceeded`, an `AssertionError`) |
-| `with assert_num_queries(2):` (exact) | `with record_queries() as log:` and then `assert len(log) == 2` |
+| `with assert_num_queries(2):` (exact) | `with queryguard.num_queries(2):` with the `queryguard` fixture (only the test's own thread counts), or `with record_queries() as log:` and then `assert len(log) == 2` |
 | `with no_n_plus_one():` | `with record_queries() as log:` and then `log.assert_no_nplusone()` |
 | `with record() as recorder:` | `with record_queries() as log:` ([Reading the queries](python-api.md)) |
-| `with queryspy.ignore():` in application code | No `with` block. Ignore the finding by label in `queryguard_ignore`, with the marker, or in the baseline ([Ignoring findings](ignoring.md)) |
+| `with queryspy.ignore():` in application code | `with pytest_queryguard.ignore("*"):`, or name the kinds; threads started inside the block are not covered ([the `ignore()` block](ignoring.md#the-ignore-block)) |
 | `QuerySpyMiddleware` (ASGI, WSGI), the panel | Not covered: tests only |
 
 The helpers, side by side. They run against the fixed `fetch_customers`, the

@@ -19,14 +19,15 @@ def _package_dir(name: str) -> str | None:
     return str(Path(file).resolve().parent) + os.sep if file else None
 
 
+# Packages whose frames are never the application's. pluggy is also where the
+# walk for the callers stops (see _callers).
+_HOOK_PACKAGE = "pluggy"
+_INTERNAL_PACKAGES = ("sqlalchemy", "pytest", "_pytest", _HOOK_PACKAGE)
+
+
 def _compute_prefixes() -> tuple[str, ...]:
-    paths: list[str | None] = [
-        _package_dir("sqlalchemy"),
-        _package_dir("pytest"),
-        _package_dir("_pytest"),
-        _package_dir("pluggy"),
-        str(Path(__file__).resolve().parent) + os.sep,
-    ]
+    paths: list[str | None] = [_package_dir(name) for name in _INTERNAL_PACKAGES]
+    paths.append(str(Path(__file__).resolve().parent) + os.sep)
     for key in ("stdlib", "platstdlib"):
         path = sysconfig.get_paths().get(key)
         if path:
@@ -88,9 +89,64 @@ def _parent_greenlet_frames() -> Iterator[FrameType]:
 # (filename, line, function) -> CallSite.  A suite runs the same few hundred
 # lines over and over, and CallSite is immutable, so one object per location
 # is shared instead of building a new one for every statement. Bounded, so
-# generated code cannot grow it without limit.
+# generated code cannot grow it without limit. Emptied when a measurement
+# starts (new_measurement()), so that the first statement of each line in it
+# builds a new CallSite with that run's callers.
 _sites: dict[tuple[str, int, str], CallSite] = {}
 _MAX_SITES = 4096
+DEFAULT_STACK_DEPTH = 3
+_stack_depth = DEFAULT_STACK_DEPTH
+
+
+def new_measurement() -> None:
+    """Build each call site again, with its callers, the next time its line runs.
+
+    The CallSite objects already handed out keep their callers: an outer
+    measurement's events are not changed by an inner one starting.
+    """
+    _sites.clear()
+
+
+def swap_stack_depth(depth: int) -> int:
+    """Set how many callers are recorded per call site; return the previous value."""
+    global _stack_depth
+    old, _stack_depth = _stack_depth, depth
+    return old
+
+
+_hook_prefix: str | None = None
+
+
+def _hook_caller() -> str:
+    """The directory of pluggy, which calls the test function and the fixtures."""
+    global _hook_prefix
+    if _hook_prefix is None:
+        _hook_prefix = os.path.normcase(_package_dir(_HOOK_PACKAGE) or "")
+    return _hook_prefix
+
+
+def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
+    """Up to ``depth`` application frames from ``frame`` outwards.
+
+    The walk ends at the first pluggy frame: the hook call that ran the test
+    or the fixture. Above it is pytest itself and its console script.
+    """
+    found: list[CallSite] = []
+    stop = _hook_caller()
+    while frame is not None and len(found) < depth:
+        code = frame.f_code
+        if stop and os.path.normcase(code.co_filename).startswith(stop):
+            break
+        if not _is_internal(code.co_filename):
+            found.append(
+                CallSite(
+                    filename=code.co_filename,
+                    lineno=frame.f_lineno,
+                    function=code.co_name,
+                )
+            )
+        frame = frame.f_back
+    return tuple(found)
 
 
 def _first_external(frame: FrameType | None) -> CallSite | None:
@@ -109,7 +165,10 @@ def _first_external(frame: FrameType | None) -> CallSite | None:
                 if len(_sites) >= _MAX_SITES:
                     _sites.clear()
                 site = _sites[key] = CallSite(
-                    filename=filename, lineno=key[1], function=key[2]
+                    filename=filename,
+                    lineno=key[1],
+                    function=key[2],
+                    callers=_callers(frame.f_back, _stack_depth),
                 )
             return site
         frame = frame.f_back

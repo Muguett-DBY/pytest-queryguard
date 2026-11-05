@@ -14,6 +14,7 @@
 | `queryguard_fail_on` | kinds or `fnmatch` patterns, one per line | empty (all kinds) | The finding kinds that fail a test in `fail` mode; the other kinds are reported as `QueryGuardWarning` and the test passes. For example `relationship-load` alone. Budgets always fail. |
 | `queryguard_column_load_threshold` | integer ≥ 2 | `5` | Number of different instances of one class that must load deferred or expired columns on their own to count as N+1. |
 | `queryguard_max_events` | integer ≥ 0 | `10000` | Statements (and relationship loads) stored per test for reports. Beyond it they are only counted, and the report says so. `0` stores everything. |
+| `queryguard_stack_depth` | integer ≥ 0 | `3` | Lines of your code shown under `first at` as `called from`, innermost first: the callers that led to the finding, with SQLAlchemy, pytest and plugin frames left out. Also in the SARIF file (as a code flow) and the JSON file (`stack`). `0` shows none. |
 | `queryguard_ignore` | patterns, one per line | empty | Findings to leave out of reports: `KIND LABEL [file=GLOB] [function=GLOB]`, see [Opting out](ignoring.md). |
 | `queryguard_baseline` | path | empty | Baseline file, relative to the rootdir: findings listed in it do not fail or warn, see [Baseline](baseline.md). |
 | `queryguard_budgets` | path | empty | Budget file, relative to the rootdir: each test listed in it fails above its number of queries, see [Budgets](budgets.md#lock-todays-counts-the-budget-file). |
@@ -100,3 +101,9 @@ Command-line options:
 | `max_db_time(seconds)` | Fails the test if its statements take more than that many seconds in total. |
 | `allow_nplusone(*labels, kind=..., file=..., function=...)` | Leaves out findings: all of them without arguments, or only those that match the `fnmatch` patterns. See [Ignoring findings](ignoring.md). |
 | `allow_missing_index(*tables)` | Skips the missing-index check for the test, or only for the given tables. `allow_nplusone` without arguments does not affect the index check; with patterns it also matches missing-index findings, as in `allow_nplusone("public.audit_log", kind="missing-index")`. |
+
+## Fixture
+
+| Fixture | Meaning |
+|---|---|
+| `queryguard` | `queryguard.max_queries(limit)` and `queryguard.num_queries(expected)` blocks that count the statements of the test's own thread or task, and `queryguard.queries`, the statements of the test function. See [Budgets and timing](budgets.md#budgets-in-a-test-with-the-queryguard-fixture). |

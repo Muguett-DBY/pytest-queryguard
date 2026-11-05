@@ -10,8 +10,11 @@ test node id:
       "db_time": 0.0042,            # seconds, or null when no statement was timed
       "truncated": false,           # by_verb counts only the stored statements
       "findings": [{"kind": ..., "label": ..., "count": ..., "file": ...,
-                    "function": ..., "line": ...}]
+                    "function": ..., "line": ..., "stack": [...]}]
     }
+
+``stack`` lists the application frames that called ``file:line``, innermost
+first, each as ``{"file", "function", "line"}`` (``queryguard_stack_depth``).
 
 Findings are the ones the test found after ignores; those in the baseline
 have ``"baselined": true``, so a file written while updating the baseline
@@ -125,6 +128,10 @@ def record_findings(
             "file": f.file,
             "function": f.function,
             "line": f.line,
+            "stack": [
+                {"file": file, "function": function, "line": line}
+                for file, line, function in f.stack
+            ],
             "baselined": baseline is not None and f.identity in baseline,
         }
         for f in findings

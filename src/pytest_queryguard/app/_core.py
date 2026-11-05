@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from ..api import Query, _to_query
+from ..blocks import Sieve
 from ..collector import QueryCollector
 from ..detectors import SCOPE_SESSION, SCOPE_TEST, detect
 from ..findings import Finding
@@ -424,6 +425,7 @@ class Tracker:
                     small_repeat_threshold=settings.small_repeat_threshold,
                     write_loop_threshold=settings.write_loop_threshold,
                     scope=scope,
+                    sieve=Sieve(),
                 ),
                 cwd=root,
             )

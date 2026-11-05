@@ -19,7 +19,8 @@ from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.orm.context import QueryContext
 from sqlalchemy.pool import Pool
 
-from . import catalog, collector, indexes, mysql_index, sqlite_index, sqltext
+from . import blocks, catalog, collector, indexes, mysql_index, sqlite_index, sqltext
+from .blocks import IgnoreBlock
 from .callsite import find_callsite, find_flush
 from .events import (
     CAUSE_DEFERRED,
@@ -216,7 +217,7 @@ def _on_after_flush(session: Session, flush_context: Any) -> None:
     if _error is not None:
         return
     try:
-        if not collector.active():
+        if not collector.full_active():
             session.__dict__.pop(_WRITTEN_ATTR, None)
             return
         session.__dict__[_WRITTEN_ATTR] = flush_record(session)
@@ -305,9 +306,10 @@ _MAX_QUERY_DEPTH = 200
 # (runid, call site) of the query whose instances were seen last: the rows of
 # one query come in one after another, so the walk runs once per query.
 _last_query: tuple[int, CallSite | None] = (0, None)
-# The live collectors; the per-row listeners only need to know if there is one,
-# without a call per row. collector.py never rebinds the list.
-_collectors = collector._stack
+# The live collectors that want loads (not the statements-only ones of the
+# queryguard fixture); the per-row listeners only need to know if there is
+# one, without a call per row. collector.py never rebinds the list.
+_collectors = collector._full_stack
 # id(statement) -> (statement, call site) of the reads of the current
 # measurement: the query context that turns a result into instances holds the
 # statement it ran, so its call site is found without a walk up the stack.
@@ -602,17 +604,21 @@ def classify_column_load(state: ORMExecuteState) -> tuple[Any, ColumnLoadEvent] 
         _load_options(state),
         getattr(state.statement, "_compile_options", None),
         state.session,
+        blocks.current(),
     )
 
 
 def column_load_of(
-    load_options: Any, options: Any, session: Any
+    load_options: Any,
+    options: Any,
+    session: Any,
+    ignores: tuple[IgnoreBlock, ...] = (),
 ) -> tuple[Any, ColumnLoadEvent] | None:
     """The instance state a column load reloads, and its event; None without one.
 
     ``load_options`` and ``options`` are the load and compile options of the
-    load's SELECT (``orm_select``); ``session`` is the Session it runs in.
-    It counts nothing.
+    load's SELECT (``orm_select``); ``session`` is the Session it runs in and
+    ``ignores`` the ``ignore()`` blocks active there. It counts nothing.
     """
     instance = getattr(load_options, "_refresh_state", None)
     if instance is None:
@@ -645,6 +651,7 @@ def column_load_of(
         key,
         find_callsite(),
         scope=scope_of_session(session),
+        ignores=ignores,
     )
     return instance, load
 
@@ -658,12 +665,15 @@ def _orm_load(
     conn: Any,
     orm: tuple[Any, Any, Any],
     targets: tuple[collector.QueryCollector, ...],
+    ignores: tuple[IgnoreBlock, ...],
 ) -> tuple[
     str | None, ColumnLoadEvent | None, bool, CallSite | None, BaseException | None
 ]:
     """Record the relationship or column load an ORM SELECT runs for.
 
-    Returns the statement's labels: the relationship it loads, its column
+    ``targets`` are the collectors that want loads (not the statements-only
+    ones of the queryguard fixture), ``ignores`` the active ``ignore()``
+    blocks, which every event carries. Returns the statement's labels: the relationship it loads, its column
     load, whether it is a lazy load, the call site found for the load (reused
     for the statement), and the error strict mode raises for it.
     """
@@ -671,7 +681,7 @@ def _orm_load(
     if getattr(options, "_for_refresh_state", False):
         instance = getattr(load_options, "_refresh_state", None)
         session = getattr(instance, "session", None)
-        found = column_load_of(load_options, options, session)
+        found = column_load_of(load_options, options, session, ignores)
         if found is None:
             return _NOTHING
         instance, column = found
@@ -708,12 +718,14 @@ def _orm_load(
         getattr(prop, "uselist", None) is False,
         scope,
         None if parent is None else _parent_load(parent, prop),
+        ignores,
     )
     strict: BaseException | None = None
     for target in targets:
         target.add_relationship_load(load)
         if target.strict is not None:
             # every strict collector counts the load; the first error wins
+            # (strict_check skips a load its ignore() blocks cover)
             error = target.strict_check(load)
             if strict is None:
                 strict = error
@@ -735,15 +747,19 @@ def _on_cursor_execute(
         return
     strict: BaseException | None = None
     try:
-        targets = collector.active()
+        targets = collector.targets()
         if not targets:
             return
         write = _is_write(statement)
+        ignores = blocks.current()
         relationship, column_load, lazy, site = None, None, False, None
-        orm = None if write else orm_select(context)
+        # Loads only for the collectors that want them: with only the
+        # statements-only ones of the queryguard fixture, no load work.
+        full = collector.full_active()
+        orm = None if write or not full else orm_select(context)
         if orm is not None:
             relationship, column_load, lazy, site, strict = _orm_load(
-                conn, orm, targets
+                conn, orm, full, ignores
             )
         # With a strict-mode error the SELECT never runs: no statement to log.
         if strict is None:
@@ -756,6 +772,7 @@ def _on_cursor_execute(
                 write,
                 orm is not None,
                 targets,
+                ignores,
                 (relationship, column_load, lazy, site),
             )
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
@@ -776,6 +793,7 @@ def _record_statement(
     write: bool,
     orm: bool,
     targets: tuple[collector.QueryCollector, ...],
+    ignores: tuple[IgnoreBlock, ...],
     labels: tuple[str | None, ColumnLoadEvent | None, bool, CallSite | None],
 ) -> None:
     relationship, column_load, lazy, site = labels
@@ -791,11 +809,12 @@ def _record_statement(
         executemany=bool(executemany),
         flush=find_flush() if write else None,
         scope=scope_of_connection(conn),
+        ignores=ignores,
     )
     for target in targets:
         target.add_statement(stmt)
     if context is not None:
-        if orm:
+        if orm:  # only with collectors that want loads; they need the site
             # Read back when the ORM turns the rows into instances.
             setattr(context, _SITE_ATTR, stmt.callsite)
             if relationship is None:

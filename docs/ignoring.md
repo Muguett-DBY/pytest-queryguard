@@ -1,6 +1,7 @@
 # Ignoring findings
 
-Three mechanisms leave findings out, from the narrowest to the widest: the
+Four mechanisms leave findings out, from the narrowest to the widest: an
+[`ignore()` block](#the-ignore-block) (a few lines of code), the
 `allow_nplusone` marker (one test), `queryguard_ignore` (the whole suite) and
 a [baseline](baseline.md) (everything that exists today). Budgets are never
 affected by them.
@@ -80,7 +81,101 @@ the spellings a table name accepts). `file` is
 relative to pytest's rootdir, with forward slashes. Findings that no longer
 exist are easy to forget, so a pattern that matched nothing in the run is
 listed in the terminal summary under "stale ignores" (not shown with
-pytest-xdist, where the workers do the matching). There is no
-`with` block form: the collector is process-wide, so a block could not
-tell its own statements from those of other threads.
+pytest-xdist, where the workers do the matching).
+
+## The `ignore()` block
+
+To leave out what a few lines of code do, wherever they are called from,
+wrap them in `ignore()` with the kinds to leave out:
+
+```python
+from pytest_queryguard import ignore
+
+
+def export_report(session):
+    with ignore("relationship-load", reason="one-off export, runs at night"):
+        for order in session.scalars(select(Order)):
+            write_row(order, order.customer.name)
+```
+
+The block can be in a test or in the application code, where
+`pytest_queryguard` must then be importable; outside a measured test the
+block only sets a context variable. It also works as a decorator, on a
+function or a coroutine function:
+
+```python
+@ignore("repeated-statement", "write-loop")
+def migrate_legacy_rows(session): ...
+```
+
+The kinds are the ones above, or `fnmatch` patterns for them (`"*"` for every
+kind); an unknown kind raises `ValueError`. `reason` is for the reader only.
+
+A finding is left out when every statement or load it counts ran inside a
+block for its kind. One of them outside the block is enough to report the
+finding in full, with every load counted, as if the block were not there.
+This catches the usual slip, a lazy load that happens after the block:
+
+```python
+def test_export(session):
+    with ignore("relationship-load"):
+        orders = export_report(session)  # lazy-loads order.customer
+    assert orders[1].customer.name == "Ann"  # one more lazy load, outside
+```
+
+Here the assertion lazy-loads one more customer outside the block, so the N+1
+is reported with all its loads and the block is listed as stale. Put every
+access to the relationship inside the block (the assertion too), or load it
+with the query instead.
+
+In [strict mode](when-a-test-fails.md#strict-mode-fail-at-the-access) a lazy
+load inside the block never raises; a later one outside it still can. The
+block applies to `record_queries()` and `log.assert_no_nplusone()` and to the
+[in-application mode](in-app.md) too. Budgets (`max_queries`) still count the
+statements of the block. A pattern or marker that matches the same finding
+as a block is used too, and neither is listed as stale.
+
+When a test runs more statements or loads than `queryguard_max_events`, the
+plugin stops storing them and only counts the rest, so it cannot tell whether
+those ran inside the block: the blocks then leave nothing out in that test,
+and the findings are reported as without them.
+
+What "inside" means: the block is kept in a context variable, so it covers the
+thread or the asyncio task that entered it, and the tasks created inside it
+(a task starts with a copy of its creator's context), including
+`asyncio.to_thread()`. It does not cover:
+
+- a thread started inside the block (`threading.Thread`, a
+  `ThreadPoolExecutor`, `loop.run_in_executor()`): a new thread starts with an
+  empty context, unless it runs the work with
+  `contextvars.copy_context().run(...)` or the interpreter makes threads
+  inherit the context (`-X thread_inherit_context=1`, the default on the
+  free-threaded build of Python 3.14);
+- a task or a thread that already existed, such as the server thread of a
+  live-server test: the block of the test does not reach the requests it
+  serves. Put the block in the code that handles the request instead, or use
+  the marker or `queryguard_ignore`;
+
+For the missing-index check, every run of the statement in the test counts,
+although it is explained only at its first run: a statement run inside the
+block and again outside it is reported.
+
+A block that left out nothing in the whole run, in any test that entered
+it, is listed in the same "stale ignores" summary, with the file and line of
+the `with` (or of the decorator):
+
+```text
+ignore() blocks that left out no finding in this run:
+  app/reports.py:14: ignore('relationship-load')
+```
+
+Unlike the patterns, the blocks are also reported under pytest-xdist: the
+workers send the blocks they entered and used to the controller. A block is
+noted only when it is entered in the context of a measured test (its thread,
+its tasks, or a thread given a copy of its context), so a thread left over
+from another test does not count. It is not listed when it only ran in tests
+with a bare `allow_nplusone` marker or past `queryguard_max_events`, or when
+none of its kinds was checked there (a `write-loop` block while
+`queryguard_write_loop_threshold` is off, a `missing-index` block without the
+index check).
 

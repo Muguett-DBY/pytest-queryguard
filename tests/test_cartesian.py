@@ -321,3 +321,34 @@ def test_an_error_in_the_check_turns_off_only_the_check(
         ]
     )
     assert "measurement stopped" not in result.stdout.str()
+
+
+# The bare marker keeps the outer run from reporting these loads and the block
+# as stale.
+@pytest.mark.allow_nplusone
+def test_a_load_in_an_ignore_block_carries_the_block() -> None:
+    # Recorded as the SELECT runs: the ignore() block active there is on the
+    # event, as on the statement.
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from pytest_queryguard import cartesian, ignore, listeners, record_queries
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    listeners.install()
+    cartesian.enable()
+    try:
+        with Session(engine) as session, record_queries() as log:
+            stmt = select(Customer).options(
+                joinedload(Customer.orders), joinedload(Customer.notes)
+            )
+            session.scalars(stmt).unique().all()
+            with ignore("cartesian-load") as block:
+                session.scalars(stmt).unique().all()
+    finally:
+        cartesian.disable()
+    outside, inside = log._collector.cartesian_loads
+    assert outside.ignores == ()
+    assert inside.ignores == (block,)
+    assert log._collector.statements[-1].ignores == (block,)

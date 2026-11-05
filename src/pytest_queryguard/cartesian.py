@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
-from . import collector, listeners
+from . import blocks, collector, listeners
 from .callsite import find_callsite
 from .eager import LOADERS, loader_paths
 from .events import CartesianLoadEvent
@@ -125,7 +125,7 @@ def _on_cursor_execute(
     An engine listener, not a ``do_orm_execute`` one: any listener of that
     event makes SQLAlchemy prepare every ORM statement twice.
     """
-    active = collector.active()
+    active = collector.full_active()
     if not active or _broken or listeners._error is not None:
         return
     try:
@@ -148,7 +148,7 @@ def _on_cursor_execute(
         found = _collections(options)
         if found is None:
             return
-        load = CartesianLoadEvent(found[1], found[0], find_callsite())
+        load = CartesianLoadEvent(found[1], found[0], find_callsite(), blocks.current())
         for c in active:
             c.add_cartesian_load(load)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
@@ -199,18 +199,32 @@ def _option(path: Path_, last: str) -> str:
     return ".".join([*steps, f"{last}({path[-1][0]})"])
 
 
-def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Finding]:
-    """One finding per combination of collections, with the statements counted."""
-    from .messages import _display_path, _location, docs_line, kind_line
+def findings(
+    c: collector.QueryCollector,
+    *,
+    cwd: Path | None = None,
+    sieve: blocks.Sieve | None = None,
+) -> list[Finding]:
+    """One finding per combination of collections, with the statements counted.
+
+    With a ``sieve``, one whose statements all ran inside ``ignore()`` blocks
+    for the kind is left out.
+    """
+    from .messages import _display_path, _first_at, _stack, docs_line, kind_line
+
+    if c.truncated:
+        sieve = None  # unstored events may have run outside the blocks
 
     grouped: dict[tuple[Path_, ...], list[CartesianLoadEvent]] = {}
     for load in c.cartesian_loads:
         grouped.setdefault(load.collections, []).append(load)
     result = []
     for collections, loads in grouped.items():
+        if sieve is not None and sieve.drops(loads, KIND_CARTESIAN_LOAD):
+            continue
         first = loads[0]
         site = first.callsite
-        where = "<unknown location>" if site is None else _location(site, cwd)
+        stack = _stack(site, cwd)
         names = [path[-1][0] for path in collections]
         times = "once" if len(loads) == 1 else f"{len(loads)} times"
         keep, *split = collections
@@ -220,7 +234,7 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
         message = "\n".join(
             [
                 f"  {' and '.join(names)} were joined into one query side by side, {times}",
-                f"  first at {where}",
+                *_first_at(site, stack, cwd),
                 kind_line(KIND_CARTESIAN_LOAD, label(collections)),
                 docs_line(KIND_CARTESIAN_LOAD),
                 "  each row repeats per pair of their items: the rows grow as "
@@ -243,6 +257,7 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
                 message=message,
                 line=None if site is None else site.lineno,
                 count=len(loads),
+                stack=stack,
             )
         )
     return result
