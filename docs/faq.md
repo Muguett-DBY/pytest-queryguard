@@ -63,6 +63,8 @@ the [comparison](comparison.md) runs the same scenarios through other tools.
 
 From the narrowest to the widest:
 
+- a few lines of code, in a test or in the application:
+  `with pytest_queryguard.ignore("relationship-load"):`;
 - one finding, in one test: `@pytest.mark.allow_nplusone("Order.customer",
   function="list_orders")`;
 - one finding, in the whole suite: a line in `queryguard_ignore`, for example
@@ -103,7 +105,8 @@ own tests, and the controller merges what the workers saw. The session report
 (`--queryguard-report`) needs one process and prints
 `queryguard report: not available with pytest-xdist`. The summary sections of
 the index check and the stale-ignore list are printed by the process that runs
-the tests, so they are not shown under xdist. The test suite runs the plugin
+the tests, so they are not shown under xdist, except for stale `ignore()`
+blocks, which the workers send to the controller. The test suite runs the plugin
 under `-n 2` and `-n 4` in CI.
 
 ## Which PostgreSQL drivers work?

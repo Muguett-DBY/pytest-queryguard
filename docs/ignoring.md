@@ -1,6 +1,7 @@
 # Ignoring findings
 
-Three mechanisms leave findings out, from the narrowest to the widest: the
+Four mechanisms leave findings out, from the narrowest to the widest: an
+[`ignore()` block](#the-ignore-block) (a few lines of code), the
 `allow_nplusone` marker (one test), `queryguard_ignore` (the whole suite) and
 a [baseline](baseline.md) (everything that exists today). Budgets are never
 affected by them.
@@ -80,7 +81,75 @@ the spellings a table name accepts). `file` is
 relative to pytest's rootdir, with forward slashes. Findings that no longer
 exist are easy to forget, so a pattern that matched nothing in the run is
 listed in the terminal summary under "stale ignores" (not shown with
-pytest-xdist, where the workers do the matching). There is no
-`with` block form: the collector is process-wide, so a block could not
-tell its own statements from those of other threads.
+pytest-xdist, where the workers do the matching).
+
+## The `ignore()` block
+
+To leave out what a few lines of code do, wherever they are called from,
+wrap them in `ignore()` with the kinds to leave out:
+
+```python
+from pytest_queryguard import ignore
+
+
+def export_report(session):
+    with ignore("relationship-load", reason="one-off export, runs at night"):
+        for order in session.scalars(select(Order)):
+            write_row(order, order.customer.name)
+```
+
+The block can be in a test or in the application code, where
+`pytest_queryguard` must then be importable; outside a measured test the
+block only sets a context variable. It also works as a decorator, on a
+function or a coroutine function:
+
+```python
+@ignore("repeated-statement", "write-loop")
+def migrate_legacy_rows(session): ...
+```
+
+The kinds are the ones above, or `fnmatch` patterns for them (`"*"` for every
+kind); an unknown kind raises `ValueError`. `reason` is for the reader only.
+
+A finding is left out when every statement or load it counts ran inside a
+block for its kind. A finding made partly outside the block, such as an N+1
+whose first lazy loads ran before the block, is reported in full, as if the
+block were not there. In [strict mode](when-a-test-fails.md#strict-mode-fail-at-the-access) a lazy load inside
+the block never raises; a later one outside it still can. The block applies
+to `record_queries()` and `log.assert_no_nplusone()` and to the
+[in-application mode](in-app.md) too. Budgets (`max_queries`) still count
+the statements of the block.
+
+What "inside" means: the block is kept in a context variable, so it covers the
+thread or the asyncio task that entered it, and the tasks created inside it
+(a task starts with a copy of its creator's context), including
+`asyncio.to_thread()`. It does not cover:
+
+- a thread started inside the block (`threading.Thread`, a
+  `ThreadPoolExecutor`, `loop.run_in_executor()`): a new thread starts with an
+  empty context, unless it runs the work with
+  `contextvars.copy_context().run(...)` or the interpreter makes threads
+  inherit the context (`-X thread_inherit_context=1`, the default on the
+  free-threaded build of Python 3.14);
+- a task or a thread that already existed, such as the server thread of a
+  live-server test: the block of the test does not reach the requests it
+  serves. Put the block in the code that handles the request instead, or use
+  the marker or `queryguard_ignore`;
+- the missing-index check where the statement already ran earlier in the test
+  outside the block: each statement is explained once per test, at its first
+  run.
+
+A block that left out nothing in the whole run, in any test that entered
+it, is listed in the same "stale ignores" summary, with the file and line of
+the `with` (or of the decorator):
+
+```text
+ignore() blocks that left out no finding in this run:
+  app/reports.py:14: ignore('relationship-load')
+```
+
+Unlike the patterns, the blocks are also reported under pytest-xdist: the
+workers send the blocks they entered and used to the controller. A block that
+only ran in tests with a bare `allow_nplusone` marker, or in no measured test,
+is not listed.
 

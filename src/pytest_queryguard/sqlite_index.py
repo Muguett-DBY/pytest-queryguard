@@ -17,7 +17,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, NamedTuple
 
-from . import advisor
+from . import advisor, blocks
 from .callsite import find_callsite
 from .collector import QueryCollector
 from .detectors import collapse_lists
@@ -948,7 +948,8 @@ def check(
     if not issues:
         return
     site = find_callsite()
+    ignores = blocks.current()
     for issue in issues:
-        scan = ScanEvent(issue, statement, site)
+        scan = ScanEvent(issue, statement, site, ignores)
         for target in fresh:
             target.scans.append(scan)

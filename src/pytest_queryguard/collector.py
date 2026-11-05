@@ -13,6 +13,7 @@ from .events import (
     ScanEvent,
     StatementEvent,
 )
+from .findings import KIND_RELATIONSHIP
 
 # Without the GIL (free-threaded CPython) ``count += 1`` from several threads
 # loses updates, so the add_* methods take a lock there. With the GIL the
@@ -145,6 +146,7 @@ class QueryCollector:
         Only lazy loads of parents whose query line is known count, so an
         object read on its own, or objects the test made itself, never raise
         here. A group whose finding is ignored or baselined is decided once.
+        A load inside an ``ignore("relationship-load")`` block never raises.
         """
         parent = load.parent
         if self.strict is None or parent is None or parent.callsite is None:
@@ -157,6 +159,10 @@ class QueryCollector:
         else:
             group = self._strict_group(key, load)
         if group is None:
+            return None
+        if load.ignores and any(b.matches(KIND_RELATIONSHIP) for b in load.ignores):
+            # inside an ignore() block: the load counts for the group (a
+            # later load outside the block raises), this one never raises
             return None
         error = self.strict(load, group.first, len(group.parents))
         if error is None:

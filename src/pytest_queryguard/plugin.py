@@ -15,8 +15,8 @@ from typing import Any, cast
 import pytest
 
 from . import baseline as baselines
+from . import blocks, cartesian, catalog, eager, hypopg, indexes, sarif, testjson
 from . import budgets as budget_files
-from . import cartesian, catalog, eager, hypopg, indexes, sarif, testjson
 from . import groups as finding_groups
 from .api import NPlusOneDetected
 from .baseline import BaselineError, Identity, sorted_identities
@@ -30,7 +30,7 @@ from .detectors import (
     RelationshipFinding,
     detect,
 )
-from .events import CallSite, RelationshipLoadEvent
+from .events import CallSite, RelationshipLoadEvent, ScanEvent
 from .findings import (
     KIND_CARTESIAN_LOAD,
     KIND_MISSING_INDEX,
@@ -39,7 +39,7 @@ from .findings import (
     Finding,
 )
 from .ignores import IgnoreRule, apply_rules, check_kind, parse_rules
-from .indexes import select_findings
+from .indexes import scan_key, select_findings
 from .listeners import (
     install,
     install_index_check,
@@ -49,6 +49,7 @@ from .listeners import (
     swap_error,
 )
 from .messages import (
+    _display_path,
     format_budget,
     format_failure,
     format_findings,
@@ -173,6 +174,12 @@ class _Settings:
         # what the ignores did, for the stale-ignore warning in the summary
         self.ignore_used: set[IgnoreRule] = set()
         self.stale_markers: list[tuple[str, IgnoreRule]] = []
+        # ignore() blocks entered in a test that was analysed, as
+        # "file:line" -> "ignore('kind')", and those that left out a finding;
+        # incomplete when a pytest-xdist worker did not send them
+        self.blocks_entered: dict[str, str] = {}
+        self.blocks_used: set[str] = set()
+        self.blocks_incomplete = False
 
     @property
     def baselining(self) -> bool:
@@ -1028,6 +1035,7 @@ def _analyse(
     collector: QueryCollector,
     settings: _Settings,
     tracker: eager.Tracker | None = None,
+    sieve: blocks.Sieve | None = None,
 ) -> tuple[str | None, str | None]:
     """(report of the failing kinds, report of the others) for the finished test.
 
@@ -1049,13 +1057,14 @@ def _analyse(
                 small_repeat_threshold=settings.small_repeat,
                 write_loop_threshold=settings.write_loop,
                 scope=settings.repeat_scope,
+                sieve=sieve,
             ),
             cwd=root,
         )
         if tracker is not None:
-            findings.extend(eager.findings(tracker, cwd=root))
+            findings.extend(eager.findings(tracker, cwd=root, sieve=sieve))
         if settings.cartesian != "off" and collector.cartesian_loads:
-            findings.extend(cartesian.findings(collector, cwd=root))
+            findings.extend(cartesian.findings(collector, cwd=root, sieve=sieve))
         if settings.ignore or marker_rules:
             findings = _drop_ignored(item, settings, findings, marker_rules)
         _note_found(settings, findings, item.nodeid)
@@ -1183,6 +1192,7 @@ def _analyse_indexes(
     collector: QueryCollector,
     settings: _Settings,
     exempt: tuple[str, ...],
+    sieve: blocks.Sieve | None = None,
 ) -> str | None:
     """The missing-index report for the finished test, or None; never raises."""
     if internal_error() is not None or not collector.scans:
@@ -1191,6 +1201,8 @@ def _analyse_indexes(
     try:
         root = item.config.rootpath
         scans = select_findings(collector.scans, (*settings.ignore_tables, *exempt))
+        if scans and sieve is not None:
+            scans = _drop_blocked_scans(collector.scans, scans, sieve)
         if not scans:
             return None
         findings = [make_index_finding(scan, cwd=root) for scan in scans]
@@ -1213,6 +1225,50 @@ def _analyse_indexes(
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "missing-index analysis")
         return None
+
+
+def _drop_blocked_scans(
+    every: Sequence[ScanEvent], selected: list[ScanEvent], sieve: blocks.Sieve
+) -> list[ScanEvent]:
+    """The selected scans minus those whose every scan ran inside ignore() blocks."""
+    if not any(scan.ignores for scan in every):
+        return selected
+    same: dict[tuple[object, ...], list[ScanEvent]] = {}
+    for scan in every:
+        same.setdefault(scan_key(scan.issue), []).append(scan)
+    return [
+        scan
+        for scan in selected
+        if not sieve.drops(same[scan_key(scan.issue)], KIND_MISSING_INDEX)
+    ]
+
+
+def _note_blocks(item: pytest.Item, settings: _Settings, sieve: blocks.Sieve) -> None:
+    """Note the ignore() blocks of the test, for the stale-block report.
+
+    A block is stale when no test that entered it left out a finding with it.
+    Blocks of a test whose analysis did not run (an internal error, a bare
+    allow_nplusone marker) are not noted: they could not have left anything out.
+    """
+    entered = blocks.take_entered()
+    if internal_error() is not None or _nplusone_ignores(item)[0]:
+        return
+    root = item.config.rootpath
+    for block in entered:
+        where = _block_site(block, root)
+        if where is not None:
+            settings.blocks_entered.setdefault(where, block.describe())
+    for block in sieve.used:
+        where = _block_site(block, root)
+        if where is not None:
+            settings.blocks_used.add(where)
+
+
+def _block_site(block: blocks.IgnoreBlock, root: Path) -> str | None:
+    site = block.site
+    if site is None:
+        return None
+    return f"{_display_path(site.filename, root)}:{site.lineno}"
 
 
 def _note_index_check(config: pytest.Config, collector: QueryCollector) -> None:
@@ -1411,16 +1467,24 @@ def _write_stale_ignores(
 ) -> None:
     """Warn about ignores that matched no finding in this run."""
     config = terminalreporter.config
-    # The ini patterns match in the workers, so the controller cannot tell.
     # After an internal error or with measurement off, nothing was matched.
-    if (
-        config.pluginmanager.has_plugin("dsession")
-        or settings.mode == "off"
-        or internal_error() is not None
-    ):
+    if settings.mode == "off" or internal_error() is not None:
         return
-    stale = [rule for rule in settings.ignore if rule not in settings.ignore_used]
-    lines = format_stale_ignores(stale, settings.stale_markers)
+    stale: list[IgnoreRule] = []
+    markers: list[tuple[str, IgnoreRule]] = []
+    # The ini patterns match in the workers, so the controller cannot tell;
+    # the workers send the ignore() blocks they saw.
+    if not config.pluginmanager.has_plugin("dsession"):
+        stale = [rule for rule in settings.ignore if rule not in settings.ignore_used]
+        markers = settings.stale_markers
+    stale_blocks: list[tuple[str, str]] = []
+    if not settings.blocks_incomplete:
+        stale_blocks = [
+            (where, text)
+            for where, text in sorted(settings.blocks_entered.items())
+            if where not in settings.blocks_used
+        ]
+    lines = format_stale_ignores(stale, markers, stale_blocks)
     if lines:
         terminalreporter.write_sep("=", "queryguard: stale ignores", yellow=True)
         for line in lines:
@@ -1442,6 +1506,17 @@ def pytest_testnodedown(node: Any, error: object) -> None:
     if settings is None:
         return
     output = getattr(node, "workeroutput", None) or {}
+    try:
+        sent = output.get("queryguard_blocks")
+        if error is not None or sent is None or sent["incomplete"]:
+            settings.blocks_incomplete = True
+        else:
+            for where, text in sent["entered"]:
+                settings.blocks_entered.setdefault(where, text)
+            settings.blocks_used.update(sent["used"])
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        settings.blocks_incomplete = True
+        record_error(exc, "merging the results of a pytest-xdist worker")
     if settings.counting:
         try:
             if error is not None or output.get("queryguard_json_incomplete", True):
@@ -1613,6 +1688,11 @@ def pytest_sessionfinish(
             output = cast(Any, config).workeroutput
             if settings.groups:
                 output["queryguard_groups"] = finding_groups.to_wire(settings.groups)
+            output["queryguard_blocks"] = {
+                "entered": sorted(settings.blocks_entered.items()),
+                "used": sorted(settings.blocks_used),
+                "incomplete": internal_error() is not None,
+            }
             if settings.counting:
                 output["queryguard_tests"] = settings.tests
                 output["queryguard_deselected"] = settings.deselected
@@ -2118,6 +2198,7 @@ def _start_measuring(
     if budgets:
         install()  # idempotent; budgets also work when the mode is off
     collector = QueryCollector()
+    blocks.take_entered()  # entered outside a measured test: not this test's
     collector.max_events = settings.max_events
     collector.index_check = index_check
     collector.index_advisor = settings.index_advisor
@@ -2188,8 +2269,13 @@ def _results(
     fail_texts: list[str] = []
     warn_texts: list[str] = []
     if settings.mode != "off":
-        failing, warning = _analyse(item, collector, settings, tracker)
-        index = _analyse_indexes(item, collector, settings, exempt)
+        sieve = blocks.Sieve()
+        failing, warning = _analyse(item, collector, settings, tracker, sieve)
+        index = _analyse_indexes(item, collector, settings, exempt, sieve)
+        try:
+            _note_blocks(item, settings, sieve)
+        except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+            record_error(exc, "stale ignore() blocks")
         if index is not None:
             (fail_texts if settings.fails(KIND_MISSING_INDEX) else warn_texts).append(
                 index

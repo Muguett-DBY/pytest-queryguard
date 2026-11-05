@@ -5,6 +5,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import overload
 
+from .blocks import Sieve
 from .collector import QueryCollector, pop, push
 from .detectors import SCOPES, detect
 from .events import CallSite, StatementEvent
@@ -308,6 +309,7 @@ class QueryLog:
                 small_repeat_threshold=small_repeat_threshold,
                 write_loop_threshold=write_loop_threshold,
                 scope=repeat_scope,
+                sieve=Sieve(),
             ),
             cwd=root,
         )

@@ -31,12 +31,14 @@ EXPECTED_ALL = [
     "QueryGuardWarning",
     "QueryLog",
     "__version__",
+    "ignore",
     "max_db_time",
     "max_queries",
     "record_queries",
 ]
 
 EXPECTED_FUNCTIONS = {
+    "ignore": "(*kinds: 'str', reason: 'str | None' = None) -> 'IgnoreBlock'",
     "max_db_time": "(seconds: 'float') -> 'AbstractContextManager[QueryLog]'",
     "max_queries": "(limit: 'int') -> 'AbstractContextManager[QueryLog]'",
     "record_queries": "() -> 'AbstractContextManager[QueryLog]'",

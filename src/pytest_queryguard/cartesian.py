@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from . import collector, listeners
+from . import blocks, collector, listeners
 from .callsite import find_callsite
 from .eager import LOADERS, loader_paths
 from .events import CartesianLoadEvent
@@ -126,7 +126,7 @@ def _on_orm_execute(state: Any) -> None:
         found = _collections(options)
         if found is None:
             return
-        load = CartesianLoadEvent(found[1], found[0], find_callsite())
+        load = CartesianLoadEvent(found[1], found[0], find_callsite(), blocks.current())
         for c in active:
             c.add_cartesian_load(load)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
@@ -177,8 +177,17 @@ def _option(path: Path_, last: str) -> str:
     return ".".join([*steps, f"{last}({path[-1][0]})"])
 
 
-def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Finding]:
-    """One finding per combination of collections, with the statements counted."""
+def findings(
+    c: collector.QueryCollector,
+    *,
+    cwd: Path | None = None,
+    sieve: blocks.Sieve | None = None,
+) -> list[Finding]:
+    """One finding per combination of collections, with the statements counted.
+
+    With a ``sieve``, one whose statements all ran inside ``ignore()`` blocks
+    for the kind is left out.
+    """
     from .messages import _display_path, _location, kind_line
 
     grouped: dict[tuple[Path_, ...], list[CartesianLoadEvent]] = {}
@@ -186,6 +195,8 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
         grouped.setdefault(load.collections, []).append(load)
     result = []
     for collections, loads in grouped.items():
+        if sieve is not None and sieve.drops(loads, KIND_CARTESIAN_LOAD):
+            continue
         first = loads[0]
         site = first.callsite
         where = "<unknown location>" if site is None else _location(site, cwd)

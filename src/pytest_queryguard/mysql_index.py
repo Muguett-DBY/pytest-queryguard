@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
-from . import advisor
+from . import advisor, blocks
 from . import sqlite_index as reader
 from .callsite import find_callsite
 from .collector import QueryCollector
@@ -548,8 +548,9 @@ def check(
     if not issues:
         return
     site = find_callsite()
+    ignores = blocks.current()
     for issue in issues:
-        scan = ScanEvent(issue, display_sql(statement), site)
+        scan = ScanEvent(issue, display_sql(statement), site, ignores)
         for target in fresh:
             target.scans.append(scan)
             if issue.advice is not None:

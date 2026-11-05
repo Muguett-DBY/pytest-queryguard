@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from .blocks import IgnoreBlock, Sieve, covering
 from .collector import QueryCollector
 from .events import (
     CAUSE_DEFERRED,
@@ -14,6 +15,12 @@ from .events import (
     ColumnLoadEvent,
     RelationshipLoadEvent,
     StatementEvent,
+)
+from .findings import (
+    KIND_COLUMN_LOAD,
+    KIND_RELATIONSHIP,
+    KIND_REPEAT,
+    KIND_WRITE_LOOP,
 )
 from .sqltext import is_transaction_control, is_write, skip_prefix
 
@@ -191,6 +198,29 @@ def _scope_count(items: Sequence[_T], scope: Callable[[_T], object]) -> int:
     return len({scope(item) for item in items})
 
 
+def _hidden(
+    sieve: Sieve | None,
+    events: Sequence[Any],
+    kind: str,
+    held: list[IgnoreBlock],
+) -> bool:
+    """True when ``events`` all ran inside ignore() blocks for ``kind``.
+
+    The blocks go to ``held``; they count as used (``_note_hidden``) only
+    when no other group of the same finding is reported instead.
+    """
+    if sieve is None:
+        return False
+    blocks = covering(events, kind)
+    held.extend(blocks)
+    return bool(blocks)
+
+
+def _note_hidden(sieve: Sieve | None, held: list[IgnoreBlock]) -> None:
+    if sieve is not None:
+        sieve.note(held)
+
+
 def _parents(
     loads: Sequence[RelationshipLoadEvent],
 ) -> tuple[CallSite | None, int, str | None, tuple[tuple[str, bool], ...]]:
@@ -218,7 +248,10 @@ def _parents(
 
 
 def _relationship_findings(
-    collector: QueryCollector, threshold: int, scoped: bool = False
+    collector: QueryCollector,
+    threshold: int,
+    scoped: bool = False,
+    sieve: Sieve | None = None,
 ) -> list[RelationshipFinding]:
     by_name: dict[str, list[RelationshipLoadEvent]] = {}
     for load in collector.relationship_loads:
@@ -228,11 +261,15 @@ def _relationship_findings(
     for name, loads in by_name.items():
         best: list[RelationshipLoadEvent] | None = None
         best_parents = 0
+        held: list[IgnoreBlock] = []
         for group in _split(loads, lambda load: load.scope, scoped):
             parents = len({load.parent_key for load in group})
             if parents >= threshold and parents > best_parents:
+                if _hidden(sieve, group, KIND_RELATIONSHIP, held):
+                    continue
                 best, best_parents = group, parents
         if best is None:
+            _note_hidden(sieve, held)
             continue
         scope = best[0].scope
         # A lazy load is the statement the finding counts; the query of an
@@ -267,7 +304,10 @@ def _relationship_findings(
 
 
 def _column_load_findings(
-    collector: QueryCollector, threshold: int, scoped: bool = False
+    collector: QueryCollector,
+    threshold: int,
+    scoped: bool = False,
+    sieve: Sieve | None = None,
 ) -> list[ColumnLoadFinding]:
     groups: dict[tuple[str, tuple[str, ...], str], list[ColumnLoadEvent]] = {}
     for load in collector.column_loads:
@@ -280,11 +320,15 @@ def _column_load_findings(
     for (owner, attrs, cause), all_loads in groups.items():
         best: list[ColumnLoadEvent] | None = None
         best_keys = 0
+        held: list[IgnoreBlock] = []
         for loads in _split(all_loads, lambda load: load.scope, scoped):
             keys = len({load.instance_key for load in loads})
             if keys >= threshold and keys > best_keys:
+                if _hidden(sieve, loads, KIND_COLUMN_LOAD, held):
+                    continue
                 best, best_keys = loads, keys
         if best is None:
+            _note_hidden(sieve, held)
             continue
         site = next((load.callsite for load in best if load.callsite), None)
         sample = next((load.sql for load in best if load.sql), None)
@@ -335,7 +379,10 @@ def _value_rows(sql: str) -> int:
 
 
 def _write_loop_findings(
-    collector: QueryCollector, threshold: int, scoped: bool = False
+    collector: QueryCollector,
+    threshold: int,
+    scoped: bool = False,
+    sieve: Sieve | None = None,
 ) -> list[WriteLoopFinding]:
     """The same write, one row per statement, from one line.
 
@@ -356,6 +403,7 @@ def _write_loop_findings(
     for (sql, _), all_stmts in groups.items():
         best: list[StatementEvent] | None = None
         best_count = 0
+        held: list[IgnoreBlock] = []
         for stmts in _split(all_stmts, lambda s: s.scope, scoped):
             # All statements of one ORM flush count as one write: the unit of
             # work sends them one by one on a dialect without insertmanyvalues,
@@ -364,8 +412,11 @@ def _write_loop_findings(
             flushes = {s.flush for s in stmts if s.flush is not None}
             count = len(flushes) + sum(1 for s in stmts if s.flush is None)
             if count >= threshold and count > best_count:
+                if _hidden(sieve, stmts, KIND_WRITE_LOOP, held):
+                    continue
                 best, best_count = stmts, count
         if best is None:
+            _note_hidden(sieve, held)
             continue
         first = best[0].sql
         start = skip_prefix(first) or 0
@@ -728,6 +779,7 @@ def _small_repeat_findings(
     threshold: int,
     scoped: bool = False,
     skip: frozenset[str] = frozenset(),
+    sieve: Sieve | None = None,
 ) -> list[RepeatFinding]:
     """A few runs of one statement from one line, each with other parameters.
 
@@ -741,6 +793,7 @@ def _small_repeat_findings(
         if key in skip or _paginates(all_stmts[0].sql):
             continue
         best: list[StatementEvent] | None = None
+        held: list[IgnoreBlock] = []
         for stmts in _split(all_stmts, lambda s: s.scope, scoped):
             if not small <= len(stmts) < threshold or _batching(stmts):
                 continue
@@ -752,8 +805,12 @@ def _small_repeat_findings(
                 continue
             runs = {(_WS.sub(" ", s.sql), repr(s.parameters)) for s in stmts}
             if len(runs) == len(stmts) and (best is None or len(stmts) > len(best)):
+                if _hidden(sieve, stmts, KIND_REPEAT, held):
+                    continue
                 best = stmts
-        if best is not None:
+        if best is None:
+            _note_hidden(sieve, held)
+        else:
             found.append(
                 RepeatFinding(
                     key,
@@ -768,17 +825,28 @@ def _small_repeat_findings(
 
 
 def _repeat_findings(
-    collector: QueryCollector, threshold: int, scoped: bool = False
-) -> list[RepeatFinding]:
+    collector: QueryCollector,
+    threshold: int,
+    scoped: bool = False,
+    sieve: Sieve | None = None,
+) -> tuple[list[RepeatFinding], set[str]]:
+    """The findings, and the statements a finding inside ignore() blocks had."""
     found: list[RepeatFinding] = []
+    hidden: set[str] = set()
     for key, all_stmts in _repeat_groups(collector).items():
         best: list[StatementEvent] | None = None
+        held: list[IgnoreBlock] = []
         for stmts in _split(all_stmts, lambda s: s.scope, scoped):
             if len(stmts) < threshold or (best is not None and len(stmts) <= len(best)):
                 continue
             if not _batching(stmts):
+                if _hidden(sieve, stmts, KIND_REPEAT, held):
+                    continue
                 best = stmts
         if best is None:
+            if held:
+                hidden.add(key)
+            _note_hidden(sieve, held)
             continue
         site = next((s.callsite for s in best if s.callsite), None)
         found.append(
@@ -791,7 +859,7 @@ def _repeat_findings(
                 scoped,
             )
         )
-    return sorted(found, key=lambda f: -f.count)
+    return sorted(found, key=lambda f: -f.count), hidden
 
 
 def detect(
@@ -803,13 +871,22 @@ def detect(
     small_repeat_threshold: int | None = None,
     write_loop_threshold: int | None = None,
     scope: str = SCOPE_TEST,
+    sieve: Sieve | None = None,
 ) -> list[Detection]:
-    """Run the count rules; ``scope`` is "test" (all) or "session" (per Session)."""
+    """Run the count rules; ``scope`` is "test" (all) or "session" (per Session).
+
+    With a ``sieve``, a finding whose events all ran inside ``ignore()``
+    blocks for its kind is left out, and the sieve notes those blocks.
+    """
     scoped = scope == SCOPE_SESSION
     findings: list[Detection] = []
-    findings.extend(_relationship_findings(collector, relationship_threshold, scoped))
-    findings.extend(_column_load_findings(collector, column_load_threshold, scoped))
-    repeats = _repeat_findings(collector, repeat_threshold, scoped)
+    findings.extend(
+        _relationship_findings(collector, relationship_threshold, scoped, sieve)
+    )
+    findings.extend(
+        _column_load_findings(collector, column_load_threshold, scoped, sieve)
+    )
+    repeats, hidden = _repeat_findings(collector, repeat_threshold, scoped, sieve)
     findings.extend(repeats)
     if small_repeat_threshold is not None and small_repeat_threshold < repeat_threshold:
         findings.extend(
@@ -818,9 +895,12 @@ def detect(
                 small_repeat_threshold,
                 repeat_threshold,
                 scoped,
-                frozenset(f.sql for f in repeats),
+                frozenset(f.sql for f in repeats) | hidden,
+                sieve,
             )
         )
     if write_loop_threshold is not None:
-        findings.extend(_write_loop_findings(collector, write_loop_threshold, scoped))
+        findings.extend(
+            _write_loop_findings(collector, write_loop_threshold, scoped, sieve)
+        )
     return findings

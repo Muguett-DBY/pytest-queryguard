@@ -13,7 +13,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from . import advisor, hypopg, partial, predicates
+from . import advisor, blocks, hypopg, partial, predicates
 from . import catalog as catalogs
 from .callsite import find_callsite
 from .collector import QueryCollector
@@ -666,6 +666,13 @@ def is_ignored(issue: ScanIssue, patterns: Iterable[str]) -> bool:
     return any(table_matches(p, issue.schema, issue.table) for p in patterns)
 
 
+def scan_key(issue: ScanIssue) -> tuple[object, ...]:
+    """What makes scans the same finding (see ``select_findings``)."""
+    if issue.column is not None:
+        return (issue.schema, issue.table, issue.column)
+    return (issue.schema, issue.table, issue.node, issue.kind, issue.condition)
+
+
 def select_findings(
     scans: Sequence[ScanEvent], ignore: Iterable[str]
 ) -> list[ScanEvent]:
@@ -679,11 +686,7 @@ def select_findings(
     found: list[ScanEvent] = []
     for scan in scans:
         issue = scan.issue
-        key: tuple[object, ...]
-        if issue.column is not None:
-            key = (issue.schema, issue.table, issue.column)
-        else:
-            key = (issue.schema, issue.table, issue.node, issue.kind, issue.condition)
+        key = scan_key(issue)
         if key in seen or is_ignored(issue, patterns):
             continue
         seen.add(key)
@@ -1725,7 +1728,8 @@ def check(
     if not found:
         return
     site = find_callsite()
+    ignores = blocks.current()
     for issue in found:
-        scan = ScanEvent(issue, statement, site)
+        scan = ScanEvent(issue, statement, site, ignores)
         for target in fresh:
             target.scans.append(scan)
