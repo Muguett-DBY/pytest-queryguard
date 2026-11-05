@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from pytest_queryguard import baseline, sarif
-from pytest_queryguard.findings import KIND_RELATIONSHIP, KIND_REPEAT, Finding
+from pytest_queryguard.findings import KIND_RELATIONSHIP, KIND_REPEAT, Finding, docs_url
 
 # pytester runs sessions in-process, so the outer plugin sees their queries too.
 pytestmark = pytest.mark.allow_nplusone
@@ -265,7 +265,7 @@ def test_every_rule_is_fully_described() -> None:
         assert set(rule["fullDescription"]) == {"text"} and full
         assert rule["help"]["text"].startswith(f"{full}\n\nFix: ")
         assert rule["help"]["markdown"].startswith(f"{full}\n\n**Fix:** ")
-        assert rule["helpUri"] == f"{sarif.INFORMATION_URI}#readme"
+        assert rule["helpUri"] == docs_url(kind)
         assert rule["defaultConfiguration"] == {"level": "error"}
         assert rule["properties"] == {
             "tags": ["performance", "database"],

@@ -37,6 +37,7 @@ With `test`, a finding whose occurrences come from more than one scope says so:
   the same statement ran 9 times across 8 different Sessions or connection checkouts
   first at app/auth.py:31 in current_user
   kind: repeated-statement  label: SELECT users.id FROM users WHERE users.token = ?
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
   loop; set queryguard_repeat_scope = session to count each Session on its
   own (QueryLog.assert_no_nplusone: repeat_scope='session')
