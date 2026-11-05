@@ -245,6 +245,72 @@ jobs:
       - run: uv run --no-sync coverage run -m pytest -rs
       - run: uv run --no-sync coverage report
 
+  # The missing-index check on MySQL and MariaDB (docs/index-check-mysql.md):
+  # the LTS releases MySQL 8.4 and MariaDB 11.8, with PyMySQL and aiomysql
+  # from the dev group. The images are pinned to a patch release: the live
+  # tests compare exact plans, and a new release may plan a case differently,
+  # which should show up in a pull request that moves the pin, not at random. Only the MySQL test files run; the rest of the suite
+  # does not touch these servers. QUERYGUARD_REQUIRE_BACKENDS makes the live
+  # tests fail instead of skipping when the driver is missing or the server is
+  # not reachable, so the job cannot pass without having run them.
+  #
+  # Both servers are GPL-licensed. They run here only as the official Docker
+  # images, as test services: nothing of them is a dependency or shipped.
+  # The server is started with docker run, like the postgres job, because a
+  # service container takes no server options: MySQL 8.4 needs
+  # mysql_native_password, since PyMySQL needs the cryptography package (not
+  # installed here) for caching_sha2_password over a plain connection.
+  mysql:
+    name: mysql (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: mysql
+            image: mysql:8.4.13
+            client: mysql
+            options: --mysql-native-password=ON --authentication-policy=mysql_native_password
+          - kind: mariadb
+            image: mariadb:11.8.9
+            client: mariadb
+            options: ""
+    env:
+      QUERYGUARD_REQUIRE_BACKENDS: ${{ matrix.kind }}
+      QUERYGUARD_MYSQL_URL: ${{ matrix.kind == 'mysql' && 'mysql+pymysql://root:secret@127.0.0.1:3306/mysql' || '' }}
+      QUERYGUARD_MARIADB_URL: ${{ matrix.kind == 'mariadb' && 'mysql+pymysql://root:secret@127.0.0.1:3306/mysql' || '' }}
+    steps:
+      - name: Start ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          CLIENT: ${{ matrix.client }}
+          OPTIONS: ${{ matrix.options }}
+        run: |
+          # OPTIONS is split into words on purpose
+          # shellcheck disable=SC2086
+          docker run -d --name qg-mysql-server -p 127.0.0.1:3306:3306 \
+            -e MYSQL_ROOT_PASSWORD=secret -e MARIADB_ROOT_PASSWORD=secret \
+            "$IMAGE" $OPTIONS
+          # Over TCP, so the temporary server of the image's first start (no
+          # networking) does not count as ready.
+          for _ in $(seq 1 90); do
+            docker exec qg-mysql-server "$CLIENT" -h127.0.0.1 -uroot -psecret -e "SELECT 1" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          if ! docker exec qg-mysql-server "$CLIENT" -h127.0.0.1 -uroot -psecret -e "SELECT VERSION()"; then
+            docker logs qg-mysql-server
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - run: >-
+          uv run --no-sync pytest -rs
+          tests/test_mysql_index.py tests/test_mysql_index_check.py
+          tests/test_mysql_index_parameters.py
+
   # The GitHub Action in action/ on a tiny sample project (examples/action-sample)
   # with one N+1 query: one run that reports it and does not fail, one that
   # fails, one with the finding in a baseline.

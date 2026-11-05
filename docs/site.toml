@@ -28,7 +28,7 @@ title = "Indexes"
 pages = [
   { title = "Index check (PostgreSQL)", file = "index-check.md", description = "Fail tests whose SQL has no index to use, on PostgreSQL 16 and newer, by planning each SELECT without sequential scans." },
   { title = "Index check (SQLite)", file = "index-check-sqlite.md", description = "The missing-index check on SQLite: how EXPLAIN QUERY PLAN is used and where it judges less precisely." },
-  { title = "Index check (MySQL and MariaDB)", file = "index-check-mysql.md", description = "Fail tests whose SQL has no index to use on MySQL and MariaDB, by reading EXPLAIN plans; tested by hand, not in CI." },
+  { title = "Index check (MySQL and MariaDB)", file = "index-check-mysql.md", description = "Fail tests whose SQL has no index to use on MySQL and MariaDB, by reading EXPLAIN plans; tested in CI on MySQL 8.4 and MariaDB 11.8." },
   { title = "Index advisor", file = "index-advisor.md", description = "How the index advisor suggests CREATE INDEX statements and Alembic calls, and verifies them with hypopg." },
 ]
 

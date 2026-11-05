@@ -159,7 +159,7 @@ The index advisor suggests the `CREATE INDEX` and the Alembic call; with the
 hypopg extension in the test database it also says whether the planner would
 use the index and what the estimated cost would be before and after. The
 check is off by default. See [PostgreSQL](https://maciejziel.github.io/pytest-queryguard/index-check.html),
-[SQLite](https://maciejziel.github.io/pytest-queryguard/index-check-sqlite.html), [MySQL and MariaDB](https://maciejziel.github.io/pytest-queryguard/index-check-mysql.html) (tested on live servers by hand, not in CI) and the
+[SQLite](https://maciejziel.github.io/pytest-queryguard/index-check-sqlite.html), [MySQL and MariaDB](https://maciejziel.github.io/pytest-queryguard/index-check-mysql.html) (tested in CI on MySQL 8.4 and MariaDB 11.8) and the
 [index advisor](https://maciejziel.github.io/pytest-queryguard/index-advisor.html); runnable projects are in
 [examples/postgres-missing-index](https://github.com/MaciejZiel/pytest-queryguard/tree/main/examples/postgres-missing-index) and
 [examples/sqlite-index-check](https://github.com/MaciejZiel/pytest-queryguard/tree/main/examples/sqlite-index-check).
