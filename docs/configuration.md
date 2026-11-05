@@ -8,6 +8,7 @@
 | `queryguard_small_repeat_threshold` | `0` or integer ≥ 2, below the repeat threshold | `0` (off) | Number of runs of one statement from one source line, each with different parameters, that count as N+1 although they are below `queryguard_repeat_threshold`. Pagination and writes are not counted. |
 | `queryguard_repeat_scope` | `test`, `session` | `test` | What the repeat, relationship, column-load and write-loop rules count together. `test` adds up everything one test runs. `session` counts each SQLAlchemy `Session` (or, for a connection no `Session` opened, each connection checkout) on its own, which is what a test that makes several independent requests needs. See [Tests with several sessions or requests](several-sessions.md). |
 | `queryguard_write_loop_threshold` | `0` or integer ≥ 2 | `0` (off) | Number of single-row `INSERT`, `UPDATE` or `DELETE` statements of one shape from one source line that count as a write loop (kind `write-loop`). |
+| `queryguard_strict` | bool | `false` | Raise `NPlusOneDetected` at the lazy load that makes an N+1, with the test's traceback, instead of reporting it when the test ends. See [A test failed](when-a-test-fails.md#strict-mode-fail-at-the-access). |
 | `queryguard_cartesian_load` | `off`, `warn`, `fail` | `warn` | Reports a SELECT that joins two collections side by side, whose rows grow as their product (kind `cartesian-load`, see [How detection works](how-detection-works.md#cartesian-load)); `warn` only warns, `fail` fails the test in `fail` mode. |
 | `queryguard_unused_eager_load` | `off`, `warn`, `fail` | `off` | Experimental (exempt from the [deprecation policy](stability.md#experimental)). Reports relationships a test eager-loads and never reads (kind `unused-eager-load`); `warn` only warns, `fail` fails the test in `fail` mode. See [docs/unused-eager-load.md](unused-eager-load.md). |
 | `queryguard_fail_on` | kinds or `fnmatch` patterns, one per line | empty (all kinds) | The finding kinds that fail a test in `fail` mode; the other kinds are reported as `QueryGuardWarning` and the test passes. For example `relationship-load` alone. Budgets always fail. |
@@ -84,6 +85,7 @@ Command-line options:
 | `--queryguard-sarif=PATH` | Writes the findings of this run to `PATH` as SARIF 2.1.0. |
 | `--queryguard-json=PATH` | Writes each test's statement counts (total and by verb), database time and findings to `PATH` as JSON, to compare runs. See [CI](ci.md#query-counts-as-json). |
 | `--queryguard-update-baseline` | Writes the findings of this run to the baseline file instead of reporting them. |
+| `--queryguard-strict` | Turns `queryguard_strict` on for this run. |
 | `--queryguard-budgets=PATH` | Budget file for this run; overrides `queryguard_budgets`. |
 | `--queryguard-update-budgets` | Writes each test's query count of this run to the budget file. |
 | `--queryguard-index-check` | Turns the missing-index check on for this run. |

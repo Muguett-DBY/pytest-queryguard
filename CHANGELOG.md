@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
+  lazy load of a relationship for the second parent loaded at one line
+  (`queryguard_relationship_threshold`) raises
+  `NPlusOneDetected` at the access, with a traceback that ends at the line
+  that read the attribute, instead of a report when the test ends. Single
+  objects never raise; `allow_nplusone`, `queryguard_ignore` and the baseline
+  apply as for the report (#239).
 - A new finding kind, `cartesian-load`: one SELECT that loads two collections
   with `joinedload` side by side, e.g.
   `select(Customer).options(joinedload(Customer.orders), joinedload(Customer.notes))`,

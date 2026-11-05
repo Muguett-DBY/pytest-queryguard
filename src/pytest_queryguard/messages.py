@@ -302,6 +302,23 @@ def make_findings(
     return [make_finding(d, cwd=cwd) for d in detections]
 
 
+def format_strict(finding: Finding, parents: int) -> str:
+    """The text of the exception queryguard_strict raises at the access."""
+    return "\n".join(
+        [
+            (
+                f"queryguard strict: {finding.label} was lazy-loaded for {parents} "
+                "parents loaded at one line; this access is the N+1"
+            ),
+            "",
+            finding.message,
+            "",
+            "  (queryguard_strict raises at the lazy load; allow_nplusone or",
+            "  queryguard_ignore lets it pass, as for the report)",
+        ]
+    )
+
+
 def format_findings(
     findings: Sequence[Finding | Detection], *, cwd: Path | None = None
 ) -> str:

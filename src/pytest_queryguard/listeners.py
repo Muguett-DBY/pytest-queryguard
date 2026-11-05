@@ -729,6 +729,7 @@ def _record_column_load(
 def _on_orm_execute(state: ORMExecuteState) -> None:
     if _error is not None:
         return
+    strict: BaseException | None = None
     try:
         targets = collector.active()
         if not targets:
@@ -764,8 +765,18 @@ def _on_orm_execute(state: ORMExecuteState) -> None:
         )
         for target in targets:
             target.add_relationship_load(load)
+            if target.strict is not None:
+                # every strict collector counts the load; the first error wins
+                error = target.strict_check(load)
+                if strict is None:
+                    strict = error
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         _fail(exc, "do_orm_execute listener (relationship loads)")
+        return
+    if strict is not None:
+        # queryguard_strict: the N+1 fails here, at the attribute access, with
+        # the test's own traceback (outside the try: this is meant to raise)
+        raise strict
 
 
 _is_write = sqltext.is_write
