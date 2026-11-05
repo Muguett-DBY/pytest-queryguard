@@ -234,12 +234,13 @@ error and the line that raised it. A test then passes or fails on its own
 assertions. Invalid configuration values are the exception: they stop pytest
 at start-up with a usage error, before any test runs.
 
-On SQLAlchemy 2.0.20 to 2.0.49, every `do_orm_execute` listener, the plugin's
-included, makes the outer statement's `yield_per` and `autoflush` options
-reach its `selectinload` statement (SQLAlchemy issue 13301): `yield_per` then
-fails with "Can't use the ORM yield_per feature in conjunction with unique()".
-The plugin undoes that for its own listeners, so a test does not fail only
-because the plugin is installed. A listener of your own triggers the issue
+On SQLAlchemy 2.0.20 to 2.0.49, every `do_orm_execute` listener makes the
+outer statement's `yield_per` and `autoflush` options reach its
+`selectinload` statement (SQLAlchemy issue 13301): `yield_per` then fails
+with "Can't use the ORM yield_per feature in conjunction with unique()". The
+plugin has such a listener only for the unused eager-load check (off by
+default) and undoes the effect for it, so a test does not fail only because
+the plugin is installed. A listener of your own triggers the issue
 with or without the plugin; upgrading to SQLAlchemy 2.0.50 or later fixes the
 cause.
 

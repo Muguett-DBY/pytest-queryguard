@@ -42,6 +42,21 @@ def rec() -> Iterator[collector.QueryCollector]:
     collector.pop(c)
 
 
+def _orm_cursor(load_options: object, compile_options: object) -> SimpleNamespace:
+    """Run the cursor listener for an ORM SELECT with chosen private attributes."""
+    context = SimpleNamespace(
+        execution_options=(
+            {} if load_options is None else {"_sa_orm_load_options": load_options}
+        ),
+        invoked_statement=SimpleNamespace(
+            _propagate_attrs={"compile_state_plugin": "orm"},
+            _compile_options=compile_options,
+        ),
+    )
+    listeners._on_cursor_execute(None, None, "SELECT 1", (), context, False)
+    return context
+
+
 def test_nothing_recorded_without_active_collector(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -98,23 +113,6 @@ def test_pending_relationship_does_not_leak(
     assert rec.statements[-1].relationship is None
 
 
-def test_stale_pending_tag_does_not_cross_measurements(
-    session: Session,
-) -> None:
-    first = collector.QueryCollector()
-    collector.push(first)
-    listeners._set_pending(session, "Order.customer")
-    collector.pop(first)
-
-    second = collector.QueryCollector()
-    collector.push(second)
-    try:
-        session.execute(select(Customer)).all()
-    finally:
-        collector.pop(second)
-    assert second.statements[-1].relationship is None
-
-
 def test_pop_removes_by_identity_not_equality(session: Session) -> None:
     outer, inner = collector.QueryCollector(), collector.QueryCollector()
     collector.push(outer)
@@ -162,21 +160,14 @@ def test_listener_error_is_swallowed_and_disables(
     assert len(rec.statements) == before
 
 
-def test_a_column_load_without_an_instance_is_ignored_quietly() -> None:
-    class State:
-        is_column_load = True
-        session = object()
-        load_options = object()  # no _refresh_state: an unknown SQLAlchemy shape
-
-    target = collector.QueryCollector()
-    collector.push(target)
-    try:
-        listeners._on_orm_execute(State())  # type: ignore[arg-type]
-    finally:
-        collector.pop(target)
+def test_a_column_load_without_an_instance_is_ignored_quietly(
+    rec: collector.QueryCollector,
+) -> None:
+    # no _refresh_state: an unknown SQLAlchemy shape
+    _orm_cursor(object(), SimpleNamespace(_for_refresh_state=True))
     assert listeners.internal_error() is None
-    assert target.column_loads == []
-    assert listeners._take_pending(object()) == (None, None, False, None)
+    assert rec.column_loads == []
+    assert [s.column_load for s in rec.statements] == [False]
 
 
 @pytest.mark.filterwarnings(
@@ -185,24 +176,20 @@ def test_a_column_load_without_an_instance_is_ignored_quietly() -> None:
 def test_missing_only_load_props_is_an_internal_error_not_a_refresh(
     session: Session, rec: collector.QueryCollector
 ) -> None:
-    from types import SimpleNamespace
-
     from sqlalchemy import inspect
 
     customer = session.scalars(select(Customer)).first()
     assert customer is not None
     # the shape of a SQLAlchemy release that drops _only_load_props
-    state = SimpleNamespace(
-        is_column_load=True,
-        load_options=SimpleNamespace(_refresh_state=inspect(customer)),
-        statement=SimpleNamespace(_compile_options=SimpleNamespace()),
+    _orm_cursor(
+        SimpleNamespace(_refresh_state=inspect(customer)),
+        SimpleNamespace(_for_refresh_state=True),
     )
-    listeners._on_orm_execute(state)  # type: ignore[arg-type]
     error = listeners.internal_error()
     assert isinstance(error, AttributeError)
     assert "_only_load_props" in str(error)
     failure = listeners.internal_failure()
-    assert failure is not None and "do_orm_execute" in failure.source
+    assert failure is not None and "before_cursor_execute" in failure.source
     assert rec.column_loads == []  # no load was mislabeled as a refresh
 
 
@@ -241,73 +228,25 @@ def test_is_write_matches_the_plain_definition(statement: str) -> None:
     assert _is_write(statement) is expected
 
 
-def test_a_from_statement_column_load_is_recognised_before_sqlalchemy_2_0_30(
+def test_a_column_load_is_read_from_the_options_of_its_select(
     session: Session, rec: collector.QueryCollector
 ) -> None:
-    """Joined-inheritance subclass columns load through ``from_statement()``.
+    """The refresh state and the compile options are all the listener needs.
 
-    Before SQLAlchemy 2.0.30 such an execution reports ``is_select`` and
-    ``is_column_load`` as False and ``load_options`` raises; the refresh state
-    is still in the execution options and the compile options.
+    Joined-inheritance subclass columns load through ``from_statement()``,
+    for which ``ORMExecuteState`` reports no column load before SQLAlchemy
+    2.0.30; the SELECT carries the same options either way.
     """
-    from types import SimpleNamespace
-
     from sqlalchemy import inspect
-    from sqlalchemy.exc import InvalidRequestError
 
     customer = session.scalars(select(Customer)).first()
     assert customer is not None
-
-    class OldFromStatementState(SimpleNamespace):
-        @property
-        def load_options(self) -> None:
-            raise InvalidRequestError("not against a SELECT statement")
-
-    state = OldFromStatementState(
-        session=session,
-        is_column_load=False,
-        is_select=False,
-        execution_options={
-            "_sa_orm_load_options": SimpleNamespace(_refresh_state=inspect(customer))
-        },
-        statement=SimpleNamespace(
-            _compile_options=SimpleNamespace(
-                _for_refresh_state=True, _only_load_props=frozenset({"name"})
-            )
-        ),
+    _orm_cursor(
+        SimpleNamespace(_refresh_state=inspect(customer)),
+        SimpleNamespace(_for_refresh_state=True, _only_load_props=frozenset({"name"})),
     )
-    listeners._on_orm_execute(state)  # type: ignore[arg-type]
     assert listeners.internal_error() is None
     assert [load.owner for load in rec.column_loads] == ["Customer"]
-
-
-def _from_statement_state(
-    session: Session, *, load_options: object, compile_options: object
-) -> object:
-    """A pre-2.0.30 ``from_statement()`` state with chosen private attributes."""
-    from types import SimpleNamespace
-
-    from sqlalchemy.exc import InvalidRequestError
-
-    class OldFromStatementState(SimpleNamespace):
-        @property
-        def load_options(self) -> None:
-            raise InvalidRequestError("not against a SELECT statement")
-
-        @property
-        def is_relationship_load(self) -> bool:
-            return False
-
-    execution_options = {}
-    if load_options is not None:
-        execution_options["_sa_orm_load_options"] = load_options
-    return OldFromStatementState(
-        session=session,
-        is_column_load=False,
-        is_select=False,
-        execution_options=execution_options,
-        statement=SimpleNamespace(_compile_options=compile_options),
-    )
 
 
 @pytest.mark.parametrize(
@@ -321,19 +260,17 @@ def _from_statement_state(
         (object(), SimpleNamespace(_for_refresh_state=True)),
     ],
 )
-def test_a_from_statement_load_without_the_private_attributes_fails_open(
-    session: Session,
+def test_a_load_without_the_private_attributes_fails_open(
     rec: collector.QueryCollector,
     load_options: object,
     compile_options: object,
 ) -> None:
     """Missing private attributes record nothing and raise nothing."""
-    state = _from_statement_state(
-        session, load_options=load_options, compile_options=compile_options
-    )
-    listeners._on_orm_execute(state)  # type: ignore[arg-type]
+    _orm_cursor(load_options, compile_options)
     assert listeners.internal_error() is None
     assert rec.column_loads == []
+    assert rec.relationship_loads == []
+    assert [s.relationship for s in rec.statements] == [None]
 
 
 def test_sample_sql_of_a_relationship_finding_is_the_lazy_load(

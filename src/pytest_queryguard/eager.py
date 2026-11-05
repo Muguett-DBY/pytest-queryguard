@@ -37,6 +37,7 @@ from typing import Any
 from sqlalchemy import event
 from sqlalchemy.orm import InstrumentedAttribute, RelationshipProperty, Session
 
+from . import listeners
 from .callsite import find_callsite
 from .events import CallSite
 from .findings import KIND_UNUSED_EAGER_LOAD, Finding
@@ -189,6 +190,8 @@ def enable() -> None:
     _original = InstrumentedAttribute.__get__
     InstrumentedAttribute.__get__ = _tracked_get  # type: ignore[method-assign]
     event.listen(Session, "do_orm_execute", _on_orm_execute)
+    if listeners._leaks_load_options():
+        event.listen(Session, "do_orm_execute", listeners._on_orm_execute_heal)
     event.listen(Session, "before_flush", _on_before_flush)
 
 
@@ -203,6 +206,8 @@ def disable() -> None:
     _current = None
     InstrumentedAttribute.__get__ = _original  # type: ignore[method-assign]
     event.remove(Session, "do_orm_execute", _on_orm_execute)
+    if event.contains(Session, "do_orm_execute", listeners._on_orm_execute_heal):
+        event.remove(Session, "do_orm_execute", listeners._on_orm_execute_heal)
     event.remove(Session, "before_flush", _on_before_flush)
 
 

@@ -6,15 +6,15 @@ customer comes back once per pair of an order and a note: 20 orders and 20
 notes are 400 rows for one customer. EF Core warns about this ("multiple
 collection includes"); this module does the same for SQLAlchemy.
 
-The check reads the loader options of each top-level ORM SELECT, as the
-unused eager-load check does (``eager.loader_paths``). The options split into
-statements wherever a step is not joined: a ``selectinload``, a
-``subqueryload``, or a ``defaultload``/``lazyload`` of a lazy relationship
-runs a SELECT of its own. Inside one statement, two joined collections are a
-product when neither is on the path of the other; the finding names the
-topmost collection of each of the two branches. ``joinedload(A.bs)
-.joinedload(B.cs)`` is a chain whose rows grow with the number of ``cs``, not
-a product, and is left alone. Loader strategies set on the mapping
+The check reads the loader options of each top-level ORM SELECT when it runs,
+with the parser of the unused eager-load check (``eager.loader_paths``). The
+options split into statements wherever a step is not joined: a
+``selectinload``, a ``subqueryload``, or a ``defaultload``/``lazyload`` of a
+lazy relationship runs a SELECT of its own. Inside one statement, two joined
+collections are a product when neither is on the path of the other; the finding
+names the topmost collection of each of the two branches. ``joinedload(A.bs)
+.joinedload(B.cs)`` is a chain whose rows grow with the number of ``cs``, not a
+product, and is left alone. Loader strategies set on the mapping
 (``relationship(lazy="joined")``) are not options of the query and are not
 seen, except on a ``defaultload()`` step.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import event
-from sqlalchemy.orm import Session
+from sqlalchemy.engine import Engine
 
 from . import collector, listeners
 from .callsite import find_callsite
@@ -112,16 +112,38 @@ def _path(key: tuple[Any, ...], strategies: dict[Any, tuple[str, str | None]]) -
     return tuple(steps)
 
 
-def _on_orm_execute(state: Any) -> None:
+def _on_cursor_execute(
+    conn: Any,
+    cursor: Any,
+    statement: str,
+    parameters: Any,
+    context: Any,
+    executemany: bool,
+) -> None:
+    """Read the loader options of a top-level ORM SELECT as it runs.
+
+    An engine listener, not a ``do_orm_execute`` one: any listener of that
+    event makes SQLAlchemy prepare every ORM statement twice.
+    """
     active = collector.active()
     if not active or _broken or listeners._error is not None:
         return
     try:
         # most statements have no loader options: one attribute read, then out
-        options = getattr(state.statement, "_with_options", ())
-        if not options:
+        invoked = getattr(context, "invoked_statement", None)
+        options = getattr(invoked, "_with_options", ())
+        if not options or not getattr(invoked, "is_select", False):
             return
-        if not state.is_select or state.is_relationship_load or state.is_column_load:
+        orm = listeners.orm_select(context)
+        if orm is None:
+            return
+        # not a relationship or column load: those carry the outer query's
+        # options and are not where the user wrote them
+        compile_options = orm[1]
+        if getattr(compile_options, "_for_refresh_state", False):
+            return
+        path = getattr(compile_options, "_current_path", None)
+        if path is not None and not path.is_root:
             return
         found = _collections(options)
         if found is None:
@@ -155,7 +177,7 @@ def enable() -> None:
     global _enabled
     _enabled += 1
     if _enabled == 1:
-        event.listen(Session, "do_orm_execute", _on_orm_execute)
+        event.listen(Engine, "before_cursor_execute", _on_cursor_execute)
 
 
 def disable() -> None:
@@ -164,7 +186,7 @@ def disable() -> None:
         return
     _enabled -= 1
     if _enabled == 0:
-        event.remove(Session, "do_orm_execute", _on_orm_execute)
+        event.remove(Engine, "before_cursor_execute", _on_cursor_execute)
 
 
 def label(collections: tuple[Path_, ...]) -> str:

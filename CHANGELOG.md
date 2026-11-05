@@ -9,11 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A lazy load no longer walks the whole call stack: the check for a refresh
-  of a mapped eager relationship stops at the lazy loader, and the check for
-  a statement of a begin listener stops at the ORM execution (at most 40
-  frames each). The cost of a lazy load no longer grows with the depth of the
-  test's stack (#252).
+- A lazy load no longer walks the call stack to tell a refresh of a mapped
+  eager relationship: the walk stops at the lazy loader. The begin-listener
+  check that walked the whole stack for each lazy-load and column-load
+  `SELECT` is gone (see the next entry). The cost of a lazy load no longer
+  grows with the depth of the test's stack (#252).
+- The plugin no longer registers a `do_orm_execute` listener. Lazy loads,
+  column loads and loader statements are recognised in
+  `before_cursor_execute`, from the ORM's options on the `SELECT` itself, and
+  the cartesian-load check reads the loader options there too. With any
+  `do_orm_execute` listener SQLAlchemy prepares each ORM statement twice;
+  without one the added cost of an ORM statement falls by about a third (the
+  overhead check's ORM ratio from 0.40 to 0.27 on one laptop). The
+  attribution no longer has to be parked on the `Session` until its `SELECT`
+  runs, so statements in between (autoflush, begin listeners, other Sessions
+  or tasks on the connection) cannot take it by design, and the stack walk
+  that told a begin listener's statement apart is gone. A lazy load answered
+  without a `SELECT` (a `do_orm_execute` listener of your own returning a
+  cached result) is no longer counted. In strict mode the exception is raised
+  as the `SELECT` is about to be sent, after the autoflush, so an engine
+  `handle_error` listener sees it. Only the opt-in unused eager-load check
+  still has a `do_orm_execute` listener, and the workaround for SQLAlchemy
+  issue 13301 (2.0.20 to 2.0.49) now comes with it (#250).
 
 ## [0.6.0] - 2026-11-05
 

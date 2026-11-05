@@ -135,11 +135,12 @@
   `selectinload` and `immediateload` statements (SQLAlchemy issue 13301, fixed
   in 2.0.50). With `yield_per` the loader statement fails with "Can't use the
   ORM yield_per feature in conjunction with unique()"; with `autoflush=False`
-  it no longer flushes. The plugin installs such a listener, so on those
-  versions it removes the inherited options from the loader statement before
-  SQLAlchemy reads them, and the statement runs as it does without the
-  plugin; the cursor still gets the outer statement's options. This happens
-  only when the plugin's listeners are the only ones: with a
+  it no longer flushes. The plugin installs such a listener only for the
+  unused eager-load check (`queryguard_unused_eager_load`, off by default);
+  then, on those versions, it removes the inherited options from the loader
+  statement before SQLAlchemy reads them, and the statement runs as it does
+  without the plugin; the cursor still gets the outer statement's options.
+  This happens only when the plugin's listeners are the only ones: with a
   `do_orm_execute` listener of your own the plugin changes nothing, because
   your listener triggers the same issue without the plugin. Upgrade to
   SQLAlchemy 2.0.50 or later to remove the cause.

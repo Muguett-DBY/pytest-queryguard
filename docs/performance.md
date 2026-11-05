@@ -8,11 +8,10 @@ as an order of magnitude and run the scripts on your own suite.
 
 With measurement on, every statement passes through a few listeners:
 
-- `do_orm_execute` (ORM statements only): tells lazy loads and column loads
-  apart from ordinary queries.
 - `before_cursor_execute`: finds the call site (a walk up the stack to the first
   frame outside SQLAlchemy, pytest, the standard library and site-packages),
-  builds one event and starts a timer.
+  tells lazy loads and column loads apart from ordinary queries by the ORM's
+  options on the statement, builds one event and starts a timer.
 - `after_cursor_execute`: stops the timer.
 
 Once per test the collected statements are normalized and grouped by the
@@ -67,8 +66,11 @@ no-op listener floor of about +6 us (Core) and +8 us (ORM) is included in every
 
 Where the plugin's own part goes, per statement, measured by timing the
 listeners in place: about 4 us in the `before_cursor_execute` listener (call
-site, event, bookkeeping), 2 us in `do_orm_execute` and under 1 us in the
-timer listener.
+site, event, bookkeeping), 2 us in `do_orm_execute` and under 1 us in the timer
+listener. Those figures are from the 0.4.0 work. After 0.6.0 the plugin dropped
+its `do_orm_execute` listener (the unused eager-load check, off by default,
+still adds one): with any listener of that event SQLAlchemy prepares each ORM
+statement twice, which cost more than the listener itself.
 
 ## A realistic case: a suite of 300 tests
 
