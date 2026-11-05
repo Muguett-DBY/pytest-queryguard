@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   URL, no server, no driver) into a failure, so it cannot pass without having
   run them. The check was tested by hand before (#277).
 
+### Documentation
+
+- The comparison lists the current releases of the other tools, checked on
+  PyPI on 2026-11-05: queryspy 0.6.0 and django-zeal 2.3.0 (the measurements
+  stay as made, on queryspy 0.5.0), and adds orm-lens, a static analyser of
+  Django and SQLAlchemy models (#281).
+
 ## [0.6.0] - 2026-11-05
 
 This release adds strict mode (raise at the lazy load), a new finding kind,
