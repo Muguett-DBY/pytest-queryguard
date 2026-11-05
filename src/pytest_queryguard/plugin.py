@@ -16,6 +16,7 @@ import pytest
 
 from . import baseline as baselines
 from . import catalog, eager, hypopg, indexes, sarif
+from . import groups as finding_groups
 from .baseline import BaselineError, Identity, sorted_identities
 from .collector import QueryCollector, pop, push
 from .detectors import DEFAULT_COLUMN_LOAD_THRESHOLD, SCOPE_TEST, SCOPES, detect
@@ -108,6 +109,8 @@ class _Settings:
         self.rootpath: Path | None = None  # for the SARIF location prefix
         # findings that count (not ignored, not baselined), for the SARIF file
         self.reported: sarif.Collected = {}
+        # the same counted finding in several tests, for the terminal summary
+        self.groups: finding_groups.Groups = {}
         self.sarif_result: str | None = None
         self.sarif_failed: str | None = None
         self.update_baseline = update_baseline
@@ -792,6 +795,7 @@ def _analyse(
         if settings.ignore or marker_rules:
             findings = _drop_ignored(item, settings, findings, marker_rules)
         findings = _apply_baseline(settings, findings, item)
+        finding_groups.add(settings.groups, findings, item.nodeid)
         failing = [f for f in findings if _fails(settings, f)]
         warning = [f for f in findings if not _fails(settings, f)]
         note = ""
@@ -933,6 +937,11 @@ def _analyse_indexes(
             ]
         if not scans:
             return None
+        finding_groups.add(
+            settings.groups,
+            [make_index_finding(scan, cwd=root) for scan in scans],
+            item.nodeid,
+        )
         return format_index_findings(scans, cwd=root)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "missing-index analysis")
@@ -1134,10 +1143,16 @@ def pytest_testnodedown(node: Any, error: object) -> None:
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "merging the results of a pytest-xdist worker")
         return
-    if settings is None or not (settings.baselining or settings.sarif_path):
+    if settings is None:
+        return
+    output = getattr(node, "workeroutput", None) or {}
+    try:
+        finding_groups.merge_wire(settings.groups, output.get("queryguard_groups", []))
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        record_error(exc, "merging the results of a pytest-xdist worker")
+    if not (settings.baselining or settings.sarif_path):
         return
     try:
-        output = getattr(node, "workeroutput", None) or {}
         if error is not None or output.get("queryguard_incomplete", True):
             settings.baseline_incomplete = True
         for identity in output.get("queryguard_seen", []):
@@ -1263,6 +1278,12 @@ def pytest_sessionfinish(
 ) -> None:
     config = session.config
     settings = config.stash.get(_settings, None)
+    if settings is not None and settings.groups and _is_worker(config):
+        try:
+            output = cast(Any, config).workeroutput
+            output["queryguard_groups"] = finding_groups.to_wire(settings.groups)
+        except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+            record_error(exc, "sending the results to the pytest-xdist controller")
     if settings is None or not (settings.baselining or settings.sarif_path):
         return
     if _is_worker(config):
@@ -1441,6 +1462,20 @@ def _write_baseline_summary(
             terminalreporter.write_line(line)
 
 
+def _write_groups(
+    terminalreporter: pytest.TerminalReporter, settings: _Settings
+) -> None:
+    lines = finding_groups.summary_lines(settings.groups)
+    if not lines:
+        return
+    terminalreporter.write_sep("=", "queryguard: the same finding in several tests")
+    for line in lines:
+        terminalreporter.write_line(line)
+    terminalreporter.write_line(
+        "a finding from one place in the code is fixed once for all its tests"
+    )
+
+
 def _write_sarif_summary(
     terminalreporter: pytest.TerminalReporter, settings: _Settings
 ) -> None:
@@ -1478,6 +1513,10 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
             _write_report(terminalreporter, settings)
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "queryguard report")
+    try:
+        _write_groups(terminalreporter, settings)
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        record_error(exc, "summary of findings in several tests")
     try:
         _write_stale_ignores(terminalreporter, settings)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite

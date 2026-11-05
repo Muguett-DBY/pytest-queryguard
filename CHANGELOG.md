@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The terminal summary names a finding that several tests reported once,
+  with the number of tests and of places in the code it came from:
+  `30 tests  relationship-load  Order.customer  (900 times in total, from one
+  place in the code; e.g. tests/test_orders.py::test_list[0])`, the most tests
+  first, also with pytest-xdist. A shared helper that runs an N+1 no longer
+  hides behind 30 identical blocks (#228).
+
 ### Changed
 
 - Each finding in a report has a `docs:` line, after its `kind:` line, with a
