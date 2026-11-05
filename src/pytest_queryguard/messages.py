@@ -20,6 +20,7 @@ from .events import (
     Verification,
 )
 from .findings import (
+    KIND_CARTESIAN_LOAD,
     KIND_COLUMN_LOAD,
     KIND_MISSING_INDEX,
     KIND_RELATIONSHIP,
@@ -308,6 +309,8 @@ def format_findings(
     made = [f if isinstance(f, Finding) else make_finding(f, cwd=cwd) for f in findings]
     if made and all(f.kind == KIND_UNUSED_EAGER_LOAD for f in made):
         lines = ["queryguard: unused eager load detected (experimental)"]
+    elif made and all(f.kind == KIND_CARTESIAN_LOAD for f in made):
+        lines = ["queryguard: cartesian join detected"]
     else:
         lines = ["queryguard: N+1 detected"]
     for finding in made:

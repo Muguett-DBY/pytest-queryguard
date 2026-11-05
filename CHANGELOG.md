@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A new finding kind, `cartesian-load`: one SELECT that loads two collections
+  with `joinedload` side by side, e.g.
+  `select(Customer).options(joinedload(Customer.orders), joinedload(Customer.notes))`,
+  whose rows grow as the product of the collections while the query count
+  stays at one. Chains, `selectinload` and `contains_eager()` are understood;
+  a product inside the SELECT of a `selectinload` is found too. It warns by
+  default; `queryguard_cartesian_load = fail` or `off` (#229). A suite that
+  turns warnings into errors (`filterwarnings = error`) and has such a query
+  fails after the upgrade: fix the query, ignore the finding, or set
+  `queryguard_cartesian_load = off`.
 - `queryguard_max_queries` gives every test without a `max_queries` marker a
   default query budget (#232).
 - A budget file: `pytest --queryguard-budgets=queryguard-budgets.json

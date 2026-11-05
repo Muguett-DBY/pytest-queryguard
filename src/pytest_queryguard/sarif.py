@@ -17,6 +17,7 @@ from typing import Any, NamedTuple
 
 from .fileio import atomic_write_text
 from .findings import (
+    KIND_CARTESIAN_LOAD,
     KIND_COLUMN_LOAD,
     KIND_MISSING_INDEX,
     KIND_RELATIONSHIP,
@@ -87,6 +88,15 @@ _RULES: dict[str, _Rule] = {
         "subqueryload() or immediateload() and the test never read it.",
         "Remove the eager option from the query, or load the relationship "
         "only in the queries whose result uses it.",
+    ),
+    KIND_CARTESIAN_LOAD: _Rule(
+        "CartesianLoad",
+        "One query joins two collections side by side",
+        "A SELECT loads two collections with joinedload() where neither is on "
+        "the path of the other, so each parent row repeats per combination of "
+        "their items and the rows grow as their product.",
+        "Load all but one of the collections with selectinload(): one more "
+        "query each, and no repeated rows.",
     ),
     KIND_MISSING_INDEX: _Rule(
         "MissingIndex",

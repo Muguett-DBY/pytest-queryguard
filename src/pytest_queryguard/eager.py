@@ -29,12 +29,13 @@ instances through attribute access, which rules out code that reads
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import event
-from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.orm import InstrumentedAttribute, RelationshipProperty, Session
 
 from .callsite import find_callsite
 from .events import CallSite
@@ -110,27 +111,44 @@ def _broke(exc: Exception, where: str) -> None:
         )
 
 
+def loader_paths(options: Any) -> Iterator[tuple[tuple[Any, ...], str | None]]:
+    """(path, strategy) of every relationship that loader options name.
+
+    ``path`` alternates mappers and relationships, from the query's entity;
+    ``strategy`` is the lazy= name (``"joined"``, ``"selectin"``, ...) or None
+    for ``defaultload()``. Wildcards (``joinedload("*")``) and
+    ``contains_eager()`` (a join made on purpose, to filter) are left out.
+    Shared by the unused eager-load and the cartesian-load checks.
+    """
+    for option in options:
+        for element in getattr(option, "context", ()):
+            path = getattr(getattr(element, "path", None), "path", None)
+            if not path or len(path) < 3 or len(path) % 2 == 0:
+                continue
+            if not all(isinstance(p, RelationshipProperty) for p in path[1::2]):
+                continue
+            if "eager_from_alias" in getattr(element, "local_opts", {}):
+                continue
+            strategy = getattr(element, "strategy", None)
+            if not strategy:
+                yield tuple(path), None
+            elif strategy[0][0] == "lazy":
+                yield tuple(path), str(strategy[0][1])
+
+
 def _elements(options: Any) -> list[EagerLoad]:
     """The eager loads the loader options of a statement ask for."""
     found: list[EagerLoad] = []
-    for option in options:
-        for element in getattr(option, "context", ()):
-            strategy = getattr(element, "strategy", None)
-            path = getattr(getattr(element, "path", None), "path", None)
-            if not strategy or path is None or len(path) < 3:
-                continue
-            loader = LOADERS.get(strategy[0][1]) if strategy[0][0] == "lazy" else None
-            # contains_eager() joins by hand for a filter; it is not a wasted load
-            if loader is None or "eager_from_alias" in getattr(
-                element, "local_opts", {}
-            ):
-                continue
-            prop = path[-2]
-            parent = None
-            if len(path) >= 5:
-                above = path[-4]
-                parent = (above.parent.class_, above.key)
-            found.append(EagerLoad(prop.parent.class_, prop, loader, None, parent))
+    for path, strategy in loader_paths(options):
+        loader = LOADERS.get(strategy) if strategy is not None else None
+        if loader is None:
+            continue
+        prop = path[-2]
+        parent = None
+        if len(path) >= 5:
+            above = path[-4]
+            parent = (above.parent.class_, above.key)
+        found.append(EagerLoad(prop.parent.class_, prop, loader, None, parent))
     return found
 
 

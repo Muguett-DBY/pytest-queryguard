@@ -4,7 +4,13 @@ import sys
 import threading
 from dataclasses import dataclass, field
 
-from .events import ColumnLoadEvent, RelationshipLoadEvent, ScanEvent, StatementEvent
+from .events import (
+    CartesianLoadEvent,
+    ColumnLoadEvent,
+    RelationshipLoadEvent,
+    ScanEvent,
+    StatementEvent,
+)
 
 # Without the GIL (free-threaded CPython) ``count += 1`` from several threads
 # loses updates, so the add_* methods take a lock there. With the GIL the
@@ -19,6 +25,8 @@ class QueryCollector:
     statements: list[StatementEvent] = field(default_factory=list)
     relationship_loads: list[RelationshipLoadEvent] = field(default_factory=list)
     column_loads: list[ColumnLoadEvent] = field(default_factory=list)
+    # SELECTs that join collections side by side (cartesian.py); few per test
+    cartesian_loads: list[CartesianLoadEvent] = field(default_factory=list)
     # Missing-index check (see indexes.py); only used when index_check is set.
     index_check: bool = False
     # Suggest an index for each finding; hypopg is "auto", "on" or "off".
@@ -37,6 +45,7 @@ class QueryCollector:
     statement_count: int = 0
     relationship_load_count: int = 0
     column_load_count: int = 0
+    cartesian_load_count: int = 0
     # Seconds the statements took, all of them, stored or only counted.
     db_time: float = 0.0
     # Guards the counters and the length checks on a free-threaded build.
@@ -51,6 +60,7 @@ class QueryCollector:
             self.statement_count > len(self.statements)
             or self.relationship_load_count > len(self.relationship_loads)
             or self.column_load_count > len(self.column_loads)
+            or self.cartesian_load_count > len(self.cartesian_loads)
         )
 
     def add_statement(self, event: StatementEvent) -> None:
@@ -90,6 +100,20 @@ class QueryCollector:
         self.column_load_count += 1
         if self.max_events is None or len(self.column_loads) < self.max_events:
             self.column_loads.append(event)
+
+    def add_cartesian_load(self, event: CartesianLoadEvent) -> None:
+        if _FREE_THREADED:
+            with self._lock:
+                self.cartesian_load_count += 1
+                if (
+                    self.max_events is None
+                    or len(self.cartesian_loads) < self.max_events
+                ):
+                    self.cartesian_loads.append(event)
+            return
+        self.cartesian_load_count += 1
+        if self.max_events is None or len(self.cartesian_loads) < self.max_events:
+            self.cartesian_loads.append(event)
 
     def add_db_time(self, seconds: float) -> None:
         if _FREE_THREADED:
