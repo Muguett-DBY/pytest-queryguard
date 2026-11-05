@@ -37,6 +37,8 @@ from typing import Any
 from sqlalchemy import event
 from sqlalchemy.orm import InstrumentedAttribute, RelationshipProperty, Session
 
+from . import blocks
+from .blocks import IgnoreBlock
 from .callsite import find_callsite
 from .events import CallSite
 from .findings import KIND_UNUSED_EAGER_LOAD, Finding
@@ -60,6 +62,8 @@ class EagerLoad:
     callsite: CallSite | None
     # the relationship above this one in the option chain, as (class, name)
     parent: tuple[type, str] | None = None
+    # the ignore() blocks active where the query ran (see blocks.py)
+    ignores: tuple[IgnoreBlock, ...] = ()
 
     @property
     def key(self) -> str:
@@ -163,8 +167,10 @@ def _on_orm_execute(state: Any) -> None:
         if not loads:
             return
         site = find_callsite()
+        ignores = blocks.current()
         for load in loads:
             load.callsite = site
+            load.ignores = ignores
             tracker.loads.append(load)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         _broke(exc, "the do_orm_execute listener")
@@ -240,10 +246,14 @@ def _deleted_with_cascade(tracker: Tracker, load: EagerLoad) -> bool:
     return any(_related(t, load.owner) for t in tracker.deleted)
 
 
-def unused(tracker: Tracker) -> list[EagerLoad]:
-    """The eager loads (first of each relationship and call site) nothing read."""
+def unused(tracker: Tracker, sieve: blocks.Sieve | None = None) -> list[EagerLoad]:
+    """The eager loads (first of each relationship and call site) nothing read.
+
+    With a ``sieve``, one whose loads all ran inside ``ignore()`` blocks for
+    the kind is left out.
+    """
     found: list[EagerLoad] = []
-    seen: set[tuple[str, str, object]] = set()
+    groups: dict[tuple[str, str, object], list[EagerLoad]] = {}
     touched = {t for t, _ in tracker.reads}
     for load in tracker.loads:
         site = load.callsite
@@ -252,9 +262,9 @@ def unused(tracker: Tracker) -> list[EagerLoad]:
             load.loader,
             None if site is None else (site.filename, site.function),
         )
-        if ident in seen:
-            continue
-        seen.add(ident)
+        groups.setdefault(ident, []).append(load)
+    for group in groups.values():
+        load = group[0]
         if _was_read(tracker, load.owner, load.key):
             continue
         if not any(_related(t, load.owner) for t in touched):
@@ -263,34 +273,30 @@ def unused(tracker: Tracker) -> list[EagerLoad]:
             continue
         if load.parent is not None and not _was_read(tracker, *load.parent):
             continue  # the relationship above is the finding
+        if sieve is not None and sieve.drops(group, KIND_UNUSED_EAGER_LOAD):
+            continue
         found.append(load)
     return found
 
 
-def _display(site: CallSite | None, cwd: Path | None) -> tuple[str | None, str]:
-    from .messages import _display_path, _location
-
-    if site is None:
-        return None, "  first at <unknown location>"
-    return _display_path(site.filename, cwd), f"  first at {_location(site, cwd)}"
-
-
-def findings(tracker: Tracker, *, cwd: Path | None = None) -> list[Finding]:
+def findings(
+    tracker: Tracker, *, cwd: Path | None = None, sieve: blocks.Sieve | None = None
+) -> list[Finding]:
     """One finding per eager load the test body never read; never raises."""
     if _broken:
         return []
     try:
-        from .messages import docs_line, kind_line
+        from .messages import _display_path, _first_at, _stack, docs_line, kind_line
 
         result: list[Finding] = []
-        for load in unused(tracker):
+        for load in unused(tracker, sieve):
             site = load.callsite
-            file, where = _display(site, cwd)
+            stack = _stack(site, cwd)
             option = f"{load.loader}({load.label})"
             message = "\n".join(
                 [
                     f"  {load.label} was loaded with {load.loader} and never read",
-                    where,
+                    *_first_at(site, stack, cwd),
                     kind_line(KIND_UNUSED_EAGER_LOAD, load.label),
                     docs_line(KIND_UNUSED_EAGER_LOAD),
                     f"  fix: remove {option} from the query, or load it only where used",
@@ -303,10 +309,11 @@ def findings(tracker: Tracker, *, cwd: Path | None = None) -> list[Finding]:
                 Finding(
                     kind=KIND_UNUSED_EAGER_LOAD,
                     label=load.label,
-                    file=file,
+                    file=None if site is None else _display_path(site.filename, cwd),
                     function=None if site is None else site.function,
                     message=message,
                     line=None if site is None else site.lineno,
+                    stack=stack,
                 )
             )
         return result

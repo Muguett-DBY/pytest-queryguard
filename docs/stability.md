@@ -12,15 +12,15 @@ changes by accident.
 
 - The names in `pytest_queryguard.__all__`, their signatures, and the public
   attributes and methods of the classes in it (`QueryLog`, `Query`,
-  `CallSite`, the exceptions and the warning classes). A new keyword argument
+  `CallSite`, `QueryGuardFixture`, the exceptions and the warning classes). A new keyword argument
   with a default, or a new attribute, is not a breaking change.
   Each of these reports `pytest_queryguard` as its `__module__`, so tracebacks,
   reprs, pickles and `filterwarnings` entries use the documented import path
   (`pytest_queryguard.NPlusOneDetected`, not the submodule it lives in).
 - The pytest integration: the ini options (`queryguard_*`), the command-line
   flags (`--queryguard-*`, `--no-queryguard-*`), their defaults and accepted
-  values, and the markers (`max_queries`, `max_db_time`, `allow_nplusone`,
-  `allow_missing_index`).
+  values, the markers (`max_queries`, `max_db_time`, `allow_nplusone`,
+  `allow_missing_index`) and the `queryguard` fixture.
 - The meaning of the finding kinds and of the labels and patterns used by
   `queryguard_ignore` and `allow_nplusone`, so that an existing ignore keeps
   matching the same finding.

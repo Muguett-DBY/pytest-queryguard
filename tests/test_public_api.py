@@ -27,16 +27,19 @@ EXPECTED_ALL = [
     "Query",
     "QueryBudgetExceeded",
     "QueryGuardDeprecationWarning",
+    "QueryGuardFixture",
     "QueryGuardInternalWarning",
     "QueryGuardWarning",
     "QueryLog",
     "__version__",
+    "ignore",
     "max_db_time",
     "max_queries",
     "record_queries",
 ]
 
 EXPECTED_FUNCTIONS = {
+    "ignore": "(*kinds: 'str', reason: 'str | None' = None) -> 'IgnoreBlock'",
     "max_db_time": "(seconds: 'float') -> 'AbstractContextManager[QueryLog]'",
     "max_queries": "(limit: 'int') -> 'AbstractContextManager[QueryLog]'",
     "record_queries": "() -> 'AbstractContextManager[QueryLog]'",
@@ -48,13 +51,19 @@ EXPECTED_BASES = {
     "Query": "object",
     "QueryBudgetExceeded": "AssertionError",
     "QueryGuardDeprecationWarning": "DeprecationWarning",
+    "QueryGuardFixture": "object",
     "QueryGuardInternalWarning": "UserWarning",
     "QueryGuardWarning": "UserWarning",
     "QueryLog": "object",
 }
 
 EXPECTED_DATACLASS_FIELDS = {
-    "CallSite": [("filename", "str"), ("lineno", "int"), ("function", "str")],
+    "CallSite": [
+        ("filename", "str"),
+        ("lineno", "int"),
+        ("function", "str"),
+        ("callers", "tuple[CallSite, ...]"),
+    ],
     "Query": [
         ("sql", "str"),
         ("callsite", "CallSite | None"),
@@ -82,12 +91,21 @@ EXPECTED_QUERYLOG = {
     "slowest": "(self, n: 'int' = 5) -> 'tuple[Query, ...]'",
 }
 
+# Public members of QueryGuardFixture, what the queryguard fixture gives a test.
+EXPECTED_FIXTURE = {
+    "count": "property",
+    "max_queries": "(self, limit: 'int') -> 'AbstractContextManager[QueryLog]'",
+    "num_queries": "(self, expected: 'int') -> 'AbstractContextManager[QueryLog]'",
+    "queries": "property",
+}
+
 EXPECTED_INI = {
     "queryguard_mode": "fail",
     "queryguard_relationship_threshold": "2",
     "queryguard_repeat_threshold": "5",
     "queryguard_column_load_threshold": "5",
     "queryguard_max_events": "10000",
+    "queryguard_stack_depth": "3",
     "queryguard_small_repeat_threshold": "0",
     "queryguard_repeat_scope": "test",
     "queryguard_write_loop_threshold": "0",
@@ -190,6 +208,15 @@ def _public_members(cls: type) -> dict[str, str]:
 
 def test_querylog_public_members() -> None:
     assert _public_members(pytest_queryguard.QueryLog) == EXPECTED_QUERYLOG
+
+
+def test_queryguard_fixture_public_members() -> None:
+    assert _public_members(pytest_queryguard.QueryGuardFixture) == EXPECTED_FIXTURE
+
+
+def test_queryguard_fixture_name(pytester: pytest.Pytester) -> None:
+    text = _help_lines(pytester, "--fixtures")
+    assert re.search(r"^queryguard -- ", text, re.MULTILINE), text
 
 
 def _help_lines(pytester: pytest.Pytester, *args: str) -> str:

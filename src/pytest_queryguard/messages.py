@@ -29,6 +29,7 @@ from .findings import (
     KIND_WRITE_LOOP,
     Finding,
     IndexAdvice,
+    Stack,
     docs_url,
 )
 from .indexes import table_label
@@ -98,9 +99,22 @@ def _location(site: CallSite, cwd: Path | None) -> str:
     return f"{_display_path(site.filename, cwd)}:{site.lineno} in {site.function}"
 
 
-def _first_at(site: CallSite | None, cwd: Path | None) -> str:
+def _stack(site: CallSite | None, cwd: Path | None) -> Stack:
+    """The callers of ``site`` as (file, line, function), innermost first."""
+    if site is None:
+        return ()
+    return tuple(
+        (_display_path(c.filename, cwd), c.lineno, c.function) for c in site.callers
+    )
+
+
+def _first_at(site: CallSite | None, stack: Stack, cwd: Path | None) -> list[str]:
+    """The ``first at`` line, and a ``called from`` line for each caller."""
     where = "<unknown location>" if site is None else _location(site, cwd)
-    return f"  first at {where}"
+    return [
+        f"  first at {where}",
+        *(f"    called from {file}:{line} in {func}" for file, line, func in stack),
+    ]
 
 
 def kind_line(kind: str, label: str) -> str:
@@ -153,13 +167,15 @@ def _parent_query(finding: RelationshipFinding) -> str:
     return f"select({finding.parent_root}).options({'.'.join([*steps, loader])})"
 
 
-def _relationship_block(finding: RelationshipFinding, cwd: Path | None) -> list[str]:
+def _relationship_block(
+    finding: RelationshipFinding, stack: Stack, cwd: Path | None
+) -> list[str]:
     lines = [
         (
             f"  {finding.relationship} was lazy-loaded {finding.count} times"
             f"{_across(finding, 'Sessions')}{_in_one(finding, 'Session')}"
         ),
-        _first_at(finding.first, cwd),
+        *_first_at(finding.first, stack, cwd),
     ]
     if finding.parent_site is not None:
         others = finding.other_parent_sites
@@ -179,20 +195,20 @@ def _relationship_block(finding: RelationshipFinding, cwd: Path | None) -> list[
     ]
 
 
-def _block(finding: Detection, cwd: Path | None) -> list[str]:
+def _block(finding: Detection, stack: Stack, cwd: Path | None) -> list[str]:
     if isinstance(finding, RelationshipFinding):
-        return _relationship_block(finding, cwd)
+        return _relationship_block(finding, stack, cwd)
     if isinstance(finding, ColumnLoadFinding):
-        return _column_block(finding, cwd)
+        return _column_block(finding, stack, cwd)
     if isinstance(finding, WriteLoopFinding):
-        return _write_block(finding, cwd)
+        return _write_block(finding, stack, cwd)
     how = " with different parameters" if finding.varying else ""
     where = _across(finding, "Sessions or connection checkouts") + _in_one(
         finding, "Session or connection checkout"
     )
     return [
         f"  the same statement ran {finding.count} times{how}{where}",
-        _first_at(finding.first, cwd),
+        *_first_at(finding.first, stack, cwd),
         _statement_line(finding),
         docs_line(KIND_REPEAT),
         *_scope_hint(finding),
@@ -216,14 +232,16 @@ _WRITE_FIX = {
 }
 
 
-def _write_block(finding: WriteLoopFinding, cwd: Path | None) -> list[str]:
+def _write_block(
+    finding: WriteLoopFinding, stack: Stack, cwd: Path | None
+) -> list[str]:
     return [
         (
             f"  the same {finding.verb} ran {finding.count} times, one row at a "
             f"time{_across(finding, 'Sessions or connection checkouts')}"
             f"{_in_one(finding, 'Session or connection checkout')}"
         ),
-        _first_at(finding.first, cwd),
+        *_first_at(finding.first, stack, cwd),
         _statement_line(finding),
         docs_line(KIND_WRITE_LOOP),
         *_scope_hint(finding),
@@ -231,7 +249,9 @@ def _write_block(finding: WriteLoopFinding, cwd: Path | None) -> list[str]:
     ]
 
 
-def _column_block(finding: ColumnLoadFinding, cwd: Path | None) -> list[str]:
+def _column_block(
+    finding: ColumnLoadFinding, stack: Stack, cwd: Path | None
+) -> list[str]:
     owner = finding.owner
     count = (
         f"{finding.count} times for {finding.instances} instances"
@@ -272,7 +292,7 @@ def _column_block(finding: ColumnLoadFinding, cwd: Path | None) -> list[str]:
     kind, label = _kind_label(finding)
     lines = [
         head,
-        _first_at(finding.first, cwd),
+        *_first_at(finding.first, stack, cwd),
         kind_line(kind, label),
         docs_line(kind),
     ]
@@ -284,15 +304,17 @@ def _column_block(finding: ColumnLoadFinding, cwd: Path | None) -> list[str]:
 def make_finding(detection: Detection, *, cwd: Path | None = None) -> Finding:
     """The finding for one detector result, its message rendered for ``cwd``."""
     site = detection.first
+    stack = _stack(site, cwd)
     kind, label = _kind_label(detection)
     return Finding(
         kind=kind,
         label=label,
         file=None if site is None else _display_path(site.filename, cwd),
         function=None if site is None else site.function,
-        message="\n".join(_block(detection, cwd)),
+        message="\n".join(_block(detection, stack, cwd)),
         line=None if site is None else site.lineno,
         count=detection.count,
+        stack=stack,
     )
 
 
@@ -313,8 +335,8 @@ def format_strict(finding: Finding, parents: int) -> str:
             "",
             finding.message,
             "",
-            "  (queryguard_strict raises at the lazy load; allow_nplusone or",
-            "  queryguard_ignore lets it pass, as for the report)",
+            "  (queryguard_strict raises at the lazy load; allow_nplusone,",
+            "  queryguard_ignore or an ignore() block lets it pass, as for the report)",
         ]
     )
 
@@ -390,19 +412,23 @@ def format_budget(
     total: int | None = None,
     db_time: float | None = None,
     source: str | None = None,
+    exact: bool = False,
 ) -> str:
     """The budget failure; ``total`` is the real count when not all are stored.
 
     ``db_time`` is the real database time when not all statements are stored;
-    ``source`` says where the limit comes from when it is not a marker.
+    ``source`` says where the limit comes from when it is not a marker;
+    ``exact`` is for a budget that fewer statements fail too.
     """
     shown = len(statements)
     got = shown if total is None else total
     noun = "query" if limit == 1 else "queries"
-    lines = [f"queryguard: expected at most {limit} {noun}, got {got}"]
+    bound = "exactly" if exact else "at most"
+    lines = [f"queryguard: expected {bound} {limit} {noun}, got {got}"]
     if source is not None:
         lines.append(f"  (the limit is {source})")
-    lines.append("")
+    if got:  # an exact budget fails with none too
+        lines.append("")
     for number, stmt in enumerate(statements, start=1):
         line = f"  {number}. {_truncate(stmt.sql)}"
         if stmt.callsite is not None:
@@ -479,7 +505,7 @@ def _advice_lines(advice: Advice) -> list[str]:
     return lines
 
 
-def _scan_block(scan: ScanEvent, cwd: Path | None) -> list[str]:
+def _scan_block(scan: ScanEvent, stack: Stack, cwd: Path | None) -> list[str]:
     issue = scan.issue
     table = table_label(issue)
     where = f"with {issue.kind}"
@@ -504,7 +530,7 @@ def _scan_block(scan: ScanEvent, cwd: Path | None) -> list[str]:
         head = f"  {table} is read in full: {issue.node} {where} {condition}"
     return [
         head,
-        _first_at(scan.callsite, cwd),
+        *_first_at(scan.callsite, stack, cwd),
         kind_line(KIND_MISSING_INDEX, table),
         docs_line(KIND_MISSING_INDEX),
         f"  sql: {_truncate(scan.sql)}",
@@ -534,15 +560,17 @@ def _index_advice(issue: ScanIssue) -> IndexAdvice | None:
 def make_index_finding(scan: ScanEvent, *, cwd: Path | None = None) -> Finding:
     """The finding for one missing-index scan, its message rendered for ``cwd``."""
     site = scan.callsite
+    stack = _stack(site, cwd)
     return Finding(
         kind=KIND_MISSING_INDEX,
         label=table_label(scan.issue),
         file=None if site is None else _display_path(site.filename, cwd),
         function=None if site is None else site.function,
-        message="\n".join(_scan_block(scan, cwd)),
+        message="\n".join(_scan_block(scan, stack, cwd)),
         line=None if site is None else site.lineno,
         advice=_index_advice(scan.issue),
         table=(scan.issue.schema, scan.issue.table),
+        stack=stack,
     )
 
 
@@ -607,9 +635,14 @@ def format_failure(failure: Failure) -> list[str]:
 
 
 def format_stale_ignores(
-    patterns: Sequence[object], markers: Sequence[tuple[str, object]]
+    patterns: Sequence[object],
+    markers: Sequence[tuple[str, object]],
+    blocks: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
-    """The session summary lines for ignores that matched no finding."""
+    """The session summary lines for ignores that matched no finding.
+
+    ``blocks`` are ignore() blocks as ("file:line", "ignore('kind')").
+    """
     lines: list[str] = []
     if patterns:
         lines.append("queryguard_ignore patterns that matched no finding in this run:")
@@ -617,6 +650,9 @@ def format_stale_ignores(
     if markers:
         lines.append("allow_nplusone patterns that matched no finding in their test:")
         lines.extend(f"  {nodeid}: {rule}" for nodeid, rule in markers)
+    if blocks:
+        lines.append("ignore() blocks that left out no finding in this run:")
+        lines.extend(f"  {where}: {text}" for where, text in blocks)
     if lines:
         lines.append("Remove them if the finding is fixed, or fix a mistyped pattern.")
     return lines

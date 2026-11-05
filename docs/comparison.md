@@ -75,7 +75,7 @@ and restricts commercial use. Read it before you adopt it.
 | Missing-index check | PostgreSQL 16+, SQLite, and MySQL and MariaDB (tested in CI on MySQL 8.4 and MariaDB 11.8), with a `CREATE INDEX`; hypopg verification on PostgreSQL (v) | none: no EXPLAIN code in the installed package (v) | PostgreSQL only, `no_seq_scan`, with a `CREATE INDEX` suggestion (v) | no | no | no | no |
 | Unused eager loads | experimental, off by default (v) | no, deliberately (r) | no | yes, for Flask-SQLAlchemy and Django per its README (r) | no (r) | no | no |
 | Row-by-row write loops | opt-in (v) | not reported (v) | not reported (v) | no | no | no | no |
-| Per-finding ignore | marker, ini patterns and baseline (v); no `with` block | marker and an `ignore()` block (v) | `ignore=` for the index check only (r) | whitelist and an `ignore` block (r) | allow-list and an ignore block; since 2.3.0 an opt-in check for unused `zeal_ignore` blocks (r) | no | no |
+| Per-finding ignore | marker, ini patterns, baseline and an `ignore()` block (v) | marker and an `ignore()` block (v) | `ignore=` for the index check only (r) | whitelist and an `ignore` block (r) | allow-list and an ignore block; since 2.3.0 an opt-in check for unused `zeal_ignore` blocks (r) | no | no |
 | In-app middleware and request panel | yes, experimental since 0.5.0: ASGI and WSGI, optional panel (v) | yes: ASGI and WSGI, optional panel (v: modules present) | no | Django, Flask-SQLAlchemy, WSGI (r) | Django middleware (r) | yes, FastAPI middleware (r) | no |
 | Async SQLAlchemy | yes (v) | yes (v) | yes (v) | no | no | not stated | yes, through `sync_engine` (r) |
 | pytest-xdist | tested in CI | not stated | summary per worker; budgets and N+1 unaffected (r) | not stated | not stated | not stated | not stated |
@@ -107,8 +107,6 @@ not work.
 - **Exact SQL assertions and snapshots.** pytest-capquery asserts the exact
   statements and transaction events of a block and keeps `.sql` snapshots;
   pytest-queryguard looks for patterns and does not assert exact SQL.
-- **A `with` block to ignore findings.** queryspy has an `ignore()` block; here
-  you use a marker, an ini pattern or a baseline.
 - **A missing-index check exists elsewhere too.** pytest-querycount has its
   own PostgreSQL check, based on the same idea (plan with sequential scans
   disabled); pytest-queryguard is not alone in having one.

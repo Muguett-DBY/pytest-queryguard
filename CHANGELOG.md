@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Each finding shows a short stack: under `first at`, a `called from` line
+  for each line of your code that called it, innermost first, up to the test,
+  with SQLAlchemy, pytest and plugin frames left out, so the path through
+  helpers is visible. `queryguard_stack_depth` sets how many (3 by default,
+  `0` for none). The SARIF file carries them as a code flow, which GitHub
+  shows as the path to the alert, and the JSON file as `stack` on each
+  finding, and `CallSite.callers` of `record_queries()` has them too. They
+  are recorded once per line and test, not per statement (#226).
+- A `queryguard` fixture for budgets inside a test:
+  `with queryguard.max_queries(3):` fails above 3 statements,
+  `with queryguard.num_queries(3):` unless exactly 3 (pytest-django's
+  `django_assert_max_num_queries` and `django_assert_num_queries`), both with
+  `QueryBudgetExceeded` and a `QueryLog` of the block. The blocks count only
+  the statements of the test's own thread or asyncio task (and of tasks and
+  threads that run in a copy of its context). `queryguard.queries` and
+  `queryguard.count` are the statements the test function has run so far,
+  from every thread. `QueryGuardFixture` is its type for hints (#233).
+- `pytest_queryguard.ignore(*kinds, reason=None)`, a `with` block (and a
+  decorator) that leaves out the findings of those kinds made inside it, in a
+  test or in the application code: `with ignore("relationship-load"):`. A
+  finding is left out only when everything it counts ran inside the block, in
+  the thread or asyncio task that entered it (or a task created inside it);
+  threads started inside the block are not covered unless they run in a copy
+  of the context. Strict mode does not raise inside it, and
+  `log.assert_no_nplusone()` and the in-application mode honour it too; past
+  `queryguard_max_events` it leaves nothing out. A block that left out
+  nothing in the whole run, for a kind that was checked, is listed under
+  "stale ignores" with its file and line, also with pytest-xdist (#234).
+
 ### Changed
 
 - CI runs the MySQL and MariaDB index check against live servers: a `mysql`
