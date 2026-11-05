@@ -29,6 +29,7 @@ from .findings import (
     KIND_WRITE_LOOP,
     Finding,
     IndexAdvice,
+    docs_url,
 )
 from .indexes import table_label
 from .listeners import Failure
@@ -107,6 +108,11 @@ def kind_line(kind: str, label: str) -> str:
     return f"  kind: {kind}  label: {label}"
 
 
+def docs_line(kind: str) -> str:
+    """The line with the documentation of a finding kind, after its kind line."""
+    return f"  docs: {docs_url(kind)}"
+
+
 def _kind_label(detection: Detection) -> tuple[str, str]:
     if isinstance(detection, RelationshipFinding):
         return KIND_RELATIONSHIP, detection.relationship
@@ -161,7 +167,8 @@ def _relationship_block(finding: RelationshipFinding, cwd: Path | None) -> list[
         if others:
             more = f" and {others} other place{'s' if others > 1 else ''}"
         lines.append(f"  parents loaded at {_location(finding.parent_site, cwd)}{more}")
-    lines.append(kind_line(*_kind_label(finding)))
+    kind, label = _kind_label(finding)
+    lines.extend((kind_line(kind, label), docs_line(kind)))
     if finding.sample_sql is not None:
         lines.append(f"  sql: {_truncate(finding.sample_sql)}")
     return [
@@ -187,6 +194,7 @@ def _block(finding: Detection, cwd: Path | None) -> list[str]:
         f"  the same statement ran {finding.count} times{how}{where}",
         _first_at(finding.first, cwd),
         _statement_line(finding),
+        docs_line(KIND_REPEAT),
         *_scope_hint(finding),
         f"  {_BATCHED_FIX if _IN_LIST in finding.sql else _REPEAT_FIX}",
     ]
@@ -217,6 +225,7 @@ def _write_block(finding: WriteLoopFinding, cwd: Path | None) -> list[str]:
         ),
         _first_at(finding.first, cwd),
         _statement_line(finding),
+        docs_line(KIND_WRITE_LOOP),
         *_scope_hint(finding),
         *_WRITE_FIX.get(finding.verb, _WRITE_FIX["INSERT"]),
     ]
@@ -260,7 +269,13 @@ def _column_block(finding: ColumnLoadFinding, cwd: Path | None) -> list[str]:
                 "or load the instances again with one query"
             ),
         ]
-    lines = [head, _first_at(finding.first, cwd), kind_line(*_kind_label(finding))]
+    kind, label = _kind_label(finding)
+    lines = [
+        head,
+        _first_at(finding.first, cwd),
+        kind_line(kind, label),
+        docs_line(kind),
+    ]
     if finding.sample_sql is not None:
         lines.append(f"  sql: {_truncate(finding.sample_sql)}")
     return [*lines, *_scope_hint(finding), *fix]
@@ -495,6 +510,7 @@ def _scan_block(scan: ScanEvent, cwd: Path | None) -> list[str]:
         head,
         _first_at(scan.callsite, cwd),
         kind_line(KIND_MISSING_INDEX, table),
+        docs_line(KIND_MISSING_INDEX),
         f"  sql: {_truncate(scan.sql)}",
         *fix,
     ]

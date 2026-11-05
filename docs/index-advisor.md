@@ -38,6 +38,7 @@ queryguard: missing index
   orders is read in full: Seq Scan with filter ((orders.customer_id = $1) AND ((orders.status)::text = ($2)::text))
   first at app/orders.py:16 in recent_open_orders
   kind: missing-index  label: orders
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#missing-index
   sql: SELECT orders.id, orders.customer_id, orders.status, orders.created_at FROM orders WHERE orders.customer_id = %s::INTEGER AND orders.status = %s::VARCHAR ORDER BY orders.created_at DESC LIMIT %s::INTE...
   fix: CREATE INDEX ON orders (customer_id, status, created_at DESC)
   alembic: op.create_index(

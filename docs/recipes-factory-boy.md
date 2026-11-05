@@ -200,12 +200,14 @@ queryguard: N+1 detected
   the same INSERT ran 10 times, one row at a time
   first at tests/test_orders.py:10 in test_seeded_in_the_body
   kind: write-loop  label: INSERT INTO customer (name) VALUES (?)
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#write-loop
   fix: write the rows together: session.add_all(rows) and one flush, or
        session.execute(insert(Model), [{...}, {...}]) for a bulk insert
 
   the same INSERT ran 10 times, one row at a time
   first at tests/test_orders.py:10 in test_seeded_in_the_body
   kind: write-loop  label: INSERT INTO orders (customer_id) VALUES (?)
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#write-loop
   fix: write the rows together: session.add_all(rows) and one flush, or
        session.execute(insert(Model), [{...}, {...}]) for a bulk insert
 ```
@@ -221,6 +223,7 @@ queryguard: N+1 detected
   the same INSERT ran 10 times, one row at a time
   first at app/orders.py:15 in import_customers
   kind: write-loop  label: INSERT INTO customer (name) VALUES (?)
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#write-loop
   fix: write the rows together: session.add_all(rows) and one flush, or
        session.execute(insert(Model), [{...}, {...}]) for a bulk insert
 ```
