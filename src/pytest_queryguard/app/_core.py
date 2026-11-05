@@ -28,6 +28,7 @@ from typing import Any, ParamSpec, TypeVar
 
 from ..api import Query, _to_query
 from ..blocks import Sieve
+from ..callsite import Sites
 from ..collector import QueryCollector
 from ..detectors import SCOPE_SESSION, SCOPE_TEST, detect
 from ..findings import Finding
@@ -379,6 +380,7 @@ class Tracker:
         "active",
         "report",
         "settings",
+        "sites",
         "warning",
     )
 
@@ -406,6 +408,10 @@ class Tracker:
         collector = QueryCollector(max_events=settings.max_events) if sampled else _NONE
         self.active = Active(collector, self)
         self._token: contextvars.Token[Active | None] | None = None
+        # The unit's own call sites: each line's callers are those of its
+        # first run in this unit, not in another unit that ran it earlier or
+        # runs it at the same time.
+        self.sites: Sites = {}
         self._started = time.perf_counter()
         # The QueryGuardWarning a warning filter turned into an error, for the
         # caller to raise once the unit itself has ended without an exception.

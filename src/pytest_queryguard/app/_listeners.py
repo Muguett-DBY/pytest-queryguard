@@ -98,7 +98,7 @@ def _on_orm_execute(state: ORMExecuteState) -> None:
         rel = RelationshipLoadEvent(
             str(prop),
             key,
-            find_callsite(),
+            find_callsite(active.tracker.sites),
             getattr(prop, "uselist", None) is False,
             scope_of_session(state.session),
             ignores=blocks.current(),
@@ -171,7 +171,7 @@ def _on_before_cursor_execute(
                 collector.add_column_load(col)
         stmt = StatementEvent(
             statement,
-            find_callsite(),
+            find_callsite(active.tracker.sites),
             rel.relationship if rel is not None else None,
             column_load=col is not None,
             parameters=None if executemany else parameters,

@@ -318,7 +318,7 @@ def test_an_internal_error_switches_the_mode_off_but_not_the_app(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    def broken() -> None:
+    def broken(sites: object = None) -> None:
         raise RuntimeError("callsite bug")
 
     monkeypatch.setattr(_listeners, "find_callsite", broken)
