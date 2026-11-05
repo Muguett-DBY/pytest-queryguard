@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `queryguard_max_queries` gives every test without a `max_queries` marker a
+  default query budget (#232).
+- A budget file: `pytest --queryguard-budgets=queryguard-budgets.json
+  --queryguard-update-budgets` records each test's query count, and with
+  `queryguard_budgets` set a test that runs more queries than its entry
+  fails, saying where the limit comes from. An update on part of the suite
+  keeps the other entries, one on the whole suite drops tests that no longer
+  exist, one that stops early writes nothing; pytest-xdist included. The order
+  is marker, file, default (#232, #244).
 - On a pull request the GitHub Action compares the per-test query counts with
   the latest run on the base branch and writes the result to the job summary
   and to one pull-request comment, updated on later pushes: tests that run

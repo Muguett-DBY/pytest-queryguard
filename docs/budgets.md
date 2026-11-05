@@ -29,6 +29,62 @@ all statements, writes included, and they always fail, whatever
 `queryguard_mode` is set to. If the test already fails on its own, an
 exceeded budget is not reported, because the original failure wins.
 
+## A default budget for every test
+
+```ini
+[pytest]
+queryguard_max_queries = 20
+```
+
+Every test without a `max_queries` marker (and without an entry in the
+budget file below) gets this budget. A test above it fails with the usual
+budget report and the line
+`(the limit is queryguard_max_queries, the default budget of tests without one)`.
+Empty, the default, means no default budget.
+
+## Lock today's counts: the budget file
+
+A suite that already exists rarely has a sensible number per test. Record
+the numbers it has today, commit them, and every test that starts running
+more queries fails from then on:
+
+```bash
+pytest --queryguard-budgets=queryguard-budgets.json --queryguard-update-budgets
+git add queryguard-budgets.json
+```
+
+```ini
+[pytest]
+queryguard_budgets = queryguard-budgets.json
+```
+
+```json
+{
+  "format": 1,
+  "budgets": {
+    "tests/test_orders.py::test_list": 3,
+    "tests/test_orders.py::test_detail": 2
+  }
+}
+```
+
+- A failure says where its limit comes from:
+  `(the limit is the budget of this test in queryguard-budgets.json; if the new count is right, update it with --queryguard-update-budgets)`.
+- The order is: a `max_queries` marker, then the file, then
+  `queryguard_max_queries`.
+- A test that runs fewer queries passes. Run the update again to lower its
+  number (the summary says how many entries were added, removed, raised and
+  lowered), so the file only tightens unless someone raises a number on
+  purpose.
+- An update on part of the suite (`-k`, a path, `--lf`) keeps the entries of
+  the tests that did not run; an update on the whole suite drops the entries
+  of tests that no longer exist. An update that stops early (`-x`, Ctrl-C, a
+  collection error) does not write the file. It works the same with
+  pytest-xdist.
+- While the file is being updated its old numbers are not applied.
+- The file has node ids, so a renamed or reparametrized test loses its entry
+  until the next update.
+
 ## Query budgets with the `max_queries()` context manager
 
 ```python

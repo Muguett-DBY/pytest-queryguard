@@ -14,6 +14,8 @@
 | `queryguard_max_events` | integer ≥ 0 | `10000` | Statements (and relationship loads) stored per test for reports. Beyond it they are only counted, and the report says so. `0` stores everything. |
 | `queryguard_ignore` | patterns, one per line | empty | Findings to leave out of reports: `KIND LABEL [file=GLOB] [function=GLOB]`, see [Opting out](ignoring.md). |
 | `queryguard_baseline` | path | empty | Baseline file, relative to the rootdir: findings listed in it do not fail or warn, see [Baseline](baseline.md). |
+| `queryguard_budgets` | path | empty | Budget file, relative to the rootdir: each test listed in it fails above its number of queries, see [Budgets](budgets.md#lock-todays-counts-the-budget-file). |
+| `queryguard_max_queries` | integer | empty | Default query budget of every test without a `max_queries` marker or an entry in the budget file. |
 | `queryguard_index_check` | `true`, `false` | `false` | Checks each `SELECT` for a missing index (PostgreSQL 16 or newer, and `SELECT`, `UPDATE` and `DELETE` on SQLite, MySQL and MariaDB). |
 | `queryguard_index_advisor` | `true`, `false` | `true` | Suggests an index for each missing-index finding, see [Index advisor](index-advisor.md). Used with the index check. |
 | `queryguard_hypopg` | `auto`, `on`, `off` | `auto` | Verifies the suggested indexes with the hypopg extension: `auto` when it is installed, `on` also creates it inside the check's savepoint, `off` never uses it. |
@@ -81,6 +83,8 @@ Command-line options:
 | `--queryguard-sarif=PATH` | Writes the findings of this run to `PATH` as SARIF 2.1.0. |
 | `--queryguard-json=PATH` | Writes each test's statement counts (total and by verb), database time and findings to `PATH` as JSON, to compare runs. See [CI](ci.md#query-counts-as-json). |
 | `--queryguard-update-baseline` | Writes the findings of this run to the baseline file instead of reporting them. |
+| `--queryguard-budgets=PATH` | Budget file for this run; overrides `queryguard_budgets`. |
+| `--queryguard-update-budgets` | Writes each test's query count of this run to the budget file. |
 | `--queryguard-index-check` | Turns the missing-index check on for this run. |
 | `--no-queryguard-index-check` | Turns the missing-index check off for this run, whatever `queryguard_index_check` says. |
 
