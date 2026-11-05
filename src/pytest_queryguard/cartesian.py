@@ -179,7 +179,7 @@ def _option(path: Path_, last: str) -> str:
 
 def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Finding]:
     """One finding per combination of collections, with the statements counted."""
-    from .messages import _display_path, _location, kind_line
+    from .messages import _display_path, _location, docs_line, kind_line
 
     grouped: dict[tuple[Path_, ...], list[CartesianLoadEvent]] = {}
     for load in c.cartesian_loads:
@@ -200,6 +200,7 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
                 f"  {' and '.join(names)} were joined into one query side by side, {times}",
                 f"  first at {where}",
                 kind_line(KIND_CARTESIAN_LOAD, label(collections)),
+                docs_line(KIND_CARTESIAN_LOAD),
                 "  each row repeats per pair of their items: the rows grow as "
                 "their product"
                 if len(collections) == 2

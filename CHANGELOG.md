@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-05
+
+This release adds strict mode (raise at the lazy load), a new finding kind,
+`cartesian-load`, a default query budget and a budget file written from a run,
+per-test JSON output and a pull-request comparison of query counts in the
+GitHub Action, a link to the documentation in every finding, and a summary
+that names a finding of many tests once. In-app `track()` works as a
+decorator, with `async with` and with `start()`/`stop()`.
+
+Upgrading from 0.5.0: `cartesian-load` warns by default. A suite that turns
+warnings into errors (`filterwarnings = error`) and has such a query fails
+after the upgrade; fix the query, ignore the finding, or set
+`queryguard_cartesian_load = off`. Everything else is opt-in.
+
 ### Added
 
 - `scripts/compare/run.py` measures the overhead of pytest-queryguard,
@@ -1910,7 +1924,8 @@ First release.
 - An internal error disables the plugin with a single warning instead of
   failing the test suite.
 
-[Unreleased]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0rc3...v0.5.0
 [0.5.0rc3]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0rc2...v0.5.0rc3
 [0.5.0rc2]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0rc1...v0.5.0rc2
