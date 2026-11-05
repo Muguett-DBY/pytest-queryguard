@@ -267,30 +267,22 @@ def unused(tracker: Tracker) -> list[EagerLoad]:
     return found
 
 
-def _display(site: CallSite | None, cwd: Path | None) -> tuple[str | None, str]:
-    from .messages import _display_path, _location
-
-    if site is None:
-        return None, "  first at <unknown location>"
-    return _display_path(site.filename, cwd), f"  first at {_location(site, cwd)}"
-
-
 def findings(tracker: Tracker, *, cwd: Path | None = None) -> list[Finding]:
     """One finding per eager load the test body never read; never raises."""
     if _broken:
         return []
     try:
-        from .messages import docs_line, kind_line
+        from .messages import _display_path, _first_at, _stack, docs_line, kind_line
 
         result: list[Finding] = []
         for load in unused(tracker):
             site = load.callsite
-            file, where = _display(site, cwd)
+            stack = _stack(site, cwd)
             option = f"{load.loader}({load.label})"
             message = "\n".join(
                 [
                     f"  {load.label} was loaded with {load.loader} and never read",
-                    where,
+                    *_first_at(site, stack, cwd),
                     kind_line(KIND_UNUSED_EAGER_LOAD, load.label),
                     docs_line(KIND_UNUSED_EAGER_LOAD),
                     f"  fix: remove {option} from the query, or load it only where used",
@@ -303,10 +295,11 @@ def findings(tracker: Tracker, *, cwd: Path | None = None) -> list[Finding]:
                 Finding(
                     kind=KIND_UNUSED_EAGER_LOAD,
                     label=load.label,
-                    file=file,
+                    file=None if site is None else _display_path(site.filename, cwd),
                     function=None if site is None else site.function,
                     message=message,
                     line=None if site is None else site.lineno,
+                    stack=stack,
                 )
             )
         return result

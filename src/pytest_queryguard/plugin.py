@@ -20,7 +20,7 @@ from . import cartesian, catalog, eager, hypopg, indexes, sarif, testjson
 from . import groups as finding_groups
 from .api import NPlusOneDetected
 from .baseline import BaselineError, Identity, sorted_identities
-from .callsite import trim_to_user_code
+from .callsite import DEFAULT_STACK_DEPTH, swap_stack_depth, trim_to_user_code
 from .collector import QueryCollector, pop, push
 from .detectors import (
     DEFAULT_COLUMN_LOAD_THRESHOLD,
@@ -77,6 +77,7 @@ _outer_stopped = pytest.StashKey[str | None]()
 _outer_catalog_error = pytest.StashKey[str | None]()
 _outer_no_plpgsql = pytest.StashKey[indexes.EngineSet]()
 _outer_root = pytest.StashKey[Path | None]()
+_outer_stack_depth = pytest.StashKey[int]()
 _settings = pytest.StashKey["_Settings"]()
 _report = pytest.StashKey[list[tuple[str, int]]]()
 _index_notes = pytest.StashKey["_IndexNotes"]()
@@ -356,6 +357,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         **_INT_TYPE,
     )
     parser.addini(
+        "queryguard_stack_depth",
+        "Callers shown under the first location of a finding (integer >= 0, "
+        "0 for none)",
+        default=DEFAULT_STACK_DEPTH if _NATIVE_INT else str(DEFAULT_STACK_DEPTH),
+        **_INT_TYPE,
+    )
+    parser.addini(
         "queryguard_ignore",
         "Findings to leave out of reports, one per line: "
         "KIND LABEL [file=GLOB] [function=GLOB] (fnmatch patterns)",
@@ -551,6 +559,21 @@ def _max_events(config: pytest.Config) -> int | None:
     if value < 0:
         raise pytest.UsageError(f"{name} must be an integer >= 0, got {raw!r}")
     return value or None
+
+
+def _stack_depth(config: pytest.Config) -> int:
+    name = "queryguard_stack_depth"
+    try:
+        raw: Any = config.getini(name)
+    except (TypeError, ValueError) as exc:
+        raise pytest.UsageError(f"{name} must be an integer >= 0: {exc}") from None
+    try:
+        value = -1 if isinstance(raw, bool) else int(raw)
+    except (TypeError, ValueError):
+        value = -1
+    if value < 0:
+        raise pytest.UsageError(f"{name} must be an integer >= 0, got {raw!r}")
+    return value
 
 
 def _ignore_rules(config: pytest.Config) -> tuple[IgnoreRule, ...]:
@@ -865,6 +888,7 @@ def _configure(config: pytest.Config) -> None:
     # A nested session (pytester) may change the database; start afresh.
     catalog.reset()
     settings = _read_settings(config)
+    config.stash[_outer_stack_depth] = swap_stack_depth(_stack_depth(config))
     config.stash[_settings] = settings
     _active.append(settings)
     if (
@@ -926,6 +950,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
             stash.get(_outer_no_plpgsql, indexes.EngineSet())
         ),
         lambda: swap_root(stash.get(_outer_root, None)),
+        lambda: _restore_stack_depth(config),
         catalog.reset,
     )
     for step in steps:
@@ -938,6 +963,12 @@ def pytest_unconfigure(config: pytest.Config) -> None:
                     f"pytest-queryguard could not clean up after the session: {exc!r}"
                 )
             )
+
+
+def _restore_stack_depth(config: pytest.Config) -> None:
+    if _outer_stack_depth in config.stash:
+        swap_stack_depth(config.stash[_outer_stack_depth])
+        del config.stash[_outer_stack_depth]
 
 
 def _disable_cartesian(config: pytest.Config) -> None:

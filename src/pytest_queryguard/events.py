@@ -7,11 +7,18 @@ from .partial import PartialIndex
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CallSite:
-    """A source location. Its fields are public API; its constructor is not."""
+    """A source location. Its fields are public API; its constructor is not.
+
+    ``callers`` are the application lines that called it, innermost first, up
+    to the test (``queryguard_stack_depth`` of them), as seen the first time
+    the line ran in the measurement. They are not part of the location's
+    identity.
+    """
 
     filename: str
     lineno: int
     function: str
+    callers: tuple[CallSite, ...] = field(default=(), compare=False, repr=False)
 
 
 @dataclass(slots=True, frozen=True)
