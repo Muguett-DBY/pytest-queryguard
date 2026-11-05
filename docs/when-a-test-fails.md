@@ -72,6 +72,22 @@ pytest --queryguard-baseline=/tmp/findings.json --queryguard-update-baseline
 The SARIF file (`--queryguard-sarif=PATH`) carries the `kind:` line in each
 message and the kind as the `queryguard/<kind>` rule id.
 
+### The same finding in many tests
+
+A loop in a shared helper or fixture fails every test that runs it, and each
+of them prints the same block. After the run, the summary names such a
+finding once:
+
+```
+========== queryguard: the same finding in several tests ==========
+   30 tests  relationship-load  Order.customer  (900 times in total, first in tests/test_orders.py::test_list[0])
+fix it once where it starts; each test above reports it on its own
+```
+
+A finding is listed when two tests or more reported it, grouped by kind and
+label wherever it was found, the most tests first. Ignored and baselined
+findings are not counted. It works the same with pytest-xdist.
+
 ## 2. Is it real?
 
 Most findings are real: the code ran one statement per row, and the test
