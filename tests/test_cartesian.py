@@ -11,6 +11,7 @@ from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
     contains_eager,
+    defaultload,
     joinedload,
     lazyload,
     mapped_column,
@@ -96,6 +97,29 @@ def _found(statement: Any) -> str | None:
             ),
             "Customer.notes + Order.items",
         ),
+        (
+            # each lazy load of orders joins items and tags side by side
+            select(Customer).options(
+                defaultload(Customer.orders).joinedload(Order.items),
+                defaultload(Customer.orders).joinedload(Order.tags),
+            ),
+            "Order.items + Order.tags",
+        ),
+        (
+            select(Customer).options(
+                lazyload(Customer.orders).joinedload(Order.items),
+                lazyload(Customer.orders).joinedload(Order.tags),
+            ),
+            "Order.items + Order.tags",
+        ),
+        (
+            # the product is orders x notes; items only chain below orders
+            select(Customer).options(
+                joinedload(Customer.orders).joinedload(Order.items),
+                joinedload(Customer.notes),
+            ),
+            "Customer.notes + Customer.orders",
+        ),
     ],
 )
 def test_collections_side_by_side_are_found(statement: Any, expected: str) -> None:
@@ -121,6 +145,10 @@ def test_collections_side_by_side_are_found(statement: Any, expected: str) -> No
             lazyload(Customer.orders).joinedload(Order.items),
             joinedload(Customer.notes),
         ),
+        select(Customer).options(joinedload(Customer.orders).joinedload("*")),
+        select(Customer, Order).options(
+            joinedload(Customer.notes), joinedload(Order.items)
+        ),
         select(Customer)
         .join(Customer.orders)
         .join(Customer.notes)
@@ -133,7 +161,9 @@ def test_collections_side_by_side_are_found(statement: Any, expected: str) -> No
         "joined-and-subquery",
         "different-statements",
         "scalar",
-        "not-loaded-step",
+        "lazy-step-and-joined",
+        "wildcard",
+        "two-entities",
         "contains-eager",
         "no-options",
     ],
@@ -225,3 +255,69 @@ def test_off_and_ignore_silence_it(project: pytest.Pytester) -> None:
         result = project.runpytest_subprocess("-p", "no:cacheprovider", "-W", "default")
         result.assert_outcomes(passed=2)
         assert "cartesian" not in result.stdout.str()
+
+
+def test_the_fix_names_the_loaders_on_the_way() -> None:
+    from pytest_queryguard.cartesian import _option
+
+    found = _collections(
+        select(Customer)
+        .options(
+            selectinload(Customer.orders).joinedload(Order.items),
+            selectinload(Customer.orders).joinedload(Order.tags),
+        )
+        ._with_options
+    )
+    assert found is not None
+    keep, split = found[1]
+    assert _option(keep, "joinedload") == (
+        "selectinload(Customer.orders).joinedload(Order.items)"
+    )
+    assert _option(split, "selectinload") == (
+        "selectinload(Customer.orders).selectinload(Order.tags)"
+    )
+
+
+BROKEN = """
+from sqlalchemy.orm import joinedload
+from qgmodels import Order, make_sync_session
+
+
+def test_wildcard_and_nplusone():
+    session = make_sync_session()
+    session.query(Order).options(joinedload("*")).all()
+    session.expunge_all()
+    for order in session.query(Order).all():
+        _ = order.customer.name
+"""
+
+
+def test_a_wildcard_does_not_stop_the_measurement(pytester: pytest.Pytester) -> None:
+    models = (Path(__file__).parent / "models.py").read_text()
+    pytester.makepyfile(qgmodels=models, test_w=BROKEN)
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*Order.customer was lazy-loaded*"])
+    assert "QueryGuardInternalWarning" not in result.stdout.str()
+
+
+def test_an_error_in_the_check_turns_off_only_the_check(
+    pytester: pytest.Pytester,
+) -> None:
+    models = (Path(__file__).parent / "models.py").read_text()
+    pytester.makepyfile(qgmodels=models, test_w=BROKEN)
+    pytester.makeconftest(
+        "import pytest_queryguard.cartesian as c\n"
+        "def _boom(options):\n"
+        "    raise RuntimeError('parser')\n"
+        "c._collections = _boom\n"
+    )
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-W", "default")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "*Order.customer was lazy-loaded*",
+            "*disabled the cartesian-load check after an internal error*",
+        ]
+    )
+    assert "measurement stopped" not in result.stdout.str()

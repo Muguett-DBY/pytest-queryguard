@@ -7,13 +7,16 @@ notes are 400 rows for one customer. EF Core warns about this ("multiple
 collection includes"); this module does the same for SQLAlchemy.
 
 The check reads the loader options of each top-level ORM SELECT, as the
-unused eager-load check does. It flags a statement when two collections are
-loaded with ``joinedload`` through joins only (no ``selectinload`` or
-``subqueryload`` on the way, which would start a separate query) and neither
-is on the path of the other: ``joinedload(A.bs).joinedload(B.cs)`` is a chain
-whose rows grow with the number of ``cs``, not a product, and is left alone.
-Loader strategies set on the mapping (``relationship(lazy="joined")``) are not
-options of the query and are not seen.
+unused eager-load check does (``eager.loader_paths``). The options split into
+statements wherever a step is not joined: a ``selectinload``, a
+``subqueryload``, or a ``defaultload``/``lazyload`` of a lazy relationship
+runs a SELECT of its own. Inside one statement, two joined collections are a
+product when neither is on the path of the other; the finding names the
+topmost collection of each of the two branches. ``joinedload(A.bs)
+.joinedload(B.cs)`` is a chain whose rows grow with the number of ``cs``, not
+a product, and is left alone. Loader strategies set on the mapping
+(``relationship(lazy="joined")``) are not options of the query and are not
+seen, except on a ``defaultload()`` step.
 """
 
 from __future__ import annotations
@@ -24,85 +27,94 @@ from typing import Any
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from . import collector
+from . import collector, listeners
 from .callsite import find_callsite
+from .eager import LOADERS, loader_paths
 from .events import CartesianLoadEvent
 from .findings import KIND_CARTESIAN_LOAD, Finding
+from .warnings import QueryGuardInternalWarning, warn_internal
 
 _enabled = 0
-
-
-_LOADERS = {
-    "joined": "joinedload",
-    "selectin": "selectinload",
-    "subquery": "subqueryload",
-    "immediate": "immediateload",
-}
+_broken = False
 
 # A path of a loader option chain: (Class.relationship, loader) per step.
 Path_ = tuple[tuple[str, str], ...]
+# steps that load nothing: their children are never loaded either
+_NOT_LOADED = frozenset(("noload", "raise", "raise_on_sql"))
+_OPTION_NAMES = {**LOADERS, "select": "lazyload"}
+
+
+def _effective(strategy: str | None, prop: Any) -> str:
+    """The strategy a step really uses: defaultload() keeps the mapping's."""
+    if strategy is not None:
+        return strategy
+    lazy = getattr(prop, "lazy", "select")
+    return lazy if isinstance(lazy, str) else "select"
 
 
 def _collections(options: Any) -> tuple[str, tuple[Path_, ...]] | None:
-    """(root class, joined collection paths) when two of them are side by side.
-
-    The options split into statements where a step is not joined (a
-    ``selectinload`` runs its own SELECT); two joined collections are side
-    by side when they are in the same statement and neither is on the path
-    of the other.
-    """
-    strategies: dict[tuple[Any, ...], str] = {}
-    root = None
-    for option in options:
-        for element in getattr(option, "context", ()):
-            strategy = getattr(element, "strategy", None)
-            path = getattr(getattr(element, "path", None), "path", None)
-            if not strategy or not path or len(path) < 3 or strategy[0][0] != "lazy":
-                continue
-            if "eager_from_alias" in getattr(element, "local_opts", {}):
-                continue  # contains_eager(): the query joins on purpose
-            strategies[tuple(path[1::2])] = str(strategy[0][1])
-            if root is None:
-                root = getattr(path[0], "class_", None)
-    # joined collection paths by the statement that loads them: the prefix up
-    # to the last step that is not joined
+    """(root class, collection paths) of the first product among the options."""
+    strategies: dict[tuple[Any, ...], tuple[str, str | None]] = {}
+    roots: dict[tuple[Any, ...], Any] = {}
+    for path, strategy in loader_paths(options):
+        key = (path[0], *path[1::2])
+        strategies[key] = (_effective(strategy, path[-2]), strategy)
+        roots[key] = path[0]
+    # joined collections by the statement that loads them: the root mapper
+    # and the prefix up to the last step that is not joined
     statements: dict[tuple[Any, ...], list[tuple[Any, ...]]] = {}
-    for props, name in strategies.items():
+    for key, (name, _) in strategies.items():
+        props = key[1:]
         if name != "joined" or not props[-1].uselist:
             continue
-        steps = [strategies.get(props[:i]) for i in range(1, len(props))]
-        if any(step is None or step not in _LOADERS for step in steps):
-            continue  # a step that is not loaded (lazyload, noload, raiseload)
+        steps = [
+            strategies.get(key[: i + 1], (_effective(None, props[i - 1]), None))[0]
+            for i in range(1, len(props))
+        ]
+        if any(step in _NOT_LOADED for step in steps):
+            continue
         start = max(
             (i for i, step in enumerate(steps, 1) if step != "joined"), default=0
         )
-        statements.setdefault(props[:start], []).append(props)
-    side_by_side: set[tuple[Any, ...]] = set()
-    for joined in statements.values():
-        for a in joined:
-            for b in joined:
-                if a is not b and a[: len(b)] != b and b[: len(a)] != a:
-                    side_by_side.add(a)
-    if not side_by_side or root is None:
-        return None
-    paths = tuple(
-        sorted(
-            tuple(
-                (
-                    f"{p.parent.class_.__name__}.{p.key}",
-                    _LOADERS[strategies[props[: i + 1]]],
-                )
-                for i, p in enumerate(props)
-            )
-            for props in side_by_side
-        )
-    )
-    return root.__name__, paths
+        statements.setdefault((key[0], *props[:start]), []).append(key)
+    for keys in statements.values():
+        for i, a in enumerate(keys):
+            for b in keys[i + 1 :]:
+                pair = _branches(a, b)
+                if pair is not None:
+                    paths = tuple(sorted(_path(k, strategies) for k in pair))
+                    return roots[a].class_.__name__, paths
+    return None
+
+
+def _branches(a: tuple[Any, ...], b: tuple[Any, ...]) -> tuple[Any, Any] | None:
+    """The topmost collection of each branch where ``a`` and ``b`` part, if any."""
+    common = 0
+    while common < min(len(a), len(b)) and a[common] is b[common]:
+        common += 1
+    if common in (len(a), len(b)):
+        return None  # one is on the path of the other: a chain
+    tops = []
+    for key in (a, b):
+        start = max(common, 1)  # key[0] is the root mapper
+        top = next(key[: i + 1] for i in range(start, len(key)) if key[i].uselist)
+        tops.append(top)
+    return tops[0], tops[1]
+
+
+def _path(key: tuple[Any, ...], strategies: dict[Any, tuple[str, str | None]]) -> Path_:
+    steps = []
+    for i in range(1, len(key)):
+        prop = key[i]
+        given = strategies.get(key[: i + 1], ("select", None))[1]
+        loader = "defaultload" if given is None else _OPTION_NAMES.get(given, given)
+        steps.append((f"{prop.parent.class_.__name__}.{prop.key}", loader))
+    return tuple(steps)
 
 
 def _on_orm_execute(state: Any) -> None:
     active = collector.active()
-    if not active:
+    if not active or _broken or listeners._error is not None:
         return
     try:
         # most statements have no loader options: one attribute read, then out
@@ -118,9 +130,24 @@ def _on_orm_execute(state: Any) -> None:
         for c in active:
             c.add_cartesian_load(load)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
-        from .listeners import record_error
+        _broke(exc)
 
-        record_error(exc, "do_orm_execute listener (cartesian loads)")
+
+def _broke(exc: Exception) -> None:
+    """Turn this check off for the rest of the process, once, and say so.
+
+    The other checks go on: a loader option the parser does not know must not
+    stop the measurement of the whole suite.
+    """
+    global _broken
+    if not _broken:
+        _broken = True
+        warn_internal(
+            QueryGuardInternalWarning(
+                f"pytest-queryguard disabled the cartesian-load check after an "
+                f"internal error: {exc!r}"
+            )
+        )
 
 
 def enable() -> None:

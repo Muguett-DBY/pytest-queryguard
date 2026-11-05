@@ -45,6 +45,7 @@ class QueryCollector:
     statement_count: int = 0
     relationship_load_count: int = 0
     column_load_count: int = 0
+    cartesian_load_count: int = 0
     # Seconds the statements took, all of them, stored or only counted.
     db_time: float = 0.0
     # Guards the counters and the length checks on a free-threaded build.
@@ -59,6 +60,7 @@ class QueryCollector:
             self.statement_count > len(self.statements)
             or self.relationship_load_count > len(self.relationship_loads)
             or self.column_load_count > len(self.column_loads)
+            or self.cartesian_load_count > len(self.cartesian_loads)
         )
 
     def add_statement(self, event: StatementEvent) -> None:
@@ -100,13 +102,18 @@ class QueryCollector:
             self.column_loads.append(event)
 
     def add_cartesian_load(self, event: CartesianLoadEvent) -> None:
-        if self.max_events is not None and len(self.cartesian_loads) >= self.max_events:
-            return
         if _FREE_THREADED:
             with self._lock:
-                self.cartesian_loads.append(event)
+                self.cartesian_load_count += 1
+                if (
+                    self.max_events is None
+                    or len(self.cartesian_loads) < self.max_events
+                ):
+                    self.cartesian_loads.append(event)
             return
-        self.cartesian_loads.append(event)
+        self.cartesian_load_count += 1
+        if self.max_events is None or len(self.cartesian_loads) < self.max_events:
+            self.cartesian_loads.append(event)
 
     def add_db_time(self, seconds: float) -> None:
         if _FREE_THREADED:

@@ -306,8 +306,18 @@ statement in which two collections are loaded with `joinedload` side by side:
   and `...joinedload(Order.tags)` are a product inside that second SELECT and
   are reported, while `joinedload(Customer.orders)` with
   `selectinload(Customer.notes)` is not.
+- a `defaultload()` or `lazyload()` step runs the relationship's own loader,
+  usually a lazy load with a SELECT of its own, so
+  `defaultload(Customer.orders).joinedload(Order.items)` with
+  `...joinedload(Order.tags)` is a product inside each lazy load and is
+  reported.
 - `contains_eager()` is left out: a query that joins on purpose to filter
-  chose its rows.
+  chose its rows. So are wildcards (`joinedload("*")`) and a select of
+  several entities whose collections belong to different entities.
+- With a chain next to a collection,
+  `joinedload(Customer.orders).joinedload(Order.items)` and
+  `joinedload(Customer.notes)`, the product is orders x notes: the finding
+  names the topmost collection of each branch.
 
 The label names the collections, `Customer.notes + Customer.orders`; the fix
 keeps one `joinedload` and turns the others into `selectinload`, one more
