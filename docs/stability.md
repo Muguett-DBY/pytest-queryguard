@@ -114,7 +114,8 @@ defaults, labels or messages, or remove them, with a changelog entry under
 - The in-application mode: every name in `pytest_queryguard.app` (`watch`,
   `unwatch`, `is_watched`, `QueryGuardASGI`, `QueryGuardWSGI`, `track`,
   `set_route`, `Settings`, `RequestReport`, `Finding`, `Query`, `CallSite`,
-  `internal_error`) and the panel's JSON. See
+  `internal_error`, `opentelemetry_reporter`, `sentry_reporter`) and the
+  panel's JSON. See
   [In-application mode](in-app.md).
 
 Everything else listed under "What is public" follows the deprecation policy.

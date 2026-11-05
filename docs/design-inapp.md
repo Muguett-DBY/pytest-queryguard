@@ -39,7 +39,7 @@ one test runs at a time, but it cannot run inside a development server:
 6. An optional development panel (JSON and a self-contained HTML page).
 7. The pytest plugin keeps its behaviour, its listeners and its tests.
 
-Non-goals: production monitoring, sampling, persistence, user accounts or
+Non-goals: production monitoring, persistence, user accounts or
 roles for the panel, the missing-index check (it runs `EXPLAIN` on the request's
 connection; that belongs in tests), and framework-specific integrations
 beyond pure ASGI and WSGI.
@@ -65,7 +65,8 @@ with queryguard.track("nightly-job") as report:  # any unit of work
 | `track(name, *, settings)` | Everything watched that runs in this context is one unit, reported when it ends: a `with`/`async with` block (yields a live `RequestReport`), a decorator (one unit per call; coroutine and generator functions included), or `start()`/`stop()` for hooks that begin and end a unit separately. |
 | `QueryGuardASGI(app, ...)` | Pure ASGI middleware: one `track()` per `http` request. |
 | `QueryGuardWSGI(app, ...)` | WSGI middleware: the same for WSGI. |
-| `Settings` | Thresholds, `repeat_scope`, `budgets`, `default_budget`, `report`, `max_events`. |
+| `Settings` | Thresholds, `repeat_scope`, `budgets`, `default_budget`, `report`, `max_events`, `sample_rate`, `min_db_time`. |
+| `opentelemetry_reporter()`, `sentry_reporter()` | Ready-made `report` callables: events on the current OpenTelemetry span, Sentry messages fingerprinted by the finding's identity. |
 | `RequestReport` | Method, path, route, status, statements (`Query`), times, findings (`Finding`), budget. |
 | `set_route(template)` | Names the route of the current request for budgets (Flask). |
 | `internal_error()` | The error that switched the in-app mode off, or None. |
@@ -139,6 +140,18 @@ with queryguard.track("nightly-job") as report:  # any unit of work
 
 - **Memory.** `max_events` (default 1000) caps the statements kept per
   request; past it they are only counted, as in the plugin.
+
+- **Sampling.** `sample_rate` decides per unit, with `random.random()`, when
+  the unit starts. The middleware then creates no tracker at all; `track()`
+  creates one that is finished from the start, so `finish()` reports
+  nothing. Its `Active` points at the enclosing unit's collector and tracker
+  (or at itself, so `live()` drops the statements, when there is none), with
+  `owner` set so `__exit__` still ends its own unit. `min_db_time` compares the unit's total `db_time`, since a
+  finding has no time of its own; below it the detectors do not run.
+
+- **Reporters.** `opentelemetry_reporter()` and `sentry_reporter()` are plain
+  `report` callables (`app/_reporters.py`); they import their library when
+  created and go through the same error handling as any callable.
 
 ## 5. Risks
 

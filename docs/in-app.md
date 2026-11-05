@@ -262,6 +262,8 @@ arguments, or one `queryguard.Settings(...)` object as `settings=`.
 | `default_budget` | None | The budget of a request no key matches |
 | `report` | `"log"` | `"log"`, `"warn"`, a callable, or a list of them |
 | `max_events` | 1000 | Statements stored per request; more are counted, not stored |
+| `sample_rate` | 1.0 | Fraction of requests measured, from 0 to 1 |
+| `min_db_time` | 0.0 | Seconds of database time below which a request's N+1 rules do not run |
 
 The rules are the plugin's; see [How detection works](how-detection-works.md).
 The missing-index check does not run in the application.
@@ -309,6 +311,81 @@ middleware_options = {"report": ["log", to_my_tracker]}
 ```
 
 An exception in a callable is logged and does not reach the request.
+
+**Sampling and fast requests.** `sample_rate=0.1` measures one request in
+ten, chosen at random; the others run as if the middleware were not there
+(no collector, no report, not in the panel), and their statements cost the
+watched engine's listeners one `ContextVar.get()` each. A `track()` unit
+left out the same way yields a `RequestReport` with `sampled=False` and
+nothing in it; statements inside it still count for an enclosing request or
+unit that was measured.
+
+`min_db_time=0.005` skips the N+1 rules for a request whose database time
+was below 5 ms. The value compares `RequestReport.db_time`: the summed
+duration of every statement the request ran on watched engines, stored or
+only counted, from the cursor execute to its end (a statement that raises
+adds nothing). It is not the time of the
+finding's own statements, which queryguard does not total: an N+1 of five
+fast lazy loads in a request with one slow query is still reported. Such a
+request has no findings, and it is reported only when it is over its budget;
+budgets do not depend on `min_db_time`.
+
+## Reporting to OpenTelemetry and Sentry
+
+Two ready-made `report` callables send findings to the tools you may already
+watch. Each imports its library when you create it, so a missing package
+raises `ImportError` at startup; neither library is a dependency of
+pytest-queryguard. Like any callable, an exception inside one (a Sentry
+outage) is logged and does not reach the request.
+
+```python
+from pytest_queryguard import app as queryguard
+
+app.add_middleware(
+    queryguard.QueryGuardASGI,
+    report=[
+        "log",
+        queryguard.opentelemetry_reporter(),
+        queryguard.sentry_reporter(),
+    ],
+)
+```
+
+`opentelemetry_reporter()` (needs `opentelemetry-api`) writes to the span
+that is current when the request ends (for a `track()` unit, the span
+around the block), so the OpenTelemetry instrumentation must wrap the
+queryguard middleware: wrap the `OpenTelemetryMiddleware` of the ASGI or
+WSGI instrumentation around it, or instrument FastAPI with
+`FastAPIInstrumentor` after adding queryguard. Nothing is written when no
+span is recording, for example when the request's span has already ended.
+A WSGI request read to the end is reported while its body is iterated; one
+closed before its end is reported from `close()`, which the WSGI
+instrumentation may call outside its span, so such a report can miss it. The span gets the attributes
+`queryguard.statement_count`, `queryguard.db_time` (seconds),
+`queryguard.findings` (how many), `queryguard.budget` (when there is one)
+and `queryguard.over_budget`; each finding adds a `queryguard.finding` event
+with `queryguard.kind`, `queryguard.label`, `queryguard.file`,
+`queryguard.line`, `queryguard.function`, `queryguard.count` and
+`queryguard.fingerprint`, and a request over budget a `queryguard.budget`
+event with `queryguard.budget` and `queryguard.statement_count`. Attributes
+without a value (a finding with an unknown call site) are left out.
+
+`sentry_reporter(level="warning")` (needs `sentry-sdk`, initialized with
+`sentry_sdk.init()` as usual) sends one `capture_message` per finding, titled
+`queryguard: <kind> <label>`. Its fingerprint is
+`["queryguard", <fingerprint>]`, where the fingerprint is the SHA-256 of the
+finding's identity (kind, label, file and function), as in the
+[SARIF file](sarif.md), so one N+1 stays one Sentry issue across requests,
+counts and line numbers. Each message has the tag `queryguard.kind` and a
+`queryguard` context with the request (`name`, `method`, `path`, `route`,
+`status`, `statement_count`, `db_time`, `budget`) and the finding (`file`,
+`line`, `function`, `count` and the full `message`). A request over budget
+sends one more message, `queryguard: <route> ran <n> statements, budget <b>`,
+grouped by method and route; without a route (WSGI without `set_route()`,
+a `track()` unit) by method alone, with the path in the title and context.
+
+Both report only what the `report` targets get: requests with findings or
+over their budget.
 
 ## The panel
 

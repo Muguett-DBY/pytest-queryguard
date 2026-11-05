@@ -315,7 +315,7 @@ def _log_raised(warning: Warning) -> None:
 
 
 def _start(settings: Settings, environ: Environ) -> Tracker | None:
-    if _core._error is not None:
+    if _core._error is not None or not _core.sampled(settings):
         return None
     try:
         method = environ.get("REQUEST_METHOD")
