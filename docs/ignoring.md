@@ -113,13 +113,14 @@ queryguard_ignore = [
 
 or, for one test, `@pytest.mark.allow_nplusone("Order.customer",
 stack="app/admin/export.py:export_orders")`. A test that calls `names()` from
-a view still fails.
+a view still fails (unless it went through the export first, see below).
 
 `stack` matches when any frame of the stack the report shows matches it: the
-`first at` line and each `called from` line under it. A frame matches as its
-file (`app/admin/*`, `vendor/*`) or as `file:function`
-(`app/admin/export.py:export_orders`, `*:export_*`), with the file written as
-for `file`: relative to the rootdir, with forward slashes. The kind, the label and any `file` and `function` must match too.
+`first at` line and each `called from` line under it. A pattern without a
+colon matches the frame's file (`app/admin/*`, `vendor/*`); one with a colon
+also matches `file:function` (`app/admin/export.py:export_orders`,
+`*:export_*`). The file is written as the report prints it, like for `file`:
+relative to the rootdir, with forward slashes. The kind, the label and any `file` and `function` must match too.
 
 The limits are those of the report:
 
@@ -133,7 +134,8 @@ The limits are those of the report:
   library.
 - The stack is recorded the first time a line runs in a test. When one test
   reaches the helper from two places, the finding has the stack of the first,
-  and only that one is matched.
+  and only that one is matched: a test that runs the export and then the view
+  has its N+1 left out, also the loads made through the view.
 
 The stack is not part of a finding's identity, so a [baseline](baseline.md)
 entry still matches by kind, label, file and function.

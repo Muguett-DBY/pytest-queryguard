@@ -155,7 +155,14 @@ def test_stack_matches_any_frame_as_file_or_file_function(pattern: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "pattern", ["app/admin/*", "*:list_users", "export_orders", "app/api/views.py:x"]
+    "pattern",
+    [
+        "app/admin/*",
+        "*:list_users",
+        "export_orders",
+        "app/api/views.py:x",
+        "*export*",  # a glob without a colon is matched against files only
+    ],
 )
 def test_stack_matches_no_other_frame(pattern: str) -> None:
     assert not IgnoreRule("*", "*", stack=pattern).matches(_finding(stack=STACK))
@@ -166,11 +173,15 @@ def test_stack_needs_every_other_field_to_match_too() -> None:
     assert not rule.matches(_finding(stack=STACK))
 
 
-def test_stack_of_an_unknown_location_is_only_its_callers() -> None:
+def test_stack_of_an_unknown_location_matches_nothing() -> None:
     unknown = _finding(file=None, function=None)
     assert not IgnoreRule("*", "*", stack="*").matches(unknown)
-    caller = IgnoreRule("*", "*", stack="app/api/views.py")
-    assert caller.matches(_finding(file=None, function=None, stack=STACK))
+
+
+def test_stack_matches_a_first_location_without_a_function() -> None:
+    finding = _finding(function=None)
+    assert IgnoreRule("*", "*", stack="app/api/*").matches(finding)
+    assert IgnoreRule("*", "*", stack="app/api/orders.py:").matches(finding)
 
 
 def test_apply_rules_returns_kept_findings_and_used_rules() -> None:

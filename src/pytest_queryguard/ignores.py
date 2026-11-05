@@ -41,8 +41,8 @@ class IgnoreRule:
 
     ``stack`` matches when any frame of the finding's stack as the report
     shows it (the first location, then the ``called from`` lines, so no
-    deeper than ``queryguard_stack_depth``) matches it as ``file`` or as
-    ``file:function``; None means any stack.
+    deeper than ``queryguard_stack_depth``) matches it: as ``file``, or, for a
+    pattern with a colon, also as ``file:function``; None means any stack.
     """
 
     kind: str
@@ -87,15 +87,21 @@ class IgnoreRule:
         return text
 
 
+def _frame_matches(file: str, function: str | None, pattern: str) -> bool:
+    # Only a pattern with a colon is read as file:function, so that a file glob
+    # such as *admin* does not also match a function name.
+    return fnmatchcase(file, pattern) or (
+        ":" in pattern and fnmatchcase(f"{file}:{function or ''}", pattern)
+    )
+
+
 def _stack_matches(finding: Finding, pattern: str) -> bool:
     """True when a frame of the report's stack matches as file or file:function."""
-    frames = [(file, function) for file, _, function in finding.stack]
-    if finding.file is not None and finding.function is not None:
-        frames.insert(0, (finding.file, finding.function))
-    return any(
-        fnmatchcase(file, pattern) or fnmatchcase(f"{file}:{function}", pattern)
-        for file, function in frames
-    )
+    if finding.file is not None and _frame_matches(
+        finding.file, finding.function, pattern
+    ):
+        return True
+    return any(_frame_matches(f, fn, pattern) for f, _, fn in finding.stack)
 
 
 def check_kind(kind: str) -> None:
