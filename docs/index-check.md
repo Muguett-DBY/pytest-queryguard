@@ -60,6 +60,7 @@ queryguard: missing index
   orders is read in full: Seq Scan with filter (orders.customer_id = $1)
   first at app/orders.py:11 in orders_of
   kind: missing-index  label: orders
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#missing-index
   sql: SELECT orders.id, orders.customer_id FROM orders WHERE orders.customer_id = %s::INTEGER
   fix: CREATE INDEX ON orders (customer_id)
   alembic: op.create_index("ix_orders_customer_id", "orders", ["customer_id"])
@@ -102,6 +103,7 @@ queryguard: missing index
   orders is read in full: Seq Scan with filter (orders.customer_id = $1)
   first at app/orders.py:11 in orders_of
   kind: missing-index  label: orders
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#missing-index
   sql: SELECT orders.id, orders.customer_id FROM orders WHERE orders.customer_id = $1::INTEGER
   fix: CREATE INDEX ON orders (customer_id)
   alembic: op.create_index("ix_orders_customer_id", "orders", ["customer_id"])
@@ -289,6 +291,7 @@ which SQLite had to build an automatic index:
   orders is read in full: SCAN with filter orders.customer_id = ?
   first at app/orders.py:11 in orders_of
   kind: missing-index  label: orders
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#missing-index
   fix: CREATE INDEX ix_orders_customer_id ON orders (customer_id)
 ```
 

@@ -206,6 +206,7 @@ queryguard: N+1 detected
   first at app/main.py:33 in list_orders
   parents loaded at app/main.py:32 in list_orders
   kind: relationship-load  label: Order.customer
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   fix: load it with the parent query, e.g.
        select(Order).options(joinedload(Order.customer))
@@ -218,6 +219,7 @@ queryguard: N+1 detected
   first at app/main.py:49 in list_async_orders
   parents loaded at app/main.py:48 in list_async_orders
   kind: relationship-load  label: Order.customer
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   fix: load it with the parent query, e.g.
        select(Order).options(joinedload(Order.customer))
@@ -253,6 +255,7 @@ queryguard: N+1 detected
   the same statement ran 6 times across 6 different Sessions or connection checkouts
   first at app/main.py:63 in order_detail
   kind: repeated-statement  label: SELECT orders.id, orders.customer_id FROM orders WHERE orders.id = ?
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
   loop; set queryguard_repeat_scope = session to count each Session on its
   own (QueryLog.assert_no_nplusone: repeat_scope='session')
@@ -261,6 +264,7 @@ queryguard: N+1 detected
   the same statement ran 6 times across 6 different Sessions or connection checkouts
   first at app/main.py:64 in order_detail
   kind: repeated-statement  label: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
   loop; set queryguard_repeat_scope = session to count each Session on its
   own (QueryLog.assert_no_nplusone: repeat_scope='session')
@@ -269,6 +273,7 @@ queryguard: N+1 detected
   the same statement ran 6 times across 6 different Sessions or connection checkouts
   first at app/main.py:65 in order_detail
   kind: repeated-statement  label: SELECT count(*) AS count_1 FROM orders WHERE orders.customer_id = ?
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
   loop; set queryguard_repeat_scope = session to count each Session on its
   own (QueryLog.assert_no_nplusone: repeat_scope='session')
@@ -277,6 +282,7 @@ queryguard: N+1 detected
   the same statement ran 6 times across 6 different Sessions or connection checkouts
   first at app/main.py:68 in order_detail
   kind: repeated-statement  label: SELECT count(*) AS count_1 FROM orders
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
   loop; set queryguard_repeat_scope = session to count each Session on its
   own (QueryLog.assert_no_nplusone: repeat_scope='session')

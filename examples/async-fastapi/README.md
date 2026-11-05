@@ -17,6 +17,7 @@ queryguard: N+1 detected
   first at app/main.py:37 in list_orders
   parents loaded at app/main.py:34 in list_orders
   kind: relationship-load  label: Order.customer
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   fix: load it with the parent query, e.g.
        select(Order).options(joinedload(Order.customer))
