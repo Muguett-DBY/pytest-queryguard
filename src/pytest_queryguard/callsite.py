@@ -19,14 +19,15 @@ def _package_dir(name: str) -> str | None:
     return str(Path(file).resolve().parent) + os.sep if file else None
 
 
+# Packages whose frames are never the application's. pluggy is also where the
+# walk for the callers stops (see _callers).
+_HOOK_PACKAGE = "pluggy"
+_INTERNAL_PACKAGES = ("sqlalchemy", "pytest", "_pytest", _HOOK_PACKAGE)
+
+
 def _compute_prefixes() -> tuple[str, ...]:
-    paths: list[str | None] = [
-        _package_dir("sqlalchemy"),
-        _package_dir("pytest"),
-        _package_dir("_pytest"),
-        _package_dir("pluggy"),
-        str(Path(__file__).resolve().parent) + os.sep,
-    ]
+    paths: list[str | None] = [_package_dir(name) for name in _INTERNAL_PACKAGES]
+    paths.append(str(Path(__file__).resolve().parent) + os.sep)
     for key in ("stdlib", "platstdlib"):
         path = sysconfig.get_paths().get(key)
         if path:
@@ -90,22 +91,18 @@ def _parent_greenlet_frames() -> Iterator[FrameType]:
 # is shared instead of building a new one for every statement. Bounded, so
 # generated code cannot grow it without limit. Emptied when a measurement
 # starts (new_measurement()), so that the first statement of each line in it
-# builds the CallSite again and records its callers.
+# builds a new CallSite with that run's callers.
 _sites: dict[tuple[str, int, str], CallSite] = {}
 _MAX_SITES = 4096
-# CallSite -> the application frames that called it, innermost first, as seen
-# the first time the line ran since the latest measurement started. The cost
-# is one walk up the stack per line and measurement, never one per statement.
-_stacks: dict[CallSite, tuple[CallSite, ...]] = {}
 DEFAULT_STACK_DEPTH = 3
 _stack_depth = DEFAULT_STACK_DEPTH
 
 
 def new_measurement() -> None:
-    """Record the callers of each line again, the next time it runs.
+    """Build each call site again, with its callers, the next time its line runs.
 
-    The callers recorded before stay until then: an outer measurement still
-    finds those of the lines it ran before an inner one started.
+    The CallSite objects already handed out keep their callers: an outer
+    measurement's events are not changed by an inner one starting.
     """
     _sites.clear()
 
@@ -117,33 +114,28 @@ def swap_stack_depth(depth: int) -> int:
     return old
 
 
-def stack_of(site: CallSite | None) -> tuple[CallSite, ...]:
-    """The application frames that called ``site``, innermost first."""
-    return () if site is None else _stacks.get(site, ())
+_hook_prefix: str | None = None
 
 
-_runner: tuple[str, ...] | None = None
-
-
-def _runner_prefixes() -> tuple[str, ...]:
-    global _runner
-    if _runner is None:
-        paths = (_package_dir(name) for name in ("pytest", "_pytest", "pluggy"))
-        _runner = tuple(os.path.normcase(p) for p in paths if p)
-    return _runner
+def _hook_caller() -> str:
+    """The directory of pluggy, which calls the test function and the fixtures."""
+    global _hook_prefix
+    if _hook_prefix is None:
+        _hook_prefix = os.path.normcase(_package_dir(_HOOK_PACKAGE) or "")
+    return _hook_prefix
 
 
 def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
     """Up to ``depth`` application frames from ``frame`` outwards.
 
-    The walk ends at the first frame of pytest or pluggy: above it is the
-    runner (and its console script), not the test.
+    The walk ends at the first pluggy frame: the hook call that ran the test
+    or the fixture. Above it is pytest itself and its console script.
     """
     found: list[CallSite] = []
-    runner = _runner_prefixes()
+    stop = _hook_caller()
     while frame is not None and len(found) < depth:
         code = frame.f_code
-        if runner and os.path.normcase(code.co_filename).startswith(runner):
+        if stop and os.path.normcase(code.co_filename).startswith(stop):
             break
         if not _is_internal(code.co_filename):
             found.append(
@@ -173,11 +165,11 @@ def _first_external(frame: FrameType | None) -> CallSite | None:
                 if len(_sites) >= _MAX_SITES:
                     _sites.clear()
                 site = _sites[key] = CallSite(
-                    filename=filename, lineno=key[1], function=key[2]
+                    filename=filename,
+                    lineno=key[1],
+                    function=key[2],
+                    callers=_callers(frame.f_back, _stack_depth),
                 )
-                if len(_stacks) >= _MAX_SITES:
-                    _stacks.clear()
-                _stacks[site] = _callers(frame.f_back, _stack_depth)
             return site
         frame = frame.f_back
     return None

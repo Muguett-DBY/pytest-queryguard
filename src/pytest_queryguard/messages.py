@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from .callsite import stack_of
 from .detectors import (
     ColumnLoadFinding,
     Detection,
@@ -30,6 +29,7 @@ from .findings import (
     KIND_WRITE_LOOP,
     Finding,
     IndexAdvice,
+    Stack,
 )
 from .indexes import table_label
 from .listeners import Failure
@@ -98,19 +98,21 @@ def _location(site: CallSite, cwd: Path | None) -> str:
     return f"{_display_path(site.filename, cwd)}:{site.lineno} in {site.function}"
 
 
-def _stack(site: CallSite | None, cwd: Path | None) -> tuple[tuple[str, int, str], ...]:
+def _stack(site: CallSite | None, cwd: Path | None) -> Stack:
     """The callers of ``site`` as (file, line, function), innermost first."""
+    if site is None:
+        return ()
     return tuple(
-        (_display_path(s.filename, cwd), s.lineno, s.function) for s in stack_of(site)
+        (_display_path(c.filename, cwd), c.lineno, c.function) for c in site.callers
     )
 
 
-def _first_at(site: CallSite | None, cwd: Path | None) -> list[str]:
+def _first_at(site: CallSite | None, stack: Stack, cwd: Path | None) -> list[str]:
     """The ``first at`` line, and a ``called from`` line for each caller."""
     where = "<unknown location>" if site is None else _location(site, cwd)
     return [
         f"  first at {where}",
-        *(f"    called from {_location(s, cwd)}" for s in stack_of(site)),
+        *(f"    called from {file}:{line} in {func}" for file, line, func in stack),
     ]
 
 
@@ -159,13 +161,15 @@ def _parent_query(finding: RelationshipFinding) -> str:
     return f"select({finding.parent_root}).options({'.'.join([*steps, loader])})"
 
 
-def _relationship_block(finding: RelationshipFinding, cwd: Path | None) -> list[str]:
+def _relationship_block(
+    finding: RelationshipFinding, stack: Stack, cwd: Path | None
+) -> list[str]:
     lines = [
         (
             f"  {finding.relationship} was lazy-loaded {finding.count} times"
             f"{_across(finding, 'Sessions')}{_in_one(finding, 'Session')}"
         ),
-        *_first_at(finding.first, cwd),
+        *_first_at(finding.first, stack, cwd),
     ]
     if finding.parent_site is not None:
         others = finding.other_parent_sites
@@ -184,20 +188,20 @@ def _relationship_block(finding: RelationshipFinding, cwd: Path | None) -> list[
     ]
 
 
-def _block(finding: Detection, cwd: Path | None) -> list[str]:
+def _block(finding: Detection, stack: Stack, cwd: Path | None) -> list[str]:
     if isinstance(finding, RelationshipFinding):
-        return _relationship_block(finding, cwd)
+        return _relationship_block(finding, stack, cwd)
     if isinstance(finding, ColumnLoadFinding):
-        return _column_block(finding, cwd)
+        return _column_block(finding, stack, cwd)
     if isinstance(finding, WriteLoopFinding):
-        return _write_block(finding, cwd)
+        return _write_block(finding, stack, cwd)
     how = " with different parameters" if finding.varying else ""
     where = _across(finding, "Sessions or connection checkouts") + _in_one(
         finding, "Session or connection checkout"
     )
     return [
         f"  the same statement ran {finding.count} times{how}{where}",
-        *_first_at(finding.first, cwd),
+        *_first_at(finding.first, stack, cwd),
         _statement_line(finding),
         *_scope_hint(finding),
         f"  {_BATCHED_FIX if _IN_LIST in finding.sql else _REPEAT_FIX}",
@@ -220,21 +224,25 @@ _WRITE_FIX = {
 }
 
 
-def _write_block(finding: WriteLoopFinding, cwd: Path | None) -> list[str]:
+def _write_block(
+    finding: WriteLoopFinding, stack: Stack, cwd: Path | None
+) -> list[str]:
     return [
         (
             f"  the same {finding.verb} ran {finding.count} times, one row at a "
             f"time{_across(finding, 'Sessions or connection checkouts')}"
             f"{_in_one(finding, 'Session or connection checkout')}"
         ),
-        *_first_at(finding.first, cwd),
+        *_first_at(finding.first, stack, cwd),
         _statement_line(finding),
         *_scope_hint(finding),
         *_WRITE_FIX.get(finding.verb, _WRITE_FIX["INSERT"]),
     ]
 
 
-def _column_block(finding: ColumnLoadFinding, cwd: Path | None) -> list[str]:
+def _column_block(
+    finding: ColumnLoadFinding, stack: Stack, cwd: Path | None
+) -> list[str]:
     owner = finding.owner
     count = (
         f"{finding.count} times for {finding.instances} instances"
@@ -272,7 +280,11 @@ def _column_block(finding: ColumnLoadFinding, cwd: Path | None) -> list[str]:
                 "or load the instances again with one query"
             ),
         ]
-    lines = [head, *_first_at(finding.first, cwd), kind_line(*_kind_label(finding))]
+    lines = [
+        head,
+        *_first_at(finding.first, stack, cwd),
+        kind_line(*_kind_label(finding)),
+    ]
     if finding.sample_sql is not None:
         lines.append(f"  sql: {_truncate(finding.sample_sql)}")
     return [*lines, *_scope_hint(finding), *fix]
@@ -281,16 +293,17 @@ def _column_block(finding: ColumnLoadFinding, cwd: Path | None) -> list[str]:
 def make_finding(detection: Detection, *, cwd: Path | None = None) -> Finding:
     """The finding for one detector result, its message rendered for ``cwd``."""
     site = detection.first
+    stack = _stack(site, cwd)
     kind, label = _kind_label(detection)
     return Finding(
         kind=kind,
         label=label,
         file=None if site is None else _display_path(site.filename, cwd),
         function=None if site is None else site.function,
-        message="\n".join(_block(detection, cwd)),
+        message="\n".join(_block(detection, stack, cwd)),
         line=None if site is None else site.lineno,
         count=detection.count,
-        stack=_stack(site, cwd),
+        stack=stack,
     )
 
 
@@ -477,7 +490,7 @@ def _advice_lines(advice: Advice) -> list[str]:
     return lines
 
 
-def _scan_block(scan: ScanEvent, cwd: Path | None) -> list[str]:
+def _scan_block(scan: ScanEvent, stack: Stack, cwd: Path | None) -> list[str]:
     issue = scan.issue
     table = table_label(issue)
     where = f"with {issue.kind}"
@@ -502,7 +515,7 @@ def _scan_block(scan: ScanEvent, cwd: Path | None) -> list[str]:
         head = f"  {table} is read in full: {issue.node} {where} {condition}"
     return [
         head,
-        *_first_at(scan.callsite, cwd),
+        *_first_at(scan.callsite, stack, cwd),
         kind_line(KIND_MISSING_INDEX, table),
         f"  sql: {_truncate(scan.sql)}",
         *fix,
@@ -531,16 +544,17 @@ def _index_advice(issue: ScanIssue) -> IndexAdvice | None:
 def make_index_finding(scan: ScanEvent, *, cwd: Path | None = None) -> Finding:
     """The finding for one missing-index scan, its message rendered for ``cwd``."""
     site = scan.callsite
+    stack = _stack(site, cwd)
     return Finding(
         kind=KIND_MISSING_INDEX,
         label=table_label(scan.issue),
         file=None if site is None else _display_path(site.filename, cwd),
         function=None if site is None else site.function,
-        message="\n".join(_scan_block(scan, cwd)),
+        message="\n".join(_scan_block(scan, stack, cwd)),
         line=None if site is None else site.lineno,
         advice=_index_advice(scan.issue),
         table=(scan.issue.schema, scan.issue.table),
-        stack=_stack(site, cwd),
+        stack=stack,
     )
 
 

@@ -54,7 +54,12 @@ EXPECTED_BASES = {
 }
 
 EXPECTED_DATACLASS_FIELDS = {
-    "CallSite": [("filename", "str"), ("lineno", "int"), ("function", "str")],
+    "CallSite": [
+        ("filename", "str"),
+        ("lineno", "int"),
+        ("function", "str"),
+        ("callers", "tuple[CallSite, ...]"),
+    ],
     "Query": [
         ("sql", "str"),
         ("callsite", "CallSite | None"),
@@ -88,6 +93,7 @@ EXPECTED_INI = {
     "queryguard_repeat_threshold": "5",
     "queryguard_column_load_threshold": "5",
     "queryguard_max_events": "10000",
+    "queryguard_stack_depth": "3",
     "queryguard_small_repeat_threshold": "0",
     "queryguard_repeat_scope": "test",
     "queryguard_write_loop_threshold": "0",

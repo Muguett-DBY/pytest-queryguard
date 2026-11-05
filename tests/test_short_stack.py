@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from pytest_queryguard import callsite, sarif
-from pytest_queryguard.callsite import find_callsite, stack_of
+from pytest_queryguard import CallSite, callsite, record_queries, sarif
+from pytest_queryguard.callsite import find_callsite
 from pytest_queryguard.findings import KIND_RELATIONSHIP, Finding
 
 # pytester runs sessions in-process, so the outer plugin sees their queries too.
@@ -44,11 +44,13 @@ def _line(source: str, marker: str) -> int:
 # --- recording the callers ---
 
 
-def _inner() -> object:
-    return find_callsite()
+def _inner() -> CallSite:
+    site = find_callsite()
+    assert site is not None
+    return site
 
 
-def _outer() -> object:
+def _outer() -> CallSite:
     return _inner()
 
 
@@ -60,10 +62,10 @@ def fresh() -> None:
 @pytest.mark.usefixtures("fresh")
 def test_the_callers_are_recorded_innermost_first() -> None:
     site = _outer()
-    assert site is not None and site.function == "_inner"  # type: ignore[attr-defined]
-    functions = [s.function for s in stack_of(site)]  # type: ignore[arg-type]
-    assert functions[:2] == ["_outer", "test_the_callers_are_recorded_innermost_first"]
-    assert all(s.filename.endswith("test_short_stack.py") for s in stack_of(site))  # type: ignore[arg-type]
+    assert site.function == "_inner"
+    functions = [c.function for c in site.callers]
+    assert functions == ["_outer", "test_the_callers_are_recorded_innermost_first"]
+    assert all(c.filename.endswith("test_short_stack.py") for c in site.callers)
 
 
 @pytest.mark.usefixtures("fresh")
@@ -73,7 +75,7 @@ def test_the_depth_limits_the_callers() -> None:
         site = _outer()
     finally:
         callsite.swap_stack_depth(old)
-    assert [s.function for s in stack_of(site)] == ["_outer"]  # type: ignore[arg-type]
+    assert [c.function for c in site.callers] == ["_outer"]
 
 
 @pytest.mark.usefixtures("fresh")
@@ -83,29 +85,64 @@ def test_depth_zero_records_no_callers() -> None:
         site = _outer()
     finally:
         callsite.swap_stack_depth(old)
-    assert stack_of(site) == ()  # type: ignore[arg-type]
+    assert site.callers == ()
 
 
-def _from_a() -> object:
+def test_the_callers_are_not_part_of_the_identity() -> None:
+    plain = CallSite(filename="a.py", lineno=1, function="f")
+    called = CallSite(filename="a.py", lineno=1, function="f", callers=(plain,))
+    assert plain == called and hash(plain) == hash(called)
+    assert repr(plain) == repr(called)
+
+
+def _from_a() -> CallSite:
     return _inner()
 
 
-def _from_b() -> object:
+def _from_b() -> CallSite:
     return _inner()
 
 
 @pytest.mark.usefixtures("fresh")
 def test_the_first_run_of_a_line_in_a_measurement_is_kept() -> None:
     site = _from_a()
-    assert _from_b() == site
-    assert stack_of(site)[0].function == "_from_a"  # type: ignore[arg-type]
-    callsite.new_measurement()
-    _from_b()
-    assert stack_of(site)[0].function == "_from_b"  # type: ignore[arg-type]
+    assert _from_b() is site
+    assert site.callers[0].function == "_from_a"
 
 
-def test_no_site_has_no_stack() -> None:
-    assert stack_of(None) == ()
+@pytest.mark.usefixtures("fresh")
+def test_a_nested_measurement_keeps_the_callers_of_earlier_sites() -> None:
+    site = _from_a()
+    with record_queries():  # a measurement inside the test's own
+        later = _from_b()
+    assert later == site
+    assert site.callers[0].function == "_from_a"
+    assert later.callers[0].function == "_from_b"
+
+
+def _raises_through_pytest() -> CallSite:
+    found: list[CallSite] = []
+
+    def boom() -> None:
+        found.append(_inner())
+        raise ZeroDivisionError
+
+    pytest.raises(ZeroDivisionError, boom)
+    return found[0]
+
+
+@pytest.mark.usefixtures("fresh")
+def test_pytest_frames_between_user_frames_are_skipped() -> None:
+    old = callsite.swap_stack_depth(5)
+    try:
+        site = _raises_through_pytest()
+    finally:
+        callsite.swap_stack_depth(old)
+    assert [c.function for c in site.callers] == [
+        "boom",
+        "_raises_through_pytest",
+        "test_pytest_frames_between_user_frames_are_skipped",
+    ]
 
 
 # --- the report ---
@@ -194,6 +231,52 @@ def test_sarif_and_json_carry_the_callers(project: pytest.Pytester) -> None:
         ("test_a.py", _line(HELPERS, "# page"), "page"),
         ("test_a.py", _line(HELPERS, "# first at"), "names"),
     ]
+
+
+ASYNC = """import asyncio
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+
+async def fetch(session, i):
+    return await session.execute(text("select :i"), {"i": i})  # first at
+
+
+async def page(session):
+    for i in range(6):
+        await fetch(session, i)  # page
+
+
+async def main():
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with AsyncSession(engine) as session:
+        await page(session)  # main
+    await engine.dispose()
+
+
+def test_async():
+    asyncio.run(main())  # test
+"""
+
+
+def test_async_callers_are_found_through_the_parent_greenlet(
+    pytester: pytest.Pytester,
+) -> None:
+    pytest.importorskip("aiosqlite")
+    pytest.importorskip("greenlet")
+    pytester.makepyfile(test_async_a=ASYNC)
+    result = pytester.runpytest()
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            f"  first at test_async_a.py:{_line(ASYNC, '# first at')} in fetch",
+            f"    called from test_async_a.py:{_line(ASYNC, '# page')} in page",
+            f"    called from test_async_a.py:{_line(ASYNC, '# main')} in main",
+            f"    called from test_async_a.py:{_line(ASYNC, '# test')} in test_async",
+        ],
+        consecutive=True,
+    )
 
 
 # --- SARIF without the plugin ---

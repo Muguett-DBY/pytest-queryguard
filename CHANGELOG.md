@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helpers is visible. `queryguard_stack_depth` sets how many (3 by default,
   `0` for none). The SARIF file carries them as a code flow, which GitHub
   shows as the path to the alert, and the JSON file as `stack` on each
-  finding. They are recorded once per line and test, not per statement
-  (#226).
+  finding, and `CallSite.callers` of `record_queries()` has them too. They
+  are recorded once per line and test, not per statement (#226).
 - Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
   lazy load of a relationship for the second parent loaded at one line
   (`queryguard_relationship_threshold`) raises

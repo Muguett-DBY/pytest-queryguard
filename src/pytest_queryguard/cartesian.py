@@ -188,6 +188,7 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
     for collections, loads in grouped.items():
         first = loads[0]
         site = first.callsite
+        stack = _stack(site, cwd)
         names = [path[-1][0] for path in collections]
         times = "once" if len(loads) == 1 else f"{len(loads)} times"
         keep, *split = collections
@@ -197,7 +198,7 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
         message = "\n".join(
             [
                 f"  {' and '.join(names)} were joined into one query side by side, {times}",
-                *_first_at(site, cwd),
+                *_first_at(site, stack, cwd),
                 kind_line(KIND_CARTESIAN_LOAD, label(collections)),
                 "  each row repeats per pair of their items: the rows grow as "
                 "their product"
@@ -219,7 +220,7 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
                 message=message,
                 line=None if site is None else site.lineno,
                 count=len(loads),
-                stack=_stack(site, cwd),
+                stack=stack,
             )
         )
     return result

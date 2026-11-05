@@ -13,6 +13,9 @@ KIND_CARTESIAN_LOAD = "cartesian-load"
 
 SEVERITY_ERROR = "error"
 
+# Callers of a finding's location as (file, line, function), innermost first.
+Stack = tuple[tuple[str, int, str], ...]
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IndexAdvice:
@@ -82,7 +85,7 @@ class Finding:
     # as (file, line, function) with ``file`` shown like ``file`` above. Empty
     # when unknown or turned off (queryguard_stack_depth = 0). Not part of the
     # identity.
-    stack: tuple[tuple[str, int, str], ...] = field(default=(), compare=False)
+    stack: Stack = field(default=(), compare=False)
 
     @property
     def identity(self) -> tuple[str, str, str | None, str | None]:

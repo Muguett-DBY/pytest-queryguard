@@ -277,11 +277,12 @@ def findings(tracker: Tracker, *, cwd: Path | None = None) -> list[Finding]:
         result: list[Finding] = []
         for load in unused(tracker):
             site = load.callsite
+            stack = _stack(site, cwd)
             option = f"{load.loader}({load.label})"
             message = "\n".join(
                 [
                     f"  {load.label} was loaded with {load.loader} and never read",
-                    *_first_at(site, cwd),
+                    *_first_at(site, stack, cwd),
                     kind_line(KIND_UNUSED_EAGER_LOAD, load.label),
                     f"  fix: remove {option} from the query, or load it only where used",
                     "  (experimental: if it is read later, or by code the plugin",
@@ -297,7 +298,7 @@ def findings(tracker: Tracker, *, cwd: Path | None = None) -> list[Finding]:
                     function=None if site is None else site.function,
                     message=message,
                     line=None if site is None else site.lineno,
-                    stack=_stack(site, cwd),
+                    stack=stack,
                 )
             )
         return result
