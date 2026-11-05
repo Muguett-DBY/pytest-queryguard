@@ -26,7 +26,7 @@ KINDS = (
     KIND_CARTESIAN_LOAD,
     KIND_MISSING_INDEX,
 )
-_OPTION = re.compile(r"\s+(file|function)=(\S+)$")
+_OPTION = re.compile(r"\s+(file|function|stack)=(\S+)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,12 +38,18 @@ class IgnoreRule:
     label also matches itself written out exactly, and for ``missing-index``
     any spelling of the table name (see ``tablenames``); None
     for ``file`` or ``function`` means any value, including an unknown one.
+
+    ``stack`` matches when any frame of the finding's stack as the report
+    shows it (the first location, then the ``called from`` lines, so no
+    deeper than ``queryguard_stack_depth``) matches it as ``file`` or as
+    ``file:function``; None means any stack.
     """
 
     kind: str
     label: str
     file: str | None = None
     function: str | None = None
+    stack: str | None = None
 
     def matches(self, finding: Finding) -> bool:
         if not fnmatchcase(finding.kind, self.kind):
@@ -56,10 +62,12 @@ class IgnoreRule:
             finding.file is not None and fnmatchcase(finding.file, self.file)
         ):
             return False
-        return self.function is None or (
+        if self.function is not None and not (
             finding.function is not None
             and fnmatchcase(finding.function, self.function)
-        )
+        ):
+            return False
+        return self.stack is None or _stack_matches(finding, self.stack)
 
     def _label_matches(self, finding: Finding) -> bool:
         if finding.label == self.label or fnmatchcase(finding.label, self.label):
@@ -74,7 +82,20 @@ class IgnoreRule:
             text += f" file={self.file}"
         if self.function is not None:
             text += f" function={self.function}"
+        if self.stack is not None:
+            text += f" stack={self.stack}"
         return text
+
+
+def _stack_matches(finding: Finding, pattern: str) -> bool:
+    """True when a frame of the report's stack matches as file or file:function."""
+    frames = [(file, function) for file, _, function in finding.stack]
+    if finding.file is not None and finding.function is not None:
+        frames.insert(0, (finding.file, finding.function))
+    return any(
+        fnmatchcase(file, pattern) or fnmatchcase(f"{file}:{function}", pattern)
+        for file, function in frames
+    )
 
 
 def check_kind(kind: str) -> None:
@@ -86,10 +107,10 @@ def check_kind(kind: str) -> None:
 
 
 def parse_rule(line: str) -> IgnoreRule:
-    """Parse ``KIND LABEL [file=GLOB] [function=GLOB]``.
+    """Parse ``KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB]``.
 
     The label is everything after the kind, so it may contain spaces (a
-    normalized statement). ``file=`` and ``function=`` are read from the end.
+    normalized statement). The options are read from the end.
     """
     rest = line.strip()
     options: dict[str, str] = {}
@@ -100,10 +121,17 @@ def parse_rule(line: str) -> IgnoreRule:
     label = label.strip()
     if not kind or not label:
         raise ValueError(
-            f"expected 'KIND LABEL [file=GLOB] [function=GLOB]', got {line.strip()!r}"
+            "expected 'KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB]', "
+            f"got {line.strip()!r}"
         )
     check_kind(kind)
-    return IgnoreRule(kind, label, options.get("file"), options.get("function"))
+    return IgnoreRule(
+        kind,
+        label,
+        options.get("file"),
+        options.get("function"),
+        options.get("stack"),
+    )
 
 
 def parse_rules(lines: Iterable[str]) -> tuple[IgnoreRule, ...]:

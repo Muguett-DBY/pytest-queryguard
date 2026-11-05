@@ -18,7 +18,7 @@ still enforced.
 
 To leave out one finding instead of the whole test, give the marker patterns
 (`fnmatch`, case-sensitive) for the finding's label, and optionally `kind`,
-`file` and `function`. A label written out exactly as the report prints it
+`file`, `function` and [`stack`](#matching-the-call-stack). A label written out exactly as the report prints it
 matches too, even when it holds `[` or `]`, which `fnmatch` would read as a
 character class:
 
@@ -57,7 +57,7 @@ table in every schema: `missing-index audit_log` also leaves out the finding
 labelled `audit.audit_log`.
 
 The same patterns work for the whole suite in `queryguard_ignore`, one per
-line as `KIND LABEL [file=GLOB] [function=GLOB]`:
+line as `KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB]`:
 
 ```toml
 [tool.pytest.ini_options]
@@ -82,6 +82,61 @@ relative to pytest's rootdir, with forward slashes. Findings that no longer
 exist are easy to forget, so a pattern that matched nothing in the run is
 listed in the terminal summary under "stale ignores" (not shown with
 pytest-xdist, where the workers do the matching).
+
+### Matching the call stack
+
+`file` and `function` match the line the finding is reported at, its `first
+at`. When that line is in a helper called from many places, `stack` leaves the
+finding out only when it comes through one of them. Here `names()` makes an
+N+1 that is accepted in the nightly admin export, and nowhere else:
+
+```python
+# app/orders.py
+def names(session):
+    return [order.customer.name for order in session.scalars(select(Order))]
+
+
+# app/admin/export.py
+from app import orders
+
+
+def export_orders(session):
+    return write_csv(orders.names(session))
+```
+
+```toml
+[tool.pytest.ini_options]
+queryguard_ignore = [
+    "relationship-load Order.customer stack=app/admin/*",
+]
+```
+
+or, for one test, `@pytest.mark.allow_nplusone("Order.customer",
+stack="app/admin/export.py:export_orders")`. A test that calls `names()` from
+a view still fails.
+
+`stack` matches when any frame of the stack the report shows matches it: the
+`first at` line and each `called from` line under it. A frame matches as its
+file (`app/admin/*`, `vendor/*`) or as `file:function`
+(`app/admin/export.py:export_orders`, `*:export_*`), with the file written as
+for `file`: relative to the rootdir, with forward slashes. The kind, the label and any `file` and `function` must match too.
+
+The limits are those of the report:
+
+- Only `queryguard_stack_depth` callers are recorded (3 by default), and a
+  caller further out is not matched. Raise the option when the frame you
+  name is not among the `called from` lines; with `0`, `stack` matches the
+  `first at` line only. A pattern that matches nothing is listed as stale.
+- The frames are the lines of your code: SQLAlchemy, pytest, the standard
+  library and installed packages (`site-packages`) are never in the stack, so
+  `stack` can exclude code vendored into the repository but not an installed
+  library.
+- The stack is recorded the first time a line runs in a test. When one test
+  reaches the helper from two places, the finding has the stack of the first,
+  and only that one is matched.
+
+The stack is not part of a finding's identity, so a [baseline](baseline.md)
+entry still matches by kind, label, file and function.
 
 ## The `ignore()` block
 

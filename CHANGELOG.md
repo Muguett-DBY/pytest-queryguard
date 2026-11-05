@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `queryguard_max_events` it leaves nothing out. A block that left out
   nothing in the whole run, for a kind that was checked, is listed under
   "stale ignores" with its file and line, also with pytest-xdist (#234).
+- `stack=GLOB` in `queryguard_ignore` patterns and `allow_nplusone(...,
+  stack=...)`: leaves out a finding only when some frame of its reported
+  stack (the `first at` line and its `called from` lines) matches, as `file`
+  or `file:function`, so an N+1 in a shared helper can be accepted when it
+  is called from `app/admin/*` and nowhere else. It sees as deep as
+  `queryguard_stack_depth`; the baseline still matches by kind, label, file
+  and function (#276).
 
 ## [0.6.0] - 2026-11-05
 

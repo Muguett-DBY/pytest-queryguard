@@ -381,7 +381,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addini(
         "queryguard_ignore",
         "Findings to leave out of reports, one per line: "
-        "KIND LABEL [file=GLOB] [function=GLOB] (fnmatch patterns)",
+        "KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB] (fnmatch patterns)",
         type="linelist",
         default=[],
     )
@@ -876,9 +876,9 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "allow_nplusone(*labels, kind=..., file=..., function=...): do not report "
-        "N+1 query findings for this test; with arguments, only the findings "
-        "they match (fnmatch patterns).",
+        "allow_nplusone(*labels, kind=..., file=..., function=..., stack=...): "
+        "do not report N+1 query findings for this test; with arguments, only "
+        "the findings they match (fnmatch patterns).",
     )
     config.addinivalue_line(
         "markers",
@@ -1031,12 +1031,12 @@ def _nplusone_ignores(item: pytest.Item) -> tuple[bool, tuple[IgnoreRule, ...]]:
     rules: list[IgnoreRule] = []
     for marker in item.iter_markers("allow_nplusone"):
         patterns = marker.args
-        extra = set(marker.kwargs) - {"kind", "file", "function"}
+        extra = set(marker.kwargs) - {"kind", "file", "function", "stack"}
         values = [*patterns, *marker.kwargs.values()]
         if extra or not all(isinstance(v, str) and v for v in values):
             pytest.fail(
                 f"allow_nplusone on {item.nodeid} takes label patterns and the "
-                "keywords kind, file and function, all as strings, got "
+                "keywords kind, file, function and stack, all as strings, got "
                 f"{marker.args!r} {marker.kwargs!r}",
                 pytrace=False,
             )
@@ -1055,6 +1055,7 @@ def _nplusone_ignores(item: pytest.Item) -> tuple[bool, tuple[IgnoreRule, ...]]:
                     label,
                     marker.kwargs.get("file"),
                     marker.kwargs.get("function"),
+                    marker.kwargs.get("stack"),
                 )
             )
     return ignore_all, tuple(rules)
