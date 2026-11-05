@@ -128,6 +128,12 @@ are public; the constructors of `QueryLog`, `Query` and `CallSite` are not.
 the same `QueryLog`, so `with max_queries(3) as log:` also gives `log.count`,
 `log.queries` and `log.slowest()`.
 
+The `queryguard` fixture gives the same `QueryLog` from
+`queryguard.max_queries(n)` and `queryguard.num_queries(n)` blocks, and the
+statements of the whole test as `queryguard.queries`, but counts only the
+statements of the test's own thread or asyncio task (see
+[Budgets in a test with the `queryguard` fixture](budgets.md#budgets-in-a-test-with-the-queryguard-fixture)).
+
 Recording changes nothing else. The plugin's N+1 detection, budgets and
 index check see the same statements. Like `max_queries()`, `record_queries()`
 also works outside pytest.

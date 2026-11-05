@@ -317,7 +317,7 @@ def _on_after_flush(session: Session, flush_context: Any) -> None:
     if _error is not None:
         return
     try:
-        if not collector.active():
+        if not collector.targets():
             session.__dict__.pop(_WRITTEN_ATTR, None)
             return
         session.__dict__[_WRITTEN_ATTR] = flush_record(session)
@@ -731,7 +731,7 @@ def _on_orm_execute(state: ORMExecuteState) -> None:
         return
     strict: BaseException | None = None
     try:
-        targets = collector.active()
+        targets = collector.targets()
         if not targets:
             return
         if _is_column_load(state):
@@ -803,7 +803,7 @@ def _on_cursor_execute(
     if _error is not None:
         return
     try:
-        targets = collector.active()
+        targets = collector.targets()
         if not targets:
             return
         # The ORM runs do_orm_execute before it autoflushes, so the first

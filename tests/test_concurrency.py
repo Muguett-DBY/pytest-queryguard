@@ -282,3 +282,49 @@ def test_pytest_asyncio_modes(project: pytest.Pytester, mode: str) -> None:
     assert "QueryGuardInternalWarning" not in output, output[-3000:]
     result.assert_outcomes(passed=1, failed=1)
     result.stdout.fnmatch_lines(["*test_nplusone*", "*N+1 detected*"])
+
+
+def test_queryguard_fixture_in_pytest_asyncio_tests(project: pytest.Pytester) -> None:
+    """The test's task carries the fixture's count; an async fixture's does not."""
+    pytest.importorskip("pytest_asyncio")
+    project.makepyfile(
+        test_async="""
+        import pytest
+        import pytest_asyncio
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+
+        @pytest_asyncio.fixture
+        async def conn():
+            engine = create_async_engine("sqlite+aiosqlite://")
+            async with engine.connect() as c:
+                await c.execute(text("select 'setup'"))
+                yield c
+            await engine.dispose()
+
+
+        @pytest.mark.asyncio
+        async def test_it(queryguard, conn):
+            with queryguard.num_queries(1) as log:
+                await conn.execute(text("select 'block'"))
+            await conn.execute(text("select 'after'"))
+            assert [q.sql for q in log] == ["select 'block'"]
+            assert [q.sql for q in queryguard.queries] == [
+                "select 'block'",
+                "select 'after'",
+            ]
+
+
+        @pytest.mark.asyncio
+        async def test_over(queryguard, conn):
+            with queryguard.max_queries(0):
+                await conn.execute(text("select 'block'"))
+        """
+    )
+    project.makeini(
+        "[pytest]\nasyncio_mode = strict\nasyncio_default_fixture_loop_scope = function\n"
+    )
+    result = project.runpytest_subprocess("-p", "no:randomly", timeout=300)
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["*expected at most 0 queries, got 1*"])

@@ -596,6 +596,7 @@ def test_public_names() -> None:
         "Query",
         "QueryBudgetExceeded",
         "QueryGuardDeprecationWarning",
+        "QueryGuardFixture",
         "QueryGuardInternalWarning",
         "QueryGuardWarning",
         "QueryLog",

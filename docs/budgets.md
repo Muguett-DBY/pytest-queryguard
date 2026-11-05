@@ -121,6 +121,57 @@ does not depend on pytest, so it also works in a script or a benchmark. It
 checks the budget only; N+1 detection is done by the plugin around the
 whole test.
 
+## Budgets in a test with the `queryguard` fixture
+
+```python
+def test_checkout(queryguard, service, cart):
+    with queryguard.max_queries(2):
+        service.checkout(cart)
+
+
+def test_order_page(queryguard, client):
+    with queryguard.num_queries(3) as log:  # exactly 3
+        client.get("/orders/1")
+    assert "JOIN" in log.queries[0].sql
+    assert queryguard.count >= 3  # every statement of the test so far
+```
+
+The fixture counts only the statements of the test's own thread, or of its
+asyncio task: statements that another thread runs at the same time, such as
+a background worker or a server thread, do not count. That makes it the
+equivalent of pytest-django's `django_assert_max_num_queries` and
+`django_assert_num_queries`:
+
+- `queryguard.max_queries(limit)` fails when the block runs more than
+  `limit` statements.
+- `queryguard.num_queries(expected)` fails unless it runs exactly
+  `expected`; fewer fail too.
+- Both raise `QueryBudgetExceeded` with every statement of the block and the
+  line that issued it, and yield the same `QueryLog` as
+  [`record_queries()`](python-api.md), counting the same thread, so
+  `log.assert_no_nplusone()` works on the block too. Blocks can be nested,
+  each counts its own statements, and an exception raised in the block wins
+  over the budget.
+- `queryguard.queries` is a tuple of `Query` objects, the statements the
+  test function has run in its thread so far, and `queryguard.count` their
+  number. Statements of fixtures, in their setup and teardown, are not in it.
+- An `async def` test counts the statements of its own task, including
+  those that `AsyncSession` and `create_async_engine` run for it. Tasks the
+  test creates inside a block, and threads started with
+  `asyncio.to_thread()`, inherit the count; a task created before the block
+  does not count in it. On a free-threaded build of Python 3.14 every new
+  thread inherits the context, so a thread started inside a block counts
+  there. The blocks count in whatever task they run in; `queryguard.queries`
+  for the whole test needs the test's task to be created when the test
+  function starts, as pytest-asyncio does. A runner that runs the test in a
+  task created earlier may leave it empty.
+
+To count every thread, as a FastAPI `TestClient` or a worker pool needs, use
+the `max_queries()` function or the marker above. Like them, the fixture
+fails whatever `queryguard_mode` is set to; with `queryguard_strict` an N+1
+inside a block raises `NPlusOneDetected` at the access first. In type hints
+the fixture is `pytest_queryguard.QueryGuardFixture`.
+
 ## Time budgets with `max_db_time`
 
 ```python

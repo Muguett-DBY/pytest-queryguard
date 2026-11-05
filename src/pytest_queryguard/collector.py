@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from .events import (
@@ -218,8 +219,43 @@ def active() -> tuple[QueryCollector, ...]:
     return _active
 
 
+# Collectors that count only the statements run in the context that pushed
+# them (the queryguard fixture's): the test's thread, or its asyncio task. A
+# thread started inside starts without them, unless it runs in a copy of the
+# context (asyncio.to_thread, or any thread on a free-threaded build, where
+# threads inherit the context). Their strict mode is never on and they do no
+# index check.
+_local: ContextVar[tuple[QueryCollector, ...]] = ContextVar(
+    "queryguard_local", default=()
+)
+
+
+def push_local(collector: QueryCollector) -> None:
+    global _generation
+    _generation += 1  # a new measurement, as push() starts one
+    _local.set((*_local.get(), collector))
+
+
+def pop_local(collector: QueryCollector) -> None:
+    """Take ``collector`` off; does nothing in a context that does not have it."""
+    global _generation
+    _generation += 1
+    stack = _local.get()
+    for i in range(len(stack) - 1, -1, -1):
+        if stack[i] is collector:
+            _local.set(stack[:i] + stack[i + 1 :])
+            return
+
+
+def targets() -> tuple[QueryCollector, ...]:
+    """The collectors a statement or load of this thread or task goes to."""
+    local = _local.get()
+    return (*_active, *local) if local else _active
+
+
 def _reset_for_tests() -> None:
     global _generation, _active
     _generation += 1
     _stack.clear()
     _active = ()
+    _local.set(())
