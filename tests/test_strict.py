@@ -175,12 +175,17 @@ async def main():
     engine = create_async_engine("sqlite+aiosqlite://")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    session = async_sessionmaker(engine)()
-    session.add_all([Order(id=n, customer=Customer(id=n)) for n in range(3)])
-    await session.commit()
-    session.expunge_all()
-    for order in (await session.scalars(select(Order))).all():
-        await order.awaitable_attrs.customer  # async access
+    try:
+        async with async_sessionmaker(engine)() as session:
+            session.add_all([Order(id=n, customer=Customer(id=n)) for n in range(3)])
+            await session.commit()
+            session.expunge_all()
+            for order in (await session.scalars(select(Order))).all():
+                await order.awaitable_attrs.customer  # async access
+    finally:
+        # SQLAlchemy 2.0.13 with aiosqlite 0.22 leaves the connection's
+        # thread running after an exception: the process would not exit
+        await engine.dispose()
 
 
 def test_async():
