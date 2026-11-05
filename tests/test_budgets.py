@@ -168,17 +168,19 @@ def test_context_manager_works_without_pytest() -> None:
         with engine.connect() as conn:
             with max_queries(1):
                 conn.execute(text("select 1"))
-                conn.execute(text("select 2"))
+                conn.execute(text("select 'café'"))
         """
     )
+    # Isolated mode ignores PYTHONUTF8, so select the child encoding too.
     proc = subprocess.run(
-        [sys.executable, "-I", "-c", script],
+        [sys.executable, "-I", "-X", "utf8", "-c", script],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     assert proc.returncode == 1
     assert "expected at most 1 query" in proc.stderr
+    assert "café" in proc.stderr
 
 
 def test_negative_limit_rejected() -> None:
