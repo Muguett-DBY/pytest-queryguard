@@ -317,7 +317,7 @@ def _on_after_flush(session: Session, flush_context: Any) -> None:
     if _error is not None:
         return
     try:
-        if not collector.active():
+        if not collector.full_active():
             session.__dict__.pop(_WRITTEN_ATTR, None)
             return
         session.__dict__[_WRITTEN_ATTR] = flush_record(session)
@@ -406,9 +406,10 @@ _MAX_QUERY_DEPTH = 200
 # (runid, call site) of the query whose instances were seen last: the rows of
 # one query come in one after another, so the walk runs once per query.
 _last_query: tuple[int, CallSite | None] = (0, None)
-# The live collectors; the per-row listeners only need to know if there is one,
-# without a call per row. collector.py never rebinds the list.
-_collectors = collector._stack
+# The live collectors that want loads (not the statements-only ones of the
+# queryguard fixture); the per-row listeners only need to know if there is
+# one, without a call per row. collector.py never rebinds the list.
+_collectors = collector._full_stack
 # id(statement) -> (statement, call site) of the reads of the current
 # measurement: the query context that turns a result into instances holds the
 # statement it ran, so its call site is found without a walk up the stack.
@@ -731,7 +732,8 @@ def _on_orm_execute(state: ORMExecuteState) -> None:
         return
     strict: BaseException | None = None
     try:
-        targets = collector.active()
+        # statements-only collectors (the queryguard fixture's) need no loads
+        targets = collector.full_active()
         if not targets:
             return
         if _is_column_load(state):
@@ -803,7 +805,7 @@ def _on_cursor_execute(
     if _error is not None:
         return
     try:
-        targets = collector.active()
+        targets = collector.targets()
         if not targets:
             return
         # The ORM runs do_orm_execute before it autoflushes, so the first
@@ -838,7 +840,7 @@ def _on_cursor_execute(
             target.add_statement(stmt)
         if context is not None:
             invoked = None if write else getattr(context, "invoked_statement", None)
-            if _is_orm(invoked):
+            if _collectors and _is_orm(invoked):  # only loads need the site
                 # Read back when the ORM turns the rows into instances.
                 setattr(context, _SITE_ATTR, stmt.callsite)
                 if relationship is None:

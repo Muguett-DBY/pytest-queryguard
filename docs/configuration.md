@@ -101,3 +101,9 @@ Command-line options:
 | `max_db_time(seconds)` | Fails the test if its statements take more than that many seconds in total. |
 | `allow_nplusone(*labels, kind=..., file=..., function=...)` | Leaves out findings: all of them without arguments, or only those that match the `fnmatch` patterns. See [Ignoring findings](ignoring.md). |
 | `allow_missing_index(*tables)` | Skips the missing-index check for the test, or only for the given tables. `allow_nplusone` without arguments does not affect the index check; with patterns it also matches missing-index findings, as in `allow_nplusone("public.audit_log", kind="missing-index")`. |
+
+## Fixture
+
+| Fixture | Meaning |
+|---|---|
+| `queryguard` | `queryguard.max_queries(limit)` and `queryguard.num_queries(expected)` blocks that count the statements of the test's own thread or task, and `queryguard.queries`, the statements of the test function. See [Budgets and timing](budgets.md#budgets-in-a-test-with-the-queryguard-fixture). |

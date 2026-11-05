@@ -27,6 +27,7 @@ EXPECTED_ALL = [
     "Query",
     "QueryBudgetExceeded",
     "QueryGuardDeprecationWarning",
+    "QueryGuardFixture",
     "QueryGuardInternalWarning",
     "QueryGuardWarning",
     "QueryLog",
@@ -48,6 +49,7 @@ EXPECTED_BASES = {
     "Query": "object",
     "QueryBudgetExceeded": "AssertionError",
     "QueryGuardDeprecationWarning": "DeprecationWarning",
+    "QueryGuardFixture": "object",
     "QueryGuardInternalWarning": "UserWarning",
     "QueryGuardWarning": "UserWarning",
     "QueryLog": "object",
@@ -85,6 +87,14 @@ EXPECTED_QUERYLOG = {
     "db_time": "property",
     "queries": "property",
     "slowest": "(self, n: 'int' = 5) -> 'tuple[Query, ...]'",
+}
+
+# Public members of QueryGuardFixture, what the queryguard fixture gives a test.
+EXPECTED_FIXTURE = {
+    "count": "property",
+    "max_queries": "(self, limit: 'int') -> 'AbstractContextManager[QueryLog]'",
+    "num_queries": "(self, expected: 'int') -> 'AbstractContextManager[QueryLog]'",
+    "queries": "property",
 }
 
 EXPECTED_INI = {
@@ -196,6 +206,15 @@ def _public_members(cls: type) -> dict[str, str]:
 
 def test_querylog_public_members() -> None:
     assert _public_members(pytest_queryguard.QueryLog) == EXPECTED_QUERYLOG
+
+
+def test_queryguard_fixture_public_members() -> None:
+    assert _public_members(pytest_queryguard.QueryGuardFixture) == EXPECTED_FIXTURE
+
+
+def test_queryguard_fixture_name(pytester: pytest.Pytester) -> None:
+    text = _help_lines(pytester, "--fixtures")
+    assert re.search(r"^queryguard -- ", text, re.MULTILINE), text
 
 
 def _help_lines(pytester: pytest.Pytester, *args: str) -> str:

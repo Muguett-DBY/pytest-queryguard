@@ -18,7 +18,7 @@ from . import baseline as baselines
 from . import budgets as budget_files
 from . import cartesian, catalog, eager, hypopg, indexes, sarif, testjson
 from . import groups as finding_groups
-from .api import NPlusOneDetected
+from .api import NPlusOneDetected, QueryGuardFixture
 from .baseline import BaselineError, Identity, sorted_identities
 from .callsite import DEFAULT_STACK_DEPTH, swap_stack_depth, trim_to_user_code
 from .collector import QueryCollector, pop, push
@@ -71,6 +71,11 @@ _EAGER_MODES = ("off", "warn", "fail")
 _eager_enabled = pytest.StashKey[bool]()
 _cartesian_enabled = pytest.StashKey[bool]()
 _internal_reported = pytest.StashKey[bool]()
+# Set on a test item once its function starts: a queryguard fixture requested
+# later (request.getfixturevalue in the test) starts counting at once.
+_call_started = pytest.StashKey[bool]()
+# The queryguard fixtures of a test item, however they were requested.
+_guards = pytest.StashKey[list[QueryGuardFixture]]()
 _failure_summarised = pytest.StashKey[bool]()
 _outer_error = pytest.StashKey[BaseException | None]()
 _outer_stopped = pytest.StashKey[str | None]()
@@ -2031,6 +2036,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
     # keep the plugin's own source out of that failure, as in fail mode. Any other
     # exception (a user test failure, a plugin bug) keeps this frame visible.
     __tracebackhide__ = _hide_escalated_warning
+    _start_fixture(item)
     settings = item.config.stash.get(_settings, None)
     if settings is None:
         # pytest_configure did not complete (for example it raised a UsageError
@@ -2117,6 +2123,59 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
     if parts:
         pytest.fail("\n\n".join(parts), pytrace=False)
     return result
+
+
+@pytest.fixture
+def queryguard(
+    request: pytest.FixtureRequest,
+) -> Generator[QueryGuardFixture, None, None]:
+    """Query budgets for blocks of a test, counting the test's own thread or task.
+
+    ``with queryguard.max_queries(3):`` fails when the block runs more than 3
+    SQL statements, ``with queryguard.num_queries(3):`` unless it runs exactly
+    3; threads that were running before the block do not count.
+    ``queryguard.queries`` and ``queryguard.count`` are the statements the
+    test function has run so far, from every thread.
+    """
+    guard = QueryGuardFixture()
+    stash = request.node.stash
+    stash.setdefault(_guards, []).append(guard)
+    if stash.get(_call_started, False):
+        guard._start()  # requested from the test function itself
+    yield guard
+    guard._stop()  # when the test function never ran
+
+
+def _fixtures(item: pytest.Item) -> list[QueryGuardFixture]:
+    """The ``queryguard`` fixtures of the test, also those requested by name."""
+    return item.stash.get(_guards, [])
+
+
+def _start_fixture(item: pytest.Item) -> None:
+    """Start the count of a requested ``queryguard`` fixture, at the test function.
+
+    Here and not in the fixture, so that the statements of the fixtures set up
+    after it are not counted. The count is process-wide, so it does not
+    matter which task or thread the test function runs in.
+    """
+    try:
+        item.stash[_call_started] = True
+        for guard in _fixtures(item):
+            guard._start()
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        record_error(exc, "start of the queryguard fixture")
+        _report_internal_error(item.config)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item) -> None:
+    """Stop the ``queryguard`` fixtures before any fixture tears down."""
+    try:
+        item.stash[_call_started] = False
+        for guard in _fixtures(item):
+            guard._stop()
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        record_error(exc, "end of the queryguard fixture")
 
 
 def _hide_escalated_warning(

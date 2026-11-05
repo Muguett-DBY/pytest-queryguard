@@ -412,19 +412,23 @@ def format_budget(
     total: int | None = None,
     db_time: float | None = None,
     source: str | None = None,
+    exact: bool = False,
 ) -> str:
     """The budget failure; ``total`` is the real count when not all are stored.
 
     ``db_time`` is the real database time when not all statements are stored;
-    ``source`` says where the limit comes from when it is not a marker.
+    ``source`` says where the limit comes from when it is not a marker;
+    ``exact`` is for a budget that fewer statements fail too.
     """
     shown = len(statements)
     got = shown if total is None else total
     noun = "query" if limit == 1 else "queries"
-    lines = [f"queryguard: expected at most {limit} {noun}, got {got}"]
+    bound = "exactly" if exact else "at most"
+    lines = [f"queryguard: expected {bound} {limit} {noun}, got {got}"]
     if source is not None:
         lines.append(f"  (the limit is {source})")
-    lines.append("")
+    if got:  # an exact budget fails with none too
+        lines.append("")
     for number, stmt in enumerate(statements, start=1):
         line = f"  {number}. {_truncate(stmt.sql)}"
         if stmt.callsite is not None:
