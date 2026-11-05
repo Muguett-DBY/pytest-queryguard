@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- On a pull request the GitHub Action compares the per-test query counts with
+  the latest run on the base branch and writes the result to the job summary
+  and to one pull-request comment, updated on later pushes: tests that run
+  more statements, new findings and fixed ones. The action now writes
+  `--queryguard-json` and uploads it as an artifact; new inputs `json-file`,
+  `compare`, `comment` and `github-token`. `python -m pytest_queryguard.compare
+  base.json head.json` prints the same report locally (#231).
 - `--queryguard-json=PATH` writes each test's statement count, the count by
   verb, its database time and its findings (baselined ones marked) as JSON, also with
   pytest-xdist, with `complete: false` for a run that stopped early. It is the
