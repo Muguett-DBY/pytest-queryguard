@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- CI runs the MySQL and MariaDB index check against live servers: a `mysql`
+  job starts MySQL 8.4 and MariaDB 11.8 from their official Docker images and
+  runs the MySQL test files with PyMySQL and aiomysql. The job sets
+  `QUERYGUARD_REQUIRE_BACKENDS`, which turns the skip of the live tests (no
+  URL, no server, no driver) into a failure, so it cannot pass without having
+  run them. The check was tested by hand before (#277).
+
 ## [0.6.0] - 2026-11-05
 
 This release adds strict mode (raise at the lazy load), a new finding kind,

@@ -56,7 +56,7 @@ and restricts commercial use. Read it before you adopt it.
 | Time budget and per-query timing | `max_db_time`, timing in `QueryLog` (v) | timing and the slowest statement; no time-budget option in the installed 0.5.0 (v, 2026-10-13) | timing in the failure and the report (v) | no | no | no | no |
 | Baseline for existing findings | yes (v) | yes (v) | no baseline; `--querycount-write-budgets` writes exact budgets into your tests (v) | no | allow-list in settings (r) | no | no |
 | SARIF and a GitHub Action | SARIF yes; a composite action in this repository, `action/` (v) | SARIF yes (v: `_serialize.py` in the installed package); an action, `sqla-native/queryspy@v0` (r) | not found: no SARIF code in the installed package (v) | no | no | no | no |
-| Missing-index check | PostgreSQL 16+, SQLite, and MySQL and MariaDB (tested by hand, not in CI), with a `CREATE INDEX`; hypopg verification on PostgreSQL (v) | none: no EXPLAIN code in the installed package (v) | PostgreSQL only, `no_seq_scan`, with a `CREATE INDEX` suggestion (v) | no | no | no | no |
+| Missing-index check | PostgreSQL 16+, SQLite, and MySQL and MariaDB (tested in CI on MySQL 8.4 and MariaDB 11.8), with a `CREATE INDEX`; hypopg verification on PostgreSQL (v) | none: no EXPLAIN code in the installed package (v) | PostgreSQL only, `no_seq_scan`, with a `CREATE INDEX` suggestion (v) | no | no | no | no |
 | Unused eager loads | experimental, off by default (v) | no, deliberately (r) | no | yes, for Flask-SQLAlchemy and Django per its README (r) | no (r) | no | no |
 | Row-by-row write loops | opt-in (v) | not reported (v) | not reported (v) | no | no | no | no |
 | Per-finding ignore | marker, ini patterns and baseline (v); no `with` block | marker and an `ignore()` block (v) | `ignore=` for the index check only (r) | whitelist and an `ignore` block (r) | allow-list and an ignore block (r) | no | no |
@@ -78,9 +78,11 @@ not work.
   is experimental and ships from 0.5.0.
 - **Other databases and drivers in their test matrix.** The queryspy README
   says it is tested against SQLite, PostgreSQL and MySQL with psycopg,
-  asyncpg, pymysql, aiomysql and aiosqlite. pytest-queryguard's CI uses
-  SQLite, and PostgreSQL 14 to 18 through pg8000 and asyncpg; psycopg is not in
-  CI (see the [FAQ](faq.md)).
+  asyncpg, pymysql, aiomysql and aiosqlite. pytest-queryguard's CI runs the
+  whole suite on SQLite (also through aiosqlite) and on PostgreSQL 14 to 18
+  through pg8000 and asyncpg, once more with psycopg 3 (see the [FAQ](faq.md));
+  on MySQL 8.4 and MariaDB 11.8, through PyMySQL and aiomysql, it runs only
+  the tests of the index check.
 - **Django.** django-zeal and nplusone cover Django; pytest-queryguard does not.
 - **Writing budgets for you.** `pytest-querycount --querycount-write-budgets`
   edits your tests to add an exact `max_queries` marker to each, and

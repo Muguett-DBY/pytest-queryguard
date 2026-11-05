@@ -7,8 +7,14 @@ These tests need a server and skip without one. Point them at a server with
 
 (a user that may create and drop databases; each session works in a scratch
 database named qg_<random> and drops it, and keeps one small database,
-qg_other, for the test of a table in another database). The project's CI does
-not run a server for them: see docs/index-check-mysql.md.
+qg_other, for the test of a table in another database). The mysql job of the
+CI workflow runs them against MySQL and MariaDB.
+
+QUERYGUARD_REQUIRE_BACKENDS (a comma-separated list of "mysql" and "mariadb")
+turns the skips into failures for the servers it names: a missing driver, an
+unset URL or an unreachable server then fails the run instead of skipping
+every test of that server. CI sets it, so the job cannot pass without having
+run them.
 """
 
 from __future__ import annotations
@@ -27,9 +33,28 @@ from pytest_queryguard import mysql_index
 from . import mysql_cases
 from .test_mysql_index import DIFFERENT, EXPECTED, NOTHING, summary
 
-pymysql = pytest.importorskip("pymysql")
-pytest.importorskip("greenlet")
-pytest.importorskip("aiomysql")
+VARIABLES = {"mysql": "QUERYGUARD_MYSQL_URL", "mariadb": "QUERYGUARD_MARIADB_URL"}
+REQUIRED = {
+    name.strip()
+    for name in os.environ.get("QUERYGUARD_REQUIRE_BACKENDS", "").split(",")
+    if name.strip()
+}
+# a misspelt name would quietly turn the requirement off
+if REQUIRED - set(VARIABLES):
+    raise ValueError(
+        f"QUERYGUARD_REQUIRE_BACKENDS names {sorted(REQUIRED - set(VARIABLES))};"
+        f" known: {sorted(VARIABLES)}"
+    )
+
+if REQUIRED:
+    # an ImportError here fails the collection, and with it the run
+    import aiomysql  # noqa: F401
+    import greenlet  # noqa: F401
+    import pymysql
+else:
+    pymysql = pytest.importorskip("pymysql")
+    pytest.importorskip("greenlet")
+    pytest.importorskip("aiomysql")
 # pytester drops modules first imported by an inner run from sys.modules when
 # that run ends; importing the async stack here keeps it loaded.
 import sqlalchemy.ext.asyncio  # noqa: F401
@@ -39,7 +64,6 @@ from sqlalchemy.engine import make_url
 pytestmark = pytest.mark.allow_nplusone
 
 ARGS = ("--queryguard-index-check",)
-VARIABLES = {"mysql": "QUERYGUARD_MYSQL_URL", "mariadb": "QUERYGUARD_MARIADB_URL"}
 
 
 @dataclass(frozen=True)
@@ -71,13 +95,15 @@ def _connect(url: str, database: str | None = None, **kwargs: Any) -> Any:
 def server(request: pytest.FixtureRequest) -> Iterator[Server]:
     """A scratch database filled with tests/mysql_cases.py, dropped afterwards."""
     kind: str = request.param
+    # with the server required, the reason to skip is a failure instead
+    unavailable = pytest.fail if kind in REQUIRED else pytest.skip
     url = os.environ.get(VARIABLES[kind])
     if not url:
-        pytest.skip(f"{VARIABLES[kind]} is not set")
+        unavailable(f"{VARIABLES[kind]} is not set")
     try:
         admin = _connect(url, autocommit=True, connect_timeout=3)
     except pymysql.err.OperationalError as exc:
-        pytest.skip(f"{VARIABLES[kind]} is not reachable: {exc}")
+        unavailable(f"{VARIABLES[kind]} is not reachable: {exc}")
     database = f"qg_{uuid.uuid4().hex[:12]}"
     cursor = admin.cursor()
     cursor.execute("SELECT VERSION()")

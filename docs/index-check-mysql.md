@@ -6,12 +6,14 @@ of the connection decides how a statement is checked. PostgreSQL and SQLite
 behave as described on their own pages.
 
 **Status: experimental (see [Stability](stability.md#experimental)). This
-check is tested against MySQL 8.4 and MariaDB 11.8 on a developer machine, not
-in CI.** The project's CI runs no MySQL or MariaDB
-server: both servers are GPL-licensed software, and adding one to the CI
-workflow needs a written approval that has not been given. The unit tests on
-recorded `EXPLAIN` output run everywhere; the tests that need a live server
-skip themselves when none is reachable (see "Running the live tests").
+check is tested in CI against MySQL 8.4 and MariaDB 11.8**, the LTS releases,
+with PyMySQL and aiomysql: the `mysql` job of the CI workflow starts each
+server from its official Docker image and runs the MySQL test files, and fails
+if the tests that need the server were skipped. The servers are GPL-licensed
+and run only as test services there; nothing of them is a dependency of the
+package. The unit tests on recorded `EXPLAIN` output run everywhere; elsewhere
+the tests that need a live server skip themselves when none is reachable (see
+"Running the live tests").
 
 ## What it does
 
@@ -173,7 +175,7 @@ over the statements. Over a real network a round trip costs more.
 
 `tests/test_mysql_index_check.py` skips without a server. To run it, start a
 server yourself (for example `docker run -d -e MYSQL_ROOT_PASSWORD=secret -p
-127.0.0.1:33306:3306 mysql:8 --mysql-native-password=ON
+127.0.0.1:33306:3306 mysql:8.4 --mysql-native-password=ON
 --authentication-policy=mysql_native_password`; PyMySQL needs the `cryptography`
 package for the default `caching_sha2_password` plugin over a plain
 connection, which this project does not install) and set
@@ -186,4 +188,7 @@ QUERYGUARD_MARIADB_URL=mysql+pymysql://root:secret@127.0.0.1:33307/mysql \
 
 The user must be able to create and drop databases; the tests work in a scratch
 database named `qg_<random>` and drop it (a small `qg_other` database stays).
+`QUERYGUARD_REQUIRE_BACKENDS=mysql,mariadb` (or one of the two) turns the skip
+into a failure when the named server's URL is unset, the server is not
+reachable or a driver is missing; CI sets it.
 `scripts/capture_mysql_plans.py` rewrites the plan fixtures from a live server.
