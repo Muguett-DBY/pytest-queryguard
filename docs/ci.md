@@ -23,6 +23,8 @@ jobs:
     permissions:
       contents: read
       security-events: write   # needed to upload to code scanning
+      actions: read            # compare query counts with the base branch
+      pull-requests: write     # comment the comparison on the pull request
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -71,9 +73,50 @@ failed. Install your own project first: the action does not know how.
 | `working-directory` | `.` | Where to run pytest. Locations in the SARIF file are still relative to the repository root (see [SARIF output](sarif.md#paths-and-the-repository-root)). |
 | `sarif-file` | `queryguard.sarif` | Output file, relative to `working-directory`. |
 | `upload` | `true` | Upload to code scanning. `false`: only write the file. |
-| `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload. |
+| `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload. It also names the job's query-count artifact and its pull-request comment. |
+| `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. |
+| `compare` | `true` | On a pull request, compare the counts with the base branch and write the result to the job summary. |
+| `comment` | `true` | Also post the comparison as a pull-request comment, updated in place on later pushes. |
+| `github-token` | `github.token` | Token for the comparison and the comment. |
 
-Outputs: `exit-code` (pytest's) and `sarif-file`.
+Outputs: `exit-code` (pytest's), `sarif-file` and `json-file`.
+
+### Query counts on pull requests
+
+On every run the action writes the [query counts](#query-counts-as-json) and
+uploads them as an artifact. On a pull request it downloads the file of the
+latest finished run of the same workflow on the base branch, compares the
+two, and writes the result to the job summary and to one pull-request
+comment:
+
+```
+### pytest-queryguard: queries compared with the base branch
+
+412 tests compared: 3120 → 3187 statements (+67). 2 run more, 1 fewer; 1 new findings, 0 fixed.
+
+#### New findings
+| Kind | Label | Where | Times | Tests |
+| relationship-load | `Order.items` | `app/orders.py in list_orders` | 50 | `tests/test_orders.py::test_list` |
+
+#### Tests that run more statements
+| Test | Before | After | Change |
+| `tests/test_orders.py::test_list` | 3 | 53 | +50 |
+```
+
+A reviewer sees that a change made a test run more queries even when no
+rule fired yet (a new loop of two, a test under its budget). The comparison
+never fails the job.
+
+- The base branch needs one run of the workflow with this version of the
+  action first (a push to `main`); until then the summary says so.
+- Findings are matched by kind, label, file and function, so a finding that
+  only moved to another line is neither new nor fixed. Baselined findings
+  are left out.
+- Without `actions: read` the comparison is skipped; without
+  `pull-requests: write`, or on a pull request from a fork, there is no
+  comment and the job summary still has the report.
+- Several jobs (for example one per database) keep apart by `category`.
+- The same report locally: `python -m pytest_queryguard.compare base.json head.json`.
 
 A typical rollout: run once with `fail: "false"` to see the alerts, create a
 [baseline](baseline.md) for what you cannot fix yet, then switch to

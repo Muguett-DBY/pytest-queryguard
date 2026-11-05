@@ -57,9 +57,36 @@ inputs:
     required: false
     default: "true"
   category:
-    description: Code scanning category; use one per job when several jobs upload.
+    description: >-
+      Code scanning category; use one per job when several jobs upload. It
+      also names the job's query-count artifact and pull-request comment.
     required: false
     default: pytest-queryguard
+  json-file:
+    description: >-
+      Where to write the per-test query counts (--queryguard-json), relative
+      to working-directory. The file is uploaded as the artifact
+      queryguard-json-<category>, which later runs compare against.
+    required: false
+    default: queryguard.json
+  compare:
+    description: >-
+      "true": on a pull request, compare the query counts with the latest run
+      of this workflow on the base branch and write the result to the job
+      summary. Needs the "actions: read" permission. "false": skip.
+    required: false
+    default: "true"
+  comment:
+    description: >-
+      "true": also post the comparison as a pull-request comment, updated in
+      place on later pushes. Needs "pull-requests: write"; skipped on pull
+      requests from forks and Dependabot. "false": job summary only.
+    required: false
+    default: "true"
+  github-token:
+    description: Token for the comparison and the comment.
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   exit-code:
@@ -68,6 +95,9 @@ outputs:
   sarif-file:
     description: Path of the SARIF file, relative to working-directory.
     value: ${{ inputs.sarif-file }}
+  json-file:
+    description: Path of the query-count JSON file, relative to working-directory.
+    value: ${{ inputs.json-file }}
 
 runs:
   using: composite
@@ -100,6 +130,7 @@ runs:
         QG_ARGS: ${{ inputs.pytest-args }}
         QG_BASELINE: ${{ inputs.baseline }}
         QG_SARIF: ${{ inputs.sarif-file }}
+        QG_JSON: ${{ inputs.json-file }}
       run: |
         # The inputs reach the shell as environment variables, never spliced into
         # the script. pytest-args is split into words with Python's shlex; no
@@ -115,7 +146,7 @@ runs:
           done < <(python -c 'import os,shlex,sys; sys.stdout.write("".join(w + "\0" for w in shlex.split(os.environ["QG_ARGS"])))')
         fi
         set +e
-        python -m pytest "--queryguard-sarif=$QG_SARIF" "${extra[@]}" "${args[@]}"
+        python -m pytest "--queryguard-sarif=$QG_SARIF" "--queryguard-json=$QG_JSON" "${extra[@]}" "${args[@]}"
         code=$?
         set -e
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
@@ -147,6 +178,102 @@ runs:
       with:
         sarif_file: ${{ steps.sarif.outputs.path }}
         category: ${{ inputs.category }}
+
+    - name: Find the JSON file
+      id: json
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        QG_JSON: ${{ inputs.json-file }}
+      run: |
+        if [ -f "$QG_JSON" ]; then
+          echo "path=$(realpath "$QG_JSON")" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload the query counts
+      if: always() && steps.json.outputs.path != ''
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: queryguard-json-${{ inputs.category }}
+        path: ${{ steps.json.outputs.path }}
+        retention-days: 30
+        overwrite: true
+
+    - name: Compare the query counts with the base branch
+      id: compare
+      if: >-
+        always() && inputs.compare == 'true' && steps.json.outputs.path != ''
+        && github.event_name == 'pull_request'
+      # The comparison is information: it never fails the job.
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        QG_REPO: ${{ github.repository }}
+        QG_BASE: ${{ github.event.pull_request.base.ref }}
+        QG_WORKFLOW_REF: ${{ github.workflow_ref }}
+        QG_CATEGORY: ${{ inputs.category }}
+        QG_HEAD_JSON: ${{ steps.json.outputs.path }}
+        QG_TMP: ${{ runner.temp }}
+      run: |
+        # The workflow file of this run, e.g. ci.yml, from
+        # owner/repo/.github/workflows/ci.yml@refs/pull/1/merge
+        workflow="${QG_WORKFLOW_REF%%@*}"
+        workflow="${workflow##*/}"
+        dir="$QG_TMP/queryguard-base"
+        rm -rf "$dir"
+        found=""
+        # the latest finished runs of this workflow on the base branch; the
+        # artifact is uploaded whether the tests passed or not
+        for run in $(gh run list -R "$QG_REPO" --workflow "$workflow" --branch "$QG_BASE" \
+            --event push --status completed --limit 10 --json databaseId --jq '.[].databaseId'); do
+          if gh run download "$run" -R "$QG_REPO" -n "queryguard-json-$QG_CATEGORY" -D "$dir" 2>/dev/null; then
+            found="$run"
+            break
+          fi
+        done
+        report="$QG_TMP/queryguard-compare.md"
+        if [ -z "$found" ]; then
+          {
+            echo "### pytest-queryguard: no query counts of the base branch"
+            echo
+            echo "No run of \`$workflow\` on \`$QG_BASE\` has the artifact queryguard-json-$QG_CATEGORY yet. It appears after this workflow runs on a push to \`$QG_BASE\` with this version of the action."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        base_json="$(find "$dir" -name '*.json' -type f | head -n 1)"
+        key=""
+        if [ "$QG_CATEGORY" != "pytest-queryguard" ]; then
+          key="$QG_CATEGORY"
+        fi
+        python -m pytest_queryguard.compare "$base_json" "$QG_HEAD_JSON" --key "$key" --output "$report" > /dev/null
+        cat "$report" >> "$GITHUB_STEP_SUMMARY"
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+
+    - name: Comment the comparison on the pull request
+      if: >-
+        always() && inputs.comment == 'true' && steps.compare.outputs.report != ''
+        && github.actor != 'dependabot[bot]'
+        && !github.event.pull_request.head.repo.fork
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        QG_REPO: ${{ github.repository }}
+        QG_PR: ${{ github.event.pull_request.number }}
+        QG_REPORT: ${{ steps.compare.outputs.report }}
+      run: |
+        # One comment per category: find it by the marker on its first line.
+        marker="$(head -n 1 "$QG_REPORT")"
+        id="$(gh api --paginate "repos/$QG_REPO/issues/$QG_PR/comments" \
+          --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)"
+        if [ -n "$id" ]; then
+          gh api -X PATCH "repos/$QG_REPO/issues/comments/$id" -F "body=@$QG_REPORT" > /dev/null
+        else
+          gh api -X POST "repos/$QG_REPO/issues/$QG_PR/comments" -F "body=@$QG_REPORT" > /dev/null
+        fi
 
     - name: Fail when pytest failed
       if: always() && inputs.fail == 'true' && steps.pytest.outputs.exit-code != '0'
