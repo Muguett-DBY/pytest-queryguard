@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/compare/run.py` measures the overhead of pytest-queryguard,
   pytest-querycount and queryspy side by side, each in its own environment,
   and `docs/performance.md` has its results for 0.5.0, 0.4.0 and 0.6.0 (#253).
+- In-app mode: `track()` works as a decorator (one unit per call, named
+  after the function; coroutine functions across their awaits, generator
+  functions over their iteration), as `async with`, and through
+  `start()`/`stop(failed=...)` for integrations whose hooks start and end a
+  unit separately, such as Celery's `task_prerun`/`task_postrun` signals.
+  One `track()` object can be entered by several threads at once.
+  `docs/in-app.md` has recipes for Celery and RQ (#240).
 - Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
   lazy load of a relationship for the second parent loaded at one line
   (`queryguard_relationship_threshold`) raises
