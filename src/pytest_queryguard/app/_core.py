@@ -7,6 +7,8 @@ Nothing here registers a listener or imports pytest. The listeners are in
 from __future__ import annotations
 
 import contextvars
+import functools
+import inspect
 import itertools
 import logging
 import os
@@ -16,8 +18,7 @@ import threading
 import time
 import traceback
 import warnings
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -496,26 +497,99 @@ def set_route(template: str) -> None:
         active.tracker.report.route = template
 
 
-@contextmanager
-def track(
-    name: str = "", *, settings: Settings | None = None, **options: Any
-) -> Iterator[RequestReport]:
-    """Measure everything watched engines run in this context as one unit.
+class track:  # a function to its callers, as in 0.5.0
+    """Measure everything watched engines run in one unit of work.
 
-    For work outside HTTP (a job, a CLI command, a message handler). Takes a
-    ``Settings`` or its fields as keyword arguments. Yields the
-    ``RequestReport``, which is filled and reported when the block ends.
+    For work outside HTTP: a job, a CLI command, a message handler, a task of
+    Celery or RQ. Takes a ``Settings`` or its fields as keyword arguments,
+    and is used in any of these ways::
+
+        with track("nightly export") as report: ...
+        async with track("sync accounts") as report: ...
+
+        @track()                      # named after the function
+        def export(): ...
+
+        @track(default_budget=20)     # coroutine functions too
+        async def handle(message): ...
+
+        unit = track(task.name)       # from signals that start and end a task
+        unit.start()
+        ...
+        report = unit.stop()
+
+    The ``RequestReport`` is filled and reported when the unit ends. A
+    ``QueryGuardWarning`` that a warning filter turned into an error is
+    raised when the unit ends without an exception of its own.
     """
-    tracker = Tracker(_settings(settings, options), name or "track()")
-    tracker.start()
-    try:
-        yield tracker.report
-    except BaseException:
+
+    __slots__ = ("_name", "_settings", "_tracker")
+
+    def __init__(
+        self, name: str = "", *, settings: Settings | None = None, **options: Any
+    ) -> None:
+        self._name = name
+        self._settings = _settings(settings, options)
+        self._tracker: Tracker | None = None
+
+    def start(self) -> RequestReport:
+        """Begin the unit in the current context; pair with ``stop()``."""
+        if self._tracker is not None:
+            raise RuntimeError("this track() unit has already started")
+        self._tracker = Tracker(self._settings, self._name or "track()")
+        self._tracker.start()
+        return self._tracker.report
+
+    def stop(self) -> RequestReport:
+        """End the unit, report it and return its report."""
+        tracker = self._end()
+        if tracker.warning is not None:
+            raise tracker.warning
+        return tracker.report
+
+    def _end(self) -> Tracker:
+        tracker, self._tracker = self._tracker, None
+        if tracker is None:
+            raise RuntimeError("this track() unit has not started")
         tracker.finish()
-        raise
-    tracker.finish()
-    if tracker.warning is not None:
-        raise tracker.warning
+        return tracker
+
+    def __enter__(self) -> RequestReport:
+        return self.start()
+
+    def __exit__(self, kind: object, value: object, tb: object) -> None:
+        tracker = self._end()
+        if kind is None and tracker.warning is not None:
+            raise tracker.warning
+
+    async def __aenter__(self) -> RequestReport:
+        return self.start()
+
+    async def __aexit__(self, kind: object, value: object, tb: object) -> None:
+        self.__exit__(kind, value, tb)
+
+    def __call__(self, function: Callable[..., Any]) -> Callable[..., Any]:
+        """Measure each call of ``function`` as a unit of its own."""
+        if self._tracker is not None:
+            raise RuntimeError("a started track() unit cannot decorate a function")
+        name = self._name or getattr(function, "__qualname__", repr(function))
+        settings = self._settings
+
+        if inspect.iscoroutinefunction(function):
+
+            @functools.wraps(function)
+            async def measured_async(*args: Any, **kwargs: Any) -> Any:
+                async with track(name, settings=settings):
+                    return await function(*args, **kwargs)
+
+            return measured_async
+
+        @functools.wraps(function)
+        def measured(*args: Any, **kwargs: Any) -> Any:
+            with track(name, settings=settings):
+                return function(*args, **kwargs)
+
+        return measured
 
 
 def _settings(settings: Settings | None, options: Mapping[str, Any]) -> Settings:

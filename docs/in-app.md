@@ -174,7 +174,9 @@ that do not already support one.
 
 ## Outside HTTP
 
-`track()` measures any block, for a job, a command or a message handler:
+`track()` measures any unit of work that is not a request: a job, a CLI
+command, a message handler, a task of Celery or RQ. Each unit is reported
+like a request, with its own budget (`default_budget`):
 
 ```python
 from pytest_queryguard import app as queryguard
@@ -183,6 +185,59 @@ with queryguard.track("nightly export", default_budget=50) as report:
     ...  # run the job
 print(report.statement_count, [f.label for f in report.findings])
 ```
+
+As a decorator, each call is a unit, named after the function unless a name
+is given; coroutine functions work the same, and so does `async with`:
+
+```python
+@queryguard.track(default_budget=20)
+def export_invoices(month): ...
+
+@queryguard.track("orders consumer")
+async def handle(message): ...
+
+async with queryguard.track("sync accounts") as report: ...
+```
+
+Units in concurrent tasks or threads never mix: each counts the statements
+of its own context.
+
+### Celery
+
+Decorate the task function under `@app.task`, or measure every task from
+the worker's signals, which run in the task's context:
+
+```python
+from celery.signals import task_postrun, task_prerun
+from pytest_queryguard import app as queryguard
+
+queryguard.watch(engine)
+_units: dict[str, queryguard.track] = {}
+
+
+@task_prerun.connect
+def _start_unit(task_id, task, **_):
+    unit = queryguard.track(task.name, default_budget=100)
+    unit.start()
+    _units[task_id] = unit
+
+
+@task_postrun.connect
+def _stop_unit(task_id, **_):
+    unit = _units.pop(task_id, None)
+    if unit is not None:
+        unit.stop()
+```
+
+`start()` and `stop()` are the two halves of the `with` block for code that
+cannot wrap the work in one: `stop()` returns the `RequestReport`. A unit
+starts once; using it again, or stopping it twice, raises `RuntimeError`.
+
+### RQ
+
+RQ runs a job function by its import path, so decorating the function is
+enough: `@queryguard.track()` on the function the job names. Call
+`queryguard.watch(engine)` where the worker imports the application.
 
 ## Settings
 
