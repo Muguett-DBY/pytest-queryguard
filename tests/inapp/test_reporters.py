@@ -25,7 +25,7 @@ from .conftest import CUSTOMERS, Order
 def _lazy_loop(engine: Engine) -> None:
     with Session(engine) as session:
         for order in session.scalars(select(Order)):
-            order.customer.name  # a loop, not a comprehension: <listcomp> before 3.12
+            _ = order.customer.name  # a loop: a comprehension is <listcomp> before 3.12
 
 
 class FakeSpan:
