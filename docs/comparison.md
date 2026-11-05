@@ -30,7 +30,7 @@ measurements are ones I ran myself, on scenarios I wrote.
 
 | Tool | Version (release date) | First release on PyPI | Targets | License |
 |---|---|---|---|---|
-| pytest-queryguard | 0.5.0 (2026-11-01) | 2026-10-10 | SQLAlchemy 2 | MIT |
+| pytest-queryguard | 0.6.0 (2026-11-05) | 2026-10-10 | SQLAlchemy 2 | MIT |
 | [queryspy](https://github.com/sqla-native/queryspy) | 0.6.0 (2026-10-22) | 2026-08-04 | SQLAlchemy 2.0+, Python 3.11+ | MIT |
 | [pytest-querycount](https://github.com/ldavidsm/pytest-querycount) | 0.4.0 (2026-09-27) | 2026-09-27 | SQLAlchemy 2.x | MIT |
 | [nplusone](https://github.com/jmcarp/nplusone) | 1.0.0 (2018-05-21) | 2015-06-30 | Django, SQLAlchemy, Peewee | MIT |
