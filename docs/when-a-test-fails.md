@@ -92,6 +92,40 @@ example is the first of the tests by name. Ignored and baselined findings are
 not counted, a test that runs again (a rerun plugin) counts once, and it works
 the same with pytest-xdist.
 
+### Strict mode: fail at the access
+
+The report comes when the test ends. With `queryguard_strict = true` (or
+`--queryguard-strict`) the N+1 fails the test where it happens instead: the
+second lazy load of a relationship for the parents that one query loaded
+raises `NPlusOneDetected`, and the traceback ends at the line that read the
+attribute, the frames of SQLAlchemy and the plugin left out:
+
+```
+    for order in _helper_query(session):
+>       name = order.customer.name
+E       pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents that one query loaded; this access is the N+1
+E
+E         Order.customer was lazy-loaded 2 times
+E         first at app/orders.py:13 in list_orders
+E         parents loaded at app/orders.py:7 in _helper_query
+E         kind: relationship-load  label: Order.customer
+E         fix: load it with the parent query, e.g.
+E              select(Order).options(joinedload(Order.customer))
+```
+
+It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
+`preventLazyLoading()` for SQLAlchemy:
+
+- Reading a relationship of a single object never raises, and neither do
+  objects whose query is unknown (made by the test, loaded before it); the
+  report at the end still covers those.
+- It raises only what would fail the test anyway: in `fail` mode, for an N+1
+  that no `allow_nplusone`, `queryguard_ignore` pattern or baseline entry
+  covers. It does not raise while `--queryguard-update-baseline` records the
+  findings.
+- Code that catches `AssertionError` around the loop does not hide the N+1:
+  the report at the end still fails the test.
+
 ## 2. Is it real?
 
 Most findings are real: the code ran one statement per row, and the test

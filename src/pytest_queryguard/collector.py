@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .events import (
+    CallSite,
     CartesianLoadEvent,
     ColumnLoadEvent,
     RelationshipLoadEvent,
@@ -48,6 +50,15 @@ class QueryCollector:
     cartesian_load_count: int = 0
     # Seconds the statements took, all of them, stored or only counted.
     db_time: float = 0.0
+    # Strict mode (queryguard_strict): called with a lazy load when its
+    # relationship has been lazy-loaded for ``strict_threshold`` parents that
+    # one query loaded; returns the exception to raise at the access, or None.
+    strict: Callable[[RelationshipLoadEvent, int], BaseException | None] | None = None
+    strict_threshold: int = 2
+    # (relationship, query site of the parents) -> parent keys lazy-loaded
+    strict_parents: dict[tuple[str, CallSite], set[object]] = field(
+        default_factory=dict
+    )
     # Guards the counters and the length checks on a free-threaded build.
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -114,6 +125,21 @@ class QueryCollector:
         self.cartesian_load_count += 1
         if self.max_events is None or len(self.cartesian_loads) < self.max_events:
             self.cartesian_loads.append(event)
+
+    def strict_check(self, load: RelationshipLoadEvent) -> BaseException | None:
+        """The strict-mode exception for this lazy load, or None.
+
+        Only lazy loads of parents whose query is known count, so a single
+        object, or objects the test made itself, never raise here.
+        """
+        if self.strict is None or load.parent is None or load.parent.callsite is None:
+            return None
+        key = (load.relationship, load.parent.callsite)
+        parents = self.strict_parents.setdefault(key, set())
+        parents.add(load.parent_key)
+        if len(parents) < self.strict_threshold:
+            return None
+        return self.strict(load, len(parents))
 
     def add_db_time(self, seconds: float) -> None:
         if _FREE_THREADED:

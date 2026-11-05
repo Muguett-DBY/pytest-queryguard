@@ -168,3 +168,21 @@ def find_callsite() -> CallSite | None:
         if site is not None:
             return site
     return None
+
+
+def trim_to_user_code(exc: BaseException) -> None:
+    """End the traceback of ``exc`` at the last frame of application code.
+
+    For the exception that queryguard_strict raises inside SQLAlchemy's lazy
+    loader: the frames below the attribute access (SQLAlchemy, the plugin)
+    say nothing about the N+1, so the report ends at the line that read the
+    relationship. Nothing changes when no such frame is found.
+    """
+    last_user = None
+    tb = exc.__traceback__
+    while tb is not None:
+        if not _is_internal(tb.tb_frame.f_code.co_filename):
+            last_user = tb
+        tb = tb.tb_next
+    if last_user is not None and last_user.tb_next is not None:
+        last_user.tb_next = None
