@@ -34,6 +34,12 @@ jobs:
   #    MySQL and MariaDB, the GitHub Action). Reused, not copied.
   ci:
     uses: ./.github/workflows/ci.yml
+    # what ci.yml's action job asks for (it compares query counts on a pull
+    # request and comments); a called workflow gets no more than its caller
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
 
   # 1. What ci.yml does not cover: Windows and macOS with the oldest supported
   #    SQLAlchemy series and pytest (Linux has that cell in ci.yml).
