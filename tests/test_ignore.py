@@ -36,8 +36,11 @@ def _finding(
     label: str = "Order.customer",
     file: str | None = "app/api/orders.py",
     function: str | None = "list_orders",
+    stack: tuple[tuple[str, int, str], ...] = (),
 ) -> Finding:
-    return Finding(kind=kind, label=label, file=file, function=function, message="m")
+    return Finding(
+        kind=kind, label=label, file=file, function=function, message="m", stack=stack
+    )
 
 
 # --- pattern parsing and matching ---
@@ -123,6 +126,62 @@ def test_file_or_function_pattern_never_matches_an_unknown_location() -> None:
     assert not IgnoreRule("*", "*", file="*").matches(_finding(file=None))
     assert not IgnoreRule("*", "*", function="*").matches(_finding(function=None))
     assert IgnoreRule("*", "*").matches(_finding(file=None, function=None))
+
+
+def test_parse_stack() -> None:
+    rule = parse_rule("relationship-load Order.* stack=app/admin/* file=app/*.py")
+    assert rule == IgnoreRule(
+        "relationship-load", "Order.*", "app/*.py", None, "app/admin/*"
+    )
+    assert str(rule) == "relationship-load Order.* file=app/*.py stack=app/admin/*"
+
+
+STACK = (("app/api/views.py", 12, "export_orders"), ("tests/test_x.py", 3, "test_x"))
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "app/api/orders.py",  # the first location
+        "app/api/views.py",  # a caller, as file
+        "app/api/*",
+        "app/api/views.py:export_orders",  # a caller, as file:function
+        "*:export_*",
+        "tests/*",
+    ],
+)
+def test_stack_matches_any_frame_as_file_or_file_function(pattern: str) -> None:
+    assert IgnoreRule("*", "*", stack=pattern).matches(_finding(stack=STACK))
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "app/admin/*",
+        "*:list_users",
+        "export_orders",
+        "app/api/views.py:x",
+        "*export*",  # a glob without a colon is matched against files only
+    ],
+)
+def test_stack_matches_no_other_frame(pattern: str) -> None:
+    assert not IgnoreRule("*", "*", stack=pattern).matches(_finding(stack=STACK))
+
+
+def test_stack_needs_every_other_field_to_match_too() -> None:
+    rule = IgnoreRule("*", "*", function="other", stack="app/api/views.py")
+    assert not rule.matches(_finding(stack=STACK))
+
+
+def test_stack_of_an_unknown_location_matches_nothing() -> None:
+    unknown = _finding(file=None, function=None)
+    assert not IgnoreRule("*", "*", stack="*").matches(unknown)
+
+
+def test_stack_matches_a_first_location_without_a_function() -> None:
+    finding = _finding(function=None)
+    assert IgnoreRule("*", "*", stack="app/api/*").matches(finding)
+    assert IgnoreRule("*", "*", stack="app/api/orders.py:").matches(finding)
 
 
 def test_apply_rules_returns_kept_findings_and_used_rules() -> None:
@@ -419,6 +478,7 @@ def test_marker_patterns_add_up_with_the_ini(project: pytest.Pytester) -> None:
         '@pytest.mark.allow_nplusone(label="x")',
         '@pytest.mark.allow_nplusone("x", kind=3)',
         '@pytest.mark.allow_nplusone("")',
+        "@pytest.mark.allow_nplusone(stack=1)",
     ],
 )
 def test_bad_marker_arguments_fail_the_test(
@@ -436,3 +496,97 @@ def test_marker_with_an_unknown_kind_fails_the_test(project: pytest.Pytester) ->
     result = project.runpytest()
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(["*allow_nplusone on*matches no finding kind*"])
+
+
+# --- stack= ---
+
+SHARED = """from qgmodels import Order
+
+
+def names(session):
+    return [order.customer.name for order in session.query(Order).all()]
+"""
+ADMIN = """import shared
+
+
+def export_orders(session):
+    return shared.names(session)
+"""
+CALLERS = """from qgmodels import make_sync_session
+
+import admin_export
+import shared
+{marker}
+
+def test_admin():
+    admin_export.export_orders(make_sync_session())
+
+
+def test_page():
+    shared.names(make_sync_session())
+"""
+
+
+@pytest.fixture
+def callers(project: pytest.Pytester) -> pytest.Pytester:
+    project.makepyfile(shared=SHARED, admin_export=ADMIN)
+    project.makepyfile(test_a=CALLERS.format(marker=""))
+    return project
+
+
+@pytest.mark.parametrize("pattern", ["admin_export.py", "*:export_orders"])
+def test_ini_stack_ignores_the_helper_only_from_one_caller(
+    callers: pytest.Pytester, pattern: str
+) -> None:
+    _ini(callers, f"relationship-load Order.customer stack={pattern}")
+    result = callers.runpytest()
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["FAILED test_a.py::test_page*"])
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_ini_stack_beyond_the_stack_depth_does_not_match(
+    callers: pytest.Pytester,
+) -> None:
+    callers.makeini(
+        "[pytest]\nqueryguard_stack_depth = 0\n"
+        "queryguard_ignore = relationship-load Order.customer stack=admin_export.py\n"
+    )
+    result = callers.runpytest()
+    result.assert_outcomes(failed=2)
+    result.stdout.fnmatch_lines(
+        [
+            "*stale ignores*",
+            "  relationship-load Order.customer stack=admin_export.py",
+        ]
+    )
+
+
+def test_ini_stack_matching_nothing_is_stale(callers: pytest.Pytester) -> None:
+    _ini(callers, "relationship-load Order.customer stack=jobs/*")
+    result = callers.runpytest()
+    result.assert_outcomes(failed=2)
+    result.stdout.fnmatch_lines(
+        ["*stale ignores*", "  relationship-load Order.customer stack=jobs/*"]
+    )
+
+
+def test_marker_with_stack(callers: pytest.Pytester) -> None:
+    marker = '\npytestmark = pytest.mark.allow_nplusone(stack="admin_export.py")\n'
+    callers.makepyfile(test_a="import pytest\n" + CALLERS.format(marker=marker))
+    result = callers.runpytest()
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "*stale ignores*",
+            "  test_a.py::test_page: * * stack=admin_export.py",
+            "FAILED test_a.py::test_page*",
+        ]
+    )
+
+
+def test_strict_mode_honours_stack(callers: pytest.Pytester) -> None:
+    _ini(callers, "relationship-load Order.customer stack=admin_export.py")
+    result = callers.runpytest("--queryguard-strict")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["*NPlusOneDetected*"])

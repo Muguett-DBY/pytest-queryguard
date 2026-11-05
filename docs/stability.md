@@ -109,8 +109,8 @@ defaults, labels or messages, or remove them, with a changelog entry under
 - `queryguard_unused_eager_load` and the `unused-eager-load` finding kind
   (rule `queryguard/unused-eager-load` in SARIF). See
   [Unused eager loads](unused-eager-load.md).
-- The missing-index check on MySQL and MariaDB (tested by hand, not in CI; see
-  [the MySQL and MariaDB page](index-check-mysql.md)).
+- The missing-index check on MySQL and MariaDB (tested in CI on MySQL 8.4 and
+  MariaDB 11.8; see [the MySQL and MariaDB page](index-check-mysql.md)).
 - The in-application mode: every name in `pytest_queryguard.app` (`watch`,
   `unwatch`, `is_watched`, `QueryGuardASGI`, `QueryGuardWSGI`, `track`,
   `set_route`, `Settings`, `RequestReport`, `Finding`, `Query`, `CallSite`,

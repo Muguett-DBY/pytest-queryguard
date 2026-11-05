@@ -15,26 +15,42 @@ measurements are ones I ran myself, on scenarios I wrote.
   `b64d19c`, before 0.4.0rc1, and describe 0.4.0 (2026-10-14). 0.4.1 changed only the database time of
   statements that finish in another thread, which no row below measures, and
   0.5.0 added the in-application mode without changing the plugin.
+- Versions re-checked on **2026-11-05** on PyPI: queryspy 0.6.0 and
+  django-zeal 2.3.0 had been released since. Their changelogs list no change
+  to a cell of the matrix except the one marked "since 2.3.0": queryspy 0.5.1
+  and 0.6.0 change only the supported Python versions (0.6.0 drops 3.10), and
+  django-zeal 2.3.0 adds an opt-in check for unused `zeal_ignore` blocks and
+  fixes in its N+1 detection. The cells marked (v) were verified on queryspy
+  0.5.0 and were not run again on 0.6.0.
 - Marks in the matrix: **(v)** verified by running the package or reading its
-  installed source on that date; **(r)** read in the package's PyPI
+  installed source on that date (for queryspy, version 0.5.0; see above); **(r)** read in the package's PyPI
   description only, not run. Anything I could not check is marked as such.
 
 ## Who is who
 
 | Tool | Version (release date) | First release on PyPI | Targets | License |
 |---|---|---|---|---|
-| pytest-queryguard | 0.5.0 (2026-11-01) | 2026-10-10 | SQLAlchemy 2 | MIT |
-| [queryspy](https://github.com/sqla-native/queryspy) | 0.5.0 (2026-10-04) | 2026-08-04 | SQLAlchemy 2.0+ | MIT |
+| pytest-queryguard | 0.6.0 (2026-11-05) | 2026-10-10 | SQLAlchemy 2 | MIT |
+| [queryspy](https://github.com/sqla-native/queryspy) | 0.6.0 (2026-10-22) | 2026-08-04 | SQLAlchemy 2.0+, Python 3.11+ | MIT |
 | [pytest-querycount](https://github.com/ldavidsm/pytest-querycount) | 0.4.0 (2026-09-27) | 2026-09-27 | SQLAlchemy 2.x | MIT |
 | [nplusone](https://github.com/jmcarp/nplusone) | 1.0.0 (2018-05-21) | 2015-06-30 | Django, SQLAlchemy, Peewee | MIT |
-| [django-zeal](https://github.com/taobojlen/django-zeal) | 2.2.4 (2026-08-28) | 2024-07-20 | Django | MIT |
+| [django-zeal](https://github.com/taobojlen/django-zeal) | 2.3.0 (2026-10-14) | 2024-07-20 | Django | MIT |
 | [fastapi-nplusone](https://pypi.org/project/fastapi-nplusone/) | 0.1.0 (2026-02-10) | 2026-02-06 | FastAPI with SQLAlchemy | BSD-3-Clause |
 | [pytest-capquery](https://pypi.org/project/pytest-capquery/) | 0.3.3 (2026-04-04) | 2026-04-01 | SQLAlchemy, Python 3.13+ | CC BY-NC-SA 4.0 (see below) |
+| [orm-lens](https://github.com/FROWNINGdev/orm-lens) | 1.17.1 (2026-11-05) | 2026-07-12 as django-orm-lens, 2026-10-31 as orm-lens | Django; SQLAlchemy models in preview since 2026-10-31 | MIT |
 
-Release dates come from the PyPI JSON API on 2026-10-12, re-checked on 2026-10-13. Most of these
+Release dates come from the PyPI JSON API on 2026-10-12, re-checked on 2026-10-13 and 2026-11-05. Most of these
 projects are young: pytest-queryguard, queryspy and pytest-querycount shipped
 their first release in the last three months, so expect all of them to change. This
 table will be out of date; check the projects' own pages.
+
+orm-lens is a different kind of tool: it reads the source of Django and
+SQLAlchemy models and the code that queries them (static analysis of the
+syntax tree, with no database and without starting the application), and has
+a command line and an MCP server for AI coding agents. Its `nplusone` command
+looks for N+1 patterns in the code; it does not run tests or watch the
+statements a test sends, so it is not in the matrix below. Read from its PyPI
+description on 2026-11-05, not run.
 
 pytest-capquery's PyPI metadata has no license field. Its README badge and the
 `LICENSE` file in its GitHub repository are Creative Commons
@@ -43,7 +59,7 @@ and restricts commercial use. Read it before you adopt it.
 
 ## Feature matrix
 
-| | pytest-queryguard | queryspy 0.5.0 | pytest-querycount 0.4.0 | nplusone 1.0.0 | django-zeal 2.2.4 | fastapi-nplusone 0.1.0 | pytest-capquery 0.3.3 |
+| | pytest-queryguard | queryspy 0.6.0 | pytest-querycount 0.4.0 | nplusone 1.0.0 | django-zeal 2.3.0 | fastapi-nplusone 0.1.0 | pytest-capquery 0.3.3 |
 |---|---|---|---|---|---|---|---|
 | Works with SQLAlchemy 2 | yes | yes (v) | yes (v) | no: import fails on 2.1.4, silent or errors on 2.0.54 and 1.4.54 (v) | not applicable (Django only) (r) | SQLAlchemy, version not stated (r) | SQLAlchemy, version not stated (r) |
 | Fails tests with no marker or option | yes (v) | no: `--queryspy-strict` or `queryspy_fail_on`; budgets only with a marker or `queryspy_budget` (v) | no: markers, or `--querycount-max` (v) | not a pytest plugin (r) | needs a fixture or middleware setup (r) | logs a warning from a middleware (r) | needs a fixture; assertions in the test (r) |
@@ -56,10 +72,10 @@ and restricts commercial use. Read it before you adopt it.
 | Time budget and per-query timing | `max_db_time`, timing in `QueryLog` (v) | timing and the slowest statement; no time-budget option in the installed 0.5.0 (v, 2026-10-13) | timing in the failure and the report (v) | no | no | no | no |
 | Baseline for existing findings | yes (v) | yes (v) | no baseline; `--querycount-write-budgets` writes exact budgets into your tests (v) | no | allow-list in settings (r) | no | no |
 | SARIF and a GitHub Action | SARIF yes; a composite action in this repository, `action/` (v) | SARIF yes (v: `_serialize.py` in the installed package); an action, `sqla-native/queryspy@v0` (r) | not found: no SARIF code in the installed package (v) | no | no | no | no |
-| Missing-index check | PostgreSQL 16+, SQLite, and MySQL and MariaDB (tested by hand, not in CI), with a `CREATE INDEX`; hypopg verification on PostgreSQL (v) | none: no EXPLAIN code in the installed package (v) | PostgreSQL only, `no_seq_scan`, with a `CREATE INDEX` suggestion (v) | no | no | no | no |
+| Missing-index check | PostgreSQL 16+, SQLite, and MySQL and MariaDB (tested in CI on MySQL 8.4 and MariaDB 11.8), with a `CREATE INDEX`; hypopg verification on PostgreSQL (v) | none: no EXPLAIN code in the installed package (v) | PostgreSQL only, `no_seq_scan`, with a `CREATE INDEX` suggestion (v) | no | no | no | no |
 | Unused eager loads | experimental, off by default (v) | no, deliberately (r) | no | yes, for Flask-SQLAlchemy and Django per its README (r) | no (r) | no | no |
 | Row-by-row write loops | opt-in (v) | not reported (v) | not reported (v) | no | no | no | no |
-| Per-finding ignore | marker, ini patterns, baseline and an `ignore()` block (v) | marker and an `ignore()` block (v) | `ignore=` for the index check only (r) | whitelist and an `ignore` block (r) | allow-list and an ignore block (r) | no | no |
+| Per-finding ignore | marker, ini patterns, baseline and an `ignore()` block (v) | marker and an `ignore()` block (v) | `ignore=` for the index check only (r) | whitelist and an `ignore` block (r) | allow-list and an ignore block; since 2.3.0 an opt-in check for unused `zeal_ignore` blocks (r) | no | no |
 | In-app middleware and request panel | yes, experimental since 0.5.0: ASGI and WSGI, optional panel (v) | yes: ASGI and WSGI, optional panel (v: modules present) | no | Django, Flask-SQLAlchemy, WSGI (r) | Django middleware (r) | yes, FastAPI middleware (r) | no |
 | Async SQLAlchemy | yes (v) | yes (v) | yes (v) | no | no | not stated | yes, through `sync_engine` (r) |
 | pytest-xdist | tested in CI | not stated | summary per worker; budgets and N+1 unaffected (r) | not stated | not stated | not stated | not stated |
@@ -78,9 +94,11 @@ not work.
   is experimental and ships from 0.5.0.
 - **Other databases and drivers in their test matrix.** The queryspy README
   says it is tested against SQLite, PostgreSQL and MySQL with psycopg,
-  asyncpg, pymysql, aiomysql and aiosqlite. pytest-queryguard's CI uses
-  SQLite, and PostgreSQL 14 to 18 through pg8000 and asyncpg; psycopg is not in
-  CI (see the [FAQ](faq.md)).
+  asyncpg, pymysql, aiomysql and aiosqlite. pytest-queryguard's CI runs the
+  whole suite on SQLite (also through aiosqlite) and on PostgreSQL 14 to 18
+  through pg8000 and asyncpg, once more with psycopg 3 (see the [FAQ](faq.md));
+  on MySQL 8.4 and MariaDB 11.8, through PyMySQL and aiomysql, it runs only
+  the tests of the index check.
 - **Django.** django-zeal and nplusone cover Django; pytest-queryguard does not.
 - **Writing budgets for you.** `pytest-querycount --querycount-write-budgets`
   edits your tests to add an exact `max_queries` marker to each, and

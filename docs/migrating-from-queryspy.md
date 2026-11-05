@@ -6,7 +6,9 @@ This page maps each queryspy setting to its pytest-queryguard equivalent, as
 of queryspy 0.5.0 (read in its installed package on 2026-10-13) and
 pytest-queryguard 0.4.0. It is written by the author of pytest-queryguard;
 [Comparison](comparison.md) has the measured differences, including the ones
-where queryspy is ahead.
+where queryspy is ahead. Since then queryspy 0.5.1 and 0.6.0 (2026-10-22)
+changed only the supported Python versions, by their changelog (0.6.0 needs
+Python 3.11), so the settings below are the same.
 
 Before you move: queryspy also runs in your application, as ASGI and WSGI
 middleware with a request panel. pytest-queryguard runs only in tests. If you

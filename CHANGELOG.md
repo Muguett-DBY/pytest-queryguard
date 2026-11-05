@@ -47,6 +47,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `track()` units, chosen at random, and `min_db_time` skips the N+1
   rules for a request whose total database time is below it; budgets still
   apply. `RequestReport.sampled` is False for a unit left out (#279).
+- `stack=GLOB` in `queryguard_ignore` patterns and `allow_nplusone(...,
+  stack=...)`: leaves out a finding only when some frame of its reported
+  stack (the `first at` line and its `called from` lines) matches, as `file`
+  or `file:function`, so an N+1 in a shared helper can be accepted when it
+  is called from `app/admin/*` and nowhere else. It sees as deep as
+  `queryguard_stack_depth`; the baseline still matches by kind, label, file
+  and function (#276).
+
+### Changed
+
+- CI runs the MySQL and MariaDB index check against live servers: a `mysql`
+  job starts MySQL 8.4 and MariaDB 11.8 from their official Docker images and
+  runs the MySQL test files with PyMySQL and aiomysql. The job sets
+  `QUERYGUARD_REQUIRE_BACKENDS`, which turns the skip of the live tests (no
+  URL, no server, no driver) into a failure, so it cannot pass without having
+  run them. The check was tested by hand before (#277).
+
+### Documentation
+
+- The comparison lists the current releases of the other tools, checked on
+  PyPI on 2026-11-05: queryspy 0.6.0 and django-zeal 2.3.0 (the measurements
+  stay as made, on queryspy 0.5.0), and adds orm-lens, a static analyser of
+  Django and SQLAlchemy models (#281).
 
 ## [0.6.0] - 2026-11-05
 
