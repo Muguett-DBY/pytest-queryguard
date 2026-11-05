@@ -42,7 +42,7 @@ def _measure(
     # The budget failure is raised here; pytest should show the user's with block.
     __tracebackhide__ = True
     install()
-    collector = QueryCollector()
+    collector = QueryCollector(statements_only=local)
     log = QueryLog(collector)
     earlier = internal_error()  # recording is already off if this is set
     (push_local if local else push)(collector)
@@ -50,15 +50,22 @@ def _measure(
         yield log
     finally:
         (pop_local if local else pop)(collector)
-        log._finish(earlier)  # however the block ends, the log is fixed
+        error = log._finish(earlier)  # however the block ends, the log is fixed
+    if local and error is not None:
+        warn_internal(
+            QueryGuardInternalWarning(
+                "the QueryLog of this queryguard block may be incomplete: "
+                f"pytest-queryguard stopped recording after an internal error: {error!r}"
+            ),
+            stacklevel=3,
+        )
     # The verdict uses the log's fixed total: a statement still running in
     # another thread may finish after the block and grow the collector's.
     db_time = log.db_time
     count = log.count
-    # After an internal error nothing is recorded: too few is no verdict.
-    if exact and log._error is not None:
-        return
-    if limit is not None and (count != limit if exact else count > limit):
+    # After an internal error statements may be missing: too few is no verdict.
+    too_few = exact and count < (limit or 0) and error is None
+    if limit is not None and (count > limit or too_few):
         raise QueryBudgetExceeded(
             format_budget(
                 limit,
@@ -283,6 +290,12 @@ class QueryLog:
         ``QueryGuardInternalWarning`` when the block ends).
         """
         __tracebackhide__ = True
+        if self._collector.statements_only:
+            raise RuntimeError(
+                "a queryguard fixture block counts statements only, without the "
+                "relationship and column loads the N+1 rules need: use "
+                "record_queries() for assert_no_nplusone()"
+            )
         error = self._incomplete()
         if error is not None:
             raise RuntimeError(
@@ -377,45 +390,64 @@ def record_queries() -> AbstractContextManager[QueryLog]:
 class QueryGuardFixture:
     """What the ``queryguard`` fixture gives a test.
 
-    It counts only the statements run in the test's own thread, or in its
-    asyncio task: ``max_queries()`` and ``num_queries()`` blocks, and
-    ``queries`` and ``count`` for the whole test function. A statement that
-    another thread runs does not count, unless that thread runs in a copy of
-    the test's context (``asyncio.to_thread()``, ``contextvars.copy_context()``,
-    or any thread on a free-threaded build of Python 3.14, where new threads
-    inherit the context). To count every thread, use the ``max_queries()`` and
-    ``record_queries()`` functions instead.
+    ``max_queries()`` and ``num_queries()`` blocks count the statements run in
+    the test's own thread or asyncio task, and in the tasks and threads that
+    run in a copy of its context: a task created inside the block,
+    ``asyncio.to_thread()``, ``contextvars.copy_context().run()``, or any new
+    thread on a free-threaded build of Python 3.14. A thread or task that
+    was running before the block does not count.
+
+    ``queries`` and ``count`` are the statements of the whole test function,
+    from every thread, like ``record_queries()``.
 
     Not constructible by users: only the fixture creates one. Use the class
     for type hints.
     """
 
-    __slots__ = ("_earlier", "_log")
+    __slots__ = ("_earlier", "_log", "_state")
 
     def __init__(self) -> None:
         # Not for direct use: only the queryguard fixture creates one.
-        self._log = QueryLog(QueryCollector())
+        self._log = QueryLog(QueryCollector(statements_only=True))
         self._earlier: BaseException | None = None
+        self._state = "new"  # then "running" and "done", or "unused"
 
     def _start(self) -> None:
         """Record the statements of the test function (the plugin calls this)."""
+        if self._state != "new":
+            return
         install()
         self._earlier = internal_error()
-        push_local(self._log._collector)
+        push(self._log._collector)
+        self._state = "running"
 
     def _stop(self) -> None:
         """Stop recording; ``queries`` no longer changes. Safe to call again."""
-        if self._log._done:
+        if self._state == "new":
+            self._state = "unused"
             return
-        pop_local(self._log._collector)
-        self._log._finish(self._earlier)
+        if self._state != "running":
+            return
+        self._state = "done"
+        pop(self._log._collector)
+        error = self._log._finish(self._earlier)
+        if error is not None:
+            warn_internal(
+                QueryGuardInternalWarning(
+                    "queryguard.queries of this test may be incomplete: "
+                    "pytest-queryguard stopped recording after an internal "
+                    f"error: {error!r}"
+                )
+            )
 
     def max_queries(self, limit: int) -> AbstractContextManager[QueryLog]:
         """Fail when the block runs more than ``limit`` statements in this thread.
 
         Raises ``QueryBudgetExceeded`` with every statement of the block, as
-        ``pytest_queryguard.max_queries()`` does, and yields the same
-        ``QueryLog``. Blocks can be nested; each counts its own statements.
+        ``pytest_queryguard.max_queries()`` does, and yields a ``QueryLog`` of
+        the block (without ``assert_no_nplusone()``, which needs
+        ``record_queries()``). Blocks can be nested; each counts its own
+        statements.
         """
         _check_count("limit", limit)
         return _measure(limit, None, local=True)
@@ -429,19 +461,29 @@ class QueryGuardFixture:
         _check_count("expected", expected)
         return _measure(expected, None, local=True, exact=True)
 
+    def _started_log(self) -> QueryLog:
+        if self._state in ("new", "unused"):
+            raise RuntimeError(
+                "queryguard.queries counts the statements of the test function, "
+                "which has not run: read it in the test or in a fixture's teardown"
+            )
+        return self._log
+
     @property
     def queries(self) -> tuple[Query, ...]:
-        """The statements the test function has run in this thread so far.
+        """The statements the test function has run so far, from every thread.
 
         Counted from the start of the test function to its end: statements
-        that fixtures run in their setup or teardown are not here.
+        that fixtures run in their setup or teardown are not here. Raises
+        ``RuntimeError`` before the test function starts.
         """
-        return self._log.queries
+        return self._started_log().queries
 
     @property
     def count(self) -> int:
         """The number of statements in ``queries``."""
-        return self._log.count
+        return self._started_log().count
 
     def __repr__(self) -> str:
-        return f"<QueryGuardFixture {self.count} queries>"
+        count = "-" if self._state in ("new", "unused") else self._log.count
+        return f"<QueryGuardFixture {count} queries>"

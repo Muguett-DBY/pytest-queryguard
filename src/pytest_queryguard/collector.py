@@ -54,6 +54,13 @@ class QueryCollector:
     # Most statements (and, separately, relationship loads) whose details are
     # stored; None for no limit. Past it the collector only counts.
     max_events: int | None = None
+    # Counts statements only (the queryguard fixture's): it gets no relationship,
+    # column or cartesian loads, and while only such collectors are active the
+    # listeners skip the work those need.
+    statements_only: bool = False
+    # Set when a context-local collector is taken off: copies of its context
+    # (tasks, threads) that outlive the block send it nothing more.
+    closed: bool = False
     statement_count: int = 0
     relationship_load_count: int = 0
     column_load_count: int = 0
@@ -187,9 +194,13 @@ class QueryCollector:
 
 # Process-wide on purpose: the code under test may run in another thread.
 _stack: list[QueryCollector] = []
-# The tuple active() returns, rebuilt on push and pop only: the listeners
-# call active() for every statement.
+# The tuples active() and full_active() return, rebuilt on push and pop only:
+# the listeners call them for every statement.
 _active: tuple[QueryCollector, ...] = ()
+_active_full: tuple[QueryCollector, ...] = ()
+# The same as _active_full, as a list that is never rebound: the per-row
+# listeners read it without a call (listeners._collectors).
+_full_stack: list[QueryCollector] = []
 _generation = 0
 
 
@@ -198,48 +209,77 @@ def generation() -> int:
     return _generation
 
 
+def _rebuild() -> None:
+    global _active, _active_full
+    _active = tuple(_stack)
+    _active_full = tuple(c for c in _active if not c.statements_only)
+    _full_stack[:] = _active_full
+
+
 def push(collector: QueryCollector) -> None:
-    global _generation, _active
+    global _generation
     _generation += 1
     _stack.append(collector)
-    _active = tuple(_stack)
+    _rebuild()
 
 
 def pop(collector: QueryCollector) -> None:
-    global _generation, _active
+    global _generation
     _generation += 1
     for i in range(len(_stack) - 1, -1, -1):
         if _stack[i] is collector:
             del _stack[i]
             break
-    _active = tuple(_stack)
+    _rebuild()
 
 
 def active() -> tuple[QueryCollector, ...]:
     return _active
 
 
-# Collectors that count only the statements run in the context that pushed
-# them (the queryguard fixture's): the test's thread, or its asyncio task. A
-# thread started inside starts without them, unless it runs in a copy of the
-# context (asyncio.to_thread, or any thread on a free-threaded build, where
-# threads inherit the context). Their strict mode is never on and they do no
-# index check.
+def full_active() -> tuple[QueryCollector, ...]:
+    """The active collectors that want loads too, not only statements."""
+    return _active_full
+
+
+# Statements-only collectors that count only the statements run in the
+# context that pushed them (the queryguard fixture's blocks): the test's
+# thread or asyncio task, and the tasks and threads that run in a copy of its
+# context (a task created inside the block, asyncio.to_thread, any new thread
+# on a free-threaded build). They do not change the generation: the
+# attributions of other tasks and of the process-wide collectors stay valid.
 _local: ContextVar[tuple[QueryCollector, ...]] = ContextVar(
     "queryguard_local", default=()
 )
+_local_lock = threading.Lock()
+# Open context-local collectors in the process; while 0, targets() is active().
+_live_local = 0
+# Bumped when one closes, so the cached combination below is rebuilt.
+_local_version = 0
+# (active, local tuple, version, combined): the last combination built.
+_combined: tuple[object, object, int, tuple[QueryCollector, ...]] | None = None
 
 
 def push_local(collector: QueryCollector) -> None:
-    global _generation
-    _generation += 1  # a new measurement, as push() starts one
+    global _live_local
+    with _local_lock:
+        _live_local += 1
     _local.set((*_local.get(), collector))
 
 
 def pop_local(collector: QueryCollector) -> None:
-    """Take ``collector`` off; does nothing in a context that does not have it."""
-    global _generation
-    _generation += 1
+    """Close ``collector`` and take it off this context's stack.
+
+    Other contexts that still hold it (copies made inside the block) skip it
+    from now on.
+    """
+    global _live_local, _local_version, _combined
+    with _local_lock:
+        if not collector.closed:
+            collector.closed = True
+            _live_local -= 1
+            _local_version += 1
+            _combined = None
     stack = _local.get()
     for i in range(len(stack) - 1, -1, -1):
         if stack[i] is collector:
@@ -248,14 +288,34 @@ def pop_local(collector: QueryCollector) -> None:
 
 
 def targets() -> tuple[QueryCollector, ...]:
-    """The collectors a statement or load of this thread or task goes to."""
+    """The collectors a statement of this thread or task goes to."""
+    global _combined
+    if not _live_local:
+        return _active
     local = _local.get()
-    return (*_active, *local) if local else _active
+    if not local:
+        return _active
+    active, version, cached = _active, _local_version, _combined
+    if (
+        cached is not None
+        and cached[0] is active
+        and cached[1] is local
+        and cached[2] == version
+    ):
+        return cached[3]
+    live = tuple(c for c in local if not c.closed)
+    combined = (*active, *live) if live else active
+    _combined = (active, local, version, combined)
+    return combined
 
 
 def _reset_for_tests() -> None:
-    global _generation, _active
+    global _generation, _live_local, _local_version, _combined
     _generation += 1
     _stack.clear()
-    _active = ()
+    _rebuild()
     _local.set(())
+    with _local_lock:
+        _live_local = 0
+        _local_version += 1
+        _combined = None

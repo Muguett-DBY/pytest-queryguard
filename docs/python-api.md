@@ -128,10 +128,11 @@ are public; the constructors of `QueryLog`, `Query` and `CallSite` are not.
 the same `QueryLog`, so `with max_queries(3) as log:` also gives `log.count`,
 `log.queries` and `log.slowest()`.
 
-The `queryguard` fixture gives the same `QueryLog` from
-`queryguard.max_queries(n)` and `queryguard.num_queries(n)` blocks, and the
-statements of the whole test as `queryguard.queries`, but counts only the
-statements of the test's own thread or asyncio task (see
+The `queryguard` fixture gives a `QueryLog` from
+`queryguard.max_queries(n)` and `queryguard.num_queries(n)` blocks that
+counts only the statements of the test's own thread or asyncio task, and
+without `assert_no_nplusone()`, and the statements of the whole test as
+`queryguard.queries` (see
 [Budgets in a test with the `queryguard` fixture](budgets.md#budgets-in-a-test-with-the-queryguard-fixture)).
 
 Recording changes nothing else. The plugin's N+1 detection, budgets and

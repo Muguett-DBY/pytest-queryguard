@@ -11,10 +11,12 @@ import pytest
 from sqlalchemy import Connection, create_engine, text
 
 from pytest_queryguard import (
-    NPlusOneDetected,
     QueryBudgetExceeded,
     QueryGuardFixture,
+    QueryGuardInternalWarning,
     QueryLog,
+    collector,
+    listeners,
     max_queries,
 )
 from tests.models import Order, make_sync_session
@@ -102,7 +104,8 @@ def test_statements_of_another_thread_do_not_count(
             c.execute(text("select 'test'"))
     assert [q.sql for q in mine] == ["select 'test'"]
     assert {q.sql for q in everything} == {"select 'thread'", "select 'test'"}
-    assert [q.sql for q in queryguard.queries] == ["select 'test'"]
+    # the whole test counts every thread, like the plugin
+    assert {q.sql for q in queryguard.queries} == {"select 'thread'", "select 'test'"}
     engine.dispose()
 
 
@@ -184,15 +187,53 @@ def test_async_engine_statements_count(queryguard: QueryGuardFixture) -> None:
     asyncio.run(main())
 
 
-def test_block_log_sees_lazy_loads(queryguard: QueryGuardFixture) -> None:
+def test_block_log_counts_statements_only(queryguard: QueryGuardFixture) -> None:
     session = make_sync_session()
     with queryguard.max_queries(10) as log:
         orders = session.query(Order).order_by(Order.id).all()
         for order in orders:
             assert order.customer.name
+    # labelled while the plugin measures the test, as here
     assert {q.relationship for q in log} >= {"Order.customer"}
-    with pytest.raises(NPlusOneDetected, match="Order.customer"):
+    assert log._collector.relationship_loads == []
+    with pytest.raises(RuntimeError, match="record_queries"):
         log.assert_no_nplusone()
+
+
+def test_a_copy_of_the_context_stops_counting_with_the_block(
+    queryguard: QueryGuardFixture, conn: Connection
+) -> None:
+    async def later(go: asyncio.Event) -> None:
+        await go.wait()
+        conn.execute(text("select 'late'"))
+
+    async def main() -> tuple[QueryLog, QueryLog]:
+        go = asyncio.Event()
+        with queryguard.max_queries(5) as log:
+            task = asyncio.create_task(later(go))  # a copy of the block's context
+            conn.execute(text("select 'in'"))
+        with queryguard.max_queries(5) as second:
+            go.set()
+            await task  # its statement goes to neither block
+        return log, second
+
+    log, second = asyncio.run(main())
+    assert [q.sql for q in log] == ["select 'in'"]
+    assert log._collector.closed
+    assert [e.sql for e in log._collector.statements] == ["select 'in'"]
+    assert second.count == 0
+
+
+def test_targets_without_a_block_is_the_process_stack() -> None:
+    assert collector.targets() is collector.active()
+
+
+def test_targets_is_cached_inside_a_block(queryguard: QueryGuardFixture) -> None:
+    with queryguard.max_queries(0):
+        first = collector.targets()
+        assert collector.targets() is first
+        assert first[: len(collector.active())] == collector.active()
+    assert collector.targets() is collector.active()
 
 
 @pytest.fixture
@@ -291,11 +332,10 @@ def test_strict_mode_raises_inside_a_block(project: pytest.Pytester) -> None:
     result.stdout.no_fnmatch_line("*QueryBudgetExceeded*")
 
 
-def test_block_log_sees_lazy_loads_in_off_mode(project: pytest.Pytester) -> None:
+def test_statements_only_in_off_mode(project: pytest.Pytester) -> None:
     project.makepyfile(
         test_a="""
         import pytest
-        from pytest_queryguard import NPlusOneDetected
         from qgmodels import Order, make_sync_session
 
 
@@ -304,8 +344,9 @@ def test_block_log_sees_lazy_loads_in_off_mode(project: pytest.Pytester) -> None
             with queryguard.max_queries(10) as log:
                 for order in session.query(Order).all():
                     order.customer.name
-            assert "Order.customer" in {q.relationship for q in log}
-            with pytest.raises(NPlusOneDetected):
+            assert log.count == 4  # the orders, then 3 customers
+            assert queryguard.count > log.count  # and the seeding
+            with pytest.raises(RuntimeError, match="record_queries"):
                 log.assert_no_nplusone()
         """
     )
@@ -333,11 +374,104 @@ def test_requested_from_the_test_function(project: pytest.Pytester) -> None:
 def test_exact_budget_gives_no_verdict_after_an_internal_error(
     queryguard: QueryGuardFixture, conn: Connection
 ) -> None:
-    from pytest_queryguard import listeners
-
     previous = listeners.swap_error(RuntimeError("boom"))
     try:
-        with queryguard.num_queries(3):
+        with (
+            pytest.warns(QueryGuardInternalWarning, match="may be incomplete"),
+            queryguard.num_queries(3),
+        ):
             conn.execute(text("select 1"))  # not recorded
     finally:
         listeners.swap_error(previous)
+
+
+def test_exact_budget_fails_with_too_many_after_an_internal_error(
+    queryguard: QueryGuardFixture, conn: Connection
+) -> None:
+    errors: list[BaseException | None] = []
+
+    def run() -> None:
+        with queryguard.num_queries(0):
+            conn.execute(text("select 1"))
+            errors.append(listeners.swap_error(RuntimeError("boom")))
+
+    try:
+        with (
+            pytest.warns(QueryGuardInternalWarning),
+            pytest.raises(QueryBudgetExceeded, match="exactly 0 queries, got 1"),
+        ):
+            run()
+    finally:
+        listeners.swap_error(errors[0] if errors else None)
+
+
+def test_requested_by_another_fixture(project: pytest.Pytester) -> None:
+    project.makepyfile(
+        test_a="""
+        import pytest
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine("sqlite://")
+
+
+        @pytest.fixture
+        def guard(request):
+            g = request.getfixturevalue("queryguard")
+            with pytest.raises(RuntimeError, match="has not run"):
+                g.count
+            with engine.connect() as c:
+                c.execute(text("select 'setup'"))
+            return g
+
+
+        def test_it(guard):
+            with engine.connect() as c:
+                c.execute(text("select 'test'"))
+            assert [q.sql for q in guard.queries] == ["select 'test'"]
+        """
+    )
+    project.runpytest().assert_outcomes(passed=1)
+
+
+def test_anyio_tests_count_the_whole_test(project: pytest.Pytester) -> None:
+    """anyio runs every test in one runner task whose context is older."""
+    pytest.importorskip("anyio")
+    pytest.importorskip("aiosqlite")
+    project.makepyfile(
+        test_a="""
+        import pytest
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+
+        @pytest.fixture
+        def anyio_backend():
+            return "asyncio"
+
+
+        @pytest.fixture
+        async def conn():
+            engine = create_async_engine("sqlite+aiosqlite://")
+            async with engine.connect() as c:
+                await c.execute(text("select 'setup'"))
+                yield c
+            await engine.dispose()
+
+
+        @pytest.mark.anyio
+        async def test_first(queryguard, conn):
+            with queryguard.num_queries(1):
+                await conn.execute(text("select 1"))
+            await conn.execute(text("select 2"))
+            assert queryguard.count == 2
+
+
+        @pytest.mark.anyio
+        async def test_second(queryguard, conn):
+            with queryguard.num_queries(2):
+                await conn.execute(text("select 1"))
+                await conn.execute(text("select 2"))
+            assert queryguard.count == 2
+        """
+    )
+    project.runpytest("-p", "anyio").assert_outcomes(passed=2)

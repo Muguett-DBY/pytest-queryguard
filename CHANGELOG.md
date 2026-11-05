@@ -9,14 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A `queryguard` fixture for budgets inside a test, counting only the
-  statements of the test's own thread or asyncio task:
+- A `queryguard` fixture for budgets inside a test:
   `with queryguard.max_queries(3):` fails above 3 statements,
   `with queryguard.num_queries(3):` unless exactly 3 (pytest-django's
   `django_assert_max_num_queries` and `django_assert_num_queries`), both with
-  `QueryBudgetExceeded` and a `QueryLog`; `queryguard.queries` and
-  `queryguard.count` are the statements the test function has run so far.
-  `QueryGuardFixture` is its type for hints (#233).
+  `QueryBudgetExceeded` and a `QueryLog` of the block. The blocks count only
+  the statements of the test's own thread or asyncio task (and of tasks and
+  threads that run in a copy of its context). `queryguard.queries` and
+  `queryguard.count` are the statements the test function has run so far,
+  from every thread. `QueryGuardFixture` is its type for hints (#233).
 - Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
   lazy load of a relationship for the second parent loaded at one line
   (`queryguard_relationship_threshold`) raises

@@ -74,6 +74,8 @@ _internal_reported = pytest.StashKey[bool]()
 # Set on a test item once its function starts: a queryguard fixture requested
 # later (request.getfixturevalue in the test) starts counting at once.
 _call_started = pytest.StashKey[bool]()
+# The queryguard fixtures of a test item, however they were requested.
+_guards = pytest.StashKey[list[QueryGuardFixture]]()
 _failure_summarised = pytest.StashKey[bool]()
 _outer_error = pytest.StashKey[BaseException | None]()
 _outer_stopped = pytest.StashKey[str | None]()
@@ -2100,31 +2102,30 @@ def queryguard(
 
     ``with queryguard.max_queries(3):`` fails when the block runs more than 3
     SQL statements, ``with queryguard.num_queries(3):`` unless it runs exactly
-    3; ``queryguard.queries`` and ``queryguard.count`` are the statements the
-    test function has run so far. Statements of other threads do not count.
+    3; threads that were running before the block do not count.
+    ``queryguard.queries`` and ``queryguard.count`` are the statements the
+    test function has run so far, from every thread.
     """
     guard = QueryGuardFixture()
-    if request.node.stash.get(_call_started, False):
+    stash = request.node.stash
+    stash.setdefault(_guards, []).append(guard)
+    if stash.get(_call_started, False):
         guard._start()  # requested from the test function itself
     yield guard
     guard._stop()  # when the test function never ran
 
 
 def _fixtures(item: pytest.Item) -> list[QueryGuardFixture]:
-    """The ``queryguard`` fixtures of the test, once each.
-
-    Another fixture may return the same object under its own name.
-    """
-    values = getattr(item, "funcargs", {}).values()
-    return list({id(v): v for v in values if isinstance(v, QueryGuardFixture)}.values())
+    """The ``queryguard`` fixtures of the test, also those requested by name."""
+    return item.stash.get(_guards, [])
 
 
 def _start_fixture(item: pytest.Item) -> None:
     """Start the count of a requested ``queryguard`` fixture, at the test function.
 
     Here and not in the fixture, so that the statements of the fixtures set up
-    after it are not counted. Runs before the test in its thread and context,
-    so an asyncio test's task, which copies the context, counts too.
+    after it are not counted. The count is process-wide, so it does not
+    matter which task or thread the test function runs in.
     """
     try:
         item.stash[_call_started] = True

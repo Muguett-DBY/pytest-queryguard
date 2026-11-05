@@ -113,7 +113,7 @@ def _path(key: tuple[Any, ...], strategies: dict[Any, tuple[str, str | None]]) -
 
 
 def _on_orm_execute(state: Any) -> None:
-    active = collector.active()
+    active = collector.full_active()
     if not active or _broken or listeners._error is not None:
         return
     try:

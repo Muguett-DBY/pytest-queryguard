@@ -105,4 +105,4 @@ Command-line options:
 
 | Fixture | Meaning |
 |---|---|
-| `queryguard` | `queryguard.max_queries(limit)` and `queryguard.num_queries(expected)` blocks, and `queryguard.queries`, counting the statements of the test's own thread or task. See [Budgets and timing](budgets.md#budgets-in-a-test-with-the-queryguard-fixture). |
+| `queryguard` | `queryguard.max_queries(limit)` and `queryguard.num_queries(expected)` blocks that count the statements of the test's own thread or task, and `queryguard.queries`, the statements of the test function. See [Budgets and timing](budgets.md#budgets-in-a-test-with-the-queryguard-fixture). |
