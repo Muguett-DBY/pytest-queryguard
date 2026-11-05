@@ -119,6 +119,10 @@ class _Settings:
         self.update_budgets = False
         self.budgets_written: str | None = None
         self.budgets_failed: str | None = None
+        self.budgets_previous_error: str | None = None
+        # for the update: the node ids collected and those that failed
+        self.collected: set[str] = set()
+        self.failed: set[str] = set()
         # per-test counts and findings for --queryguard-json
         self.json_path: Path | None = None
         self.tests: testjson.Tests = {}
@@ -580,15 +584,14 @@ def _baseline_path(config: pytest.Config) -> Path | None:
 
 
 def _budgets_path(config: pytest.Config) -> Path | None:
-    cli: str | None = config.getoption("queryguard_budgets")
-    if cli is not None:
-        if not cli.strip():
-            raise pytest.UsageError("--queryguard-budgets needs a path")
-        path = Path(config.invocation_params.dir, cli.strip())
-        config.option.queryguard_budgets = str(path)  # workers get the resolved path
+    path = _output_path(config, "queryguard_budgets", "--queryguard-budgets")
+    if path is not None:
         return path
     name = "queryguard_budgets"
-    raw: Any = config.getini(name)
+    try:
+        raw: Any = config.getini(name)
+    except (TypeError, ValueError) as exc:
+        raise pytest.UsageError(f"{name} must be a path: {exc}") from None
     if not isinstance(raw, str):
         raise pytest.UsageError(f"{name} must be a path, got {raw!r}")
     return Path(config.rootpath, raw.strip()) if raw.strip() else None
@@ -596,7 +599,10 @@ def _budgets_path(config: pytest.Config) -> Path | None:
 
 def _default_budget(config: pytest.Config) -> int | None:
     name = "queryguard_max_queries"
-    raw: Any = config.getini(name)
+    try:
+        raw: Any = config.getini(name)
+    except (TypeError, ValueError) as exc:
+        raise pytest.UsageError(f"{name} must be an integer >= 0: {exc}") from None
     if isinstance(raw, str) and not raw.strip():
         return None
     try:
@@ -700,7 +706,10 @@ def _read_settings(config: pytest.Config) -> _Settings:
         except budget_files.BudgetFileError as exc:
             if not settings.update_budgets:
                 raise pytest.UsageError(f"queryguard budgets: {exc}") from None
-            settings.budgets = {}  # an update replaces a missing or broken file
+            # an update replaces a missing file; a broken one is reported
+            settings.budgets = {}
+            if settings.budgets_path.exists():
+                settings.budgets_previous_error = str(exc)
     return settings
 
 
@@ -744,6 +753,7 @@ def _configure(config: pytest.Config) -> None:
     catalog.reset()
     settings = _read_settings(config)
     config.stash[_settings] = settings
+    _active.append(settings)
     if (
         settings.baselining
         or settings.sarif_path
@@ -778,8 +788,16 @@ class _CollectionErrors:
             record_error(exc, "collection report")
 
 
+# The settings of the configured sessions, innermost last (pytester nests one
+# in the process): for hooks that get no config, such as pytest_runtest_logreport.
+_active: list[_Settings] = []
+
+
 def pytest_unconfigure(config: pytest.Config) -> None:
     stash = config.stash
+    settings = stash.get(_settings, None)
+    if settings is not None and settings in _active:
+        _active.remove(settings)
     # Every step runs, so a nested session (pytester) always gives the outer
     # session its state back.
     steps: tuple[Callable[[], object], ...] = (
@@ -1119,9 +1137,11 @@ def _other_budget(
     """(limit, where it comes from) for a test without a max_queries marker.
 
     The budget file first, then queryguard_max_queries. While the file is being
-    updated its old numbers are not applied: the run writes the new ones.
+    updated neither applies: the run records the counts and writes them.
     """
-    if not settings.update_budgets and item.nodeid in settings.budgets:
+    if settings.update_budgets:
+        return None, None
+    if item.nodeid in settings.budgets:
         name = settings.budgets_path.name if settings.budgets_path else "budget file"
         return settings.budgets[item.nodeid], (
             f"the budget of this test in {name}; if the new count is right, "
@@ -1191,17 +1211,14 @@ def _budget_report(
     try:
         if collector.statement_count <= limit:
             return None
-        text = format_budget(
+        return format_budget(
             limit,
             collector.statements,
             cwd=item.config.rootpath,
             total=collector.statement_count,
             db_time=collector.db_time,
+            source=source,
         )
-        if source is None:
-            return text
-        head, _, rest = text.partition("\n")
-        return f"{head}\n  (the limit is {source})\n{rest}"
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "budget report")
         return None
@@ -1212,8 +1229,10 @@ def _record(item: pytest.Item, collector: QueryCollector, settings: _Settings) -
     # After an internal error the listeners stop recording, so a count would be wrong.
     if settings.mode == "off" or internal_error() is not None:
         return
-    if settings.counting:
+    if settings.json_path is not None:
         testjson.record_counts(settings.tests, item.nodeid, collector)
+    elif settings.update_budgets:
+        settings.tests[item.nodeid] = {"statements": collector.statement_count}
     counts = item.config.stash.get(_report, None)
     if counts is not None:
         counts.append((item.nodeid, collector.statement_count))
@@ -1303,6 +1322,7 @@ def pytest_testnodedown(node: Any, error: object) -> None:
             testjson.merge(settings.tests, output.get("queryguard_tests", {}))
             if output.get("queryguard_deselected", False):
                 settings.deselected = True
+            settings.collected.update(output.get("queryguard_collected", []))
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             settings.json_incomplete = True
             record_error(exc, "merging the results of a pytest-xdist worker")
@@ -1341,6 +1361,21 @@ def pytest_deselected(items: Sequence[pytest.Item]) -> None:
         record_error(exc, "baseline update")
 
 
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """For a budget update: the tests that failed keep their old entry.
+
+    With pytest-xdist the controller gets every worker's reports here.
+    """
+    if not report.failed:
+        return
+    try:
+        settings = _active[-1] if _active else None
+        if settings is not None and settings.update_budgets:
+            settings.failed.add(report.nodeid)
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        record_error(exc, "budget update")
+
+
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
@@ -1356,6 +1391,8 @@ def pytest_collection_modifyitems(
             and len(items) < before
         ):
             settings.deselected = True
+        if settings is not None and settings.update_budgets:
+            settings.collected.update(item.nodeid for item in items)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "baseline update")
     return result
@@ -1452,6 +1489,7 @@ def pytest_sessionfinish(
             if settings.counting:
                 output["queryguard_tests"] = settings.tests
                 output["queryguard_deselected"] = settings.deselected
+                output["queryguard_collected"] = sorted(settings.collected)
                 output["queryguard_json_incomplete"] = internal_error() is not None
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "sending the results to the pytest-xdist controller")
@@ -1576,9 +1614,25 @@ def _write_budgets(
         settings.budgets_failed = "not updated: --collect-only runs no tests"
         return
     narrowed = _run_is_narrowed(session.config, settings.deselected)
+    if narrowed and settings.budgets_previous_error is not None:
+        settings.budgets_failed = (
+            f"not updated: {settings.budgets_previous_error}; this run does not "
+            "cover the whole suite, so the entries of the other tests would be lost"
+        )
+        return
     before = settings.budgets
+    marked = {k for k, e in settings.tests.items() if e.get("max_queries_marker")}
+    counts = {
+        nodeid: count
+        for nodeid, count in budget_files.counts_of(settings.tests).items()
+        if nodeid not in marked and nodeid not in settings.failed
+    }
     after = budget_files.updated(
-        before, budget_files.counts_of(settings.tests), narrowed=narrowed
+        before,
+        counts,
+        narrowed=narrowed,
+        collected=settings.collected,
+        marked=marked,
     )
     try:
         budget_files.write(path, after)
@@ -1586,6 +1640,11 @@ def _write_budgets(
         settings.budgets_failed = f"could not write {path}: {exc}"
         return
     text = f"{path}: {budget_files.describe(before, after)}"
+    if settings.budgets_previous_error is not None:
+        text += f"\nthe previous file was replaced: {settings.budgets_previous_error}"
+    kept = len(settings.failed & set(after))
+    if kept:
+        text += f"\n{kept} failing tests kept their previous budget"
     if narrowed:
         text += "\nthis run did not cover the whole suite: entries of tests that did not run are kept"
     settings.budgets_written = text
@@ -1859,6 +1918,10 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
     finally:
         try:
             _stop_measuring(item, collector, settings, tracker)
+            entry = settings.tests.get(item.nodeid) if settings.counting else None
+            if entry is not None:
+                # a test with its own marker keeps no entry in the budget file
+                entry["max_queries_marker"] = limit is not None and source is None
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "end of the measurement")
             _discard(collector, tracker)

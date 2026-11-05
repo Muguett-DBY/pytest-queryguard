@@ -197,6 +197,7 @@ tests started running more queries before anything fails.
   `update`, `delete`, `transaction` and `other`; `truncated` is true when the
   test ran more than `queryguard_max_events` statements, and then `by_verb`
   covers only the first of them.
+- `max_queries_marker` is true for a test with its own `max_queries` marker.
 - `findings` lists what the test found after ignores. Findings in the
   baseline are listed too, with `"baselined": true`, so the file is the same
   whether or not the baseline is being updated. `db_time` is null when no

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any
 
@@ -58,14 +59,23 @@ def updated(
     counts: Mapping[str, int],
     *,
     narrowed: bool,
+    collected: AbstractSet[str] = frozenset(),
+    marked: AbstractSet[str] = frozenset(),
 ) -> dict[str, int]:
     """The new budgets: the counts of the tests that ran.
 
-    A full run drops the entries of tests that did not run (deleted or
-    renamed); a narrowed run (-k, a path, --lf) keeps them.
+    A test that was collected but has no count (skipped, failed, errored in
+    setup) keeps its entry. A full run drops the entries of tests that were
+    not collected (deleted or renamed); a narrowed run (-k, a path, --lf)
+    keeps them. A test with its own max_queries marker has no entry.
     """
-    result = dict(before) if narrowed else {}
+    if narrowed:
+        result = dict(before)
+    else:
+        result = {k: v for k, v in before.items() if k in collected}
     result.update(counts)
+    for nodeid in marked:
+        result.pop(nodeid, None)
     return result
 
 

@@ -78,10 +78,18 @@ queryguard_budgets = queryguard-budgets.json
   purpose.
 - An update on part of the suite (`-k`, a path, `--lf`) keeps the entries of
   the tests that did not run; an update on the whole suite drops the entries
-  of tests that no longer exist. An update that stops early (`-x`, Ctrl-C, a
-  collection error) does not write the file. It works the same with
-  pytest-xdist.
-- While the file is being updated its old numbers are not applied.
+  of tests that no longer exist. A test that was skipped, failed, or errored
+  in setup keeps its entry: a test that stopped halfway would otherwise get a
+  number below what it runs when it passes. An update that stops early
+  (`-x`, Ctrl-C, a collection error) does not write the file. It works the
+  same with pytest-xdist.
+- A test with its own `max_queries` marker has no entry: the marker is the
+  budget.
+- While the file is being updated neither its old numbers nor
+  `queryguard_max_queries` are applied, so the update passes.
+- An update replaces a file it cannot read (a merge conflict) only when it
+  covers the whole suite, and says so; a partial update leaves such a file
+  alone.
 - The file has node ids, so a renamed or reparametrized test loses its entry
   until the next update.
 

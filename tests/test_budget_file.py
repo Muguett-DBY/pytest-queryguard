@@ -65,8 +65,10 @@ def test_update_writes_every_count_and_the_file_then_holds(
     result = _run(project, "--queryguard-budgets=b.json", "--queryguard-update-budgets")
     result.assert_outcomes(passed=3)
     result.stdout.fnmatch_lines(
-        ["*queryguard: budgets updated*", "*b.json: 3 entries (3 added, 0 removed*"]
+        ["*queryguard: budgets updated*", "*b.json: 2 entries (2 added, 0 removed*"]
     )
+    # the test with its own marker has no entry
+    del counts["test_suite.py::test_marked"]
     assert _budgets(project.path / "b.json") == counts
     _run(project, "--queryguard-budgets=b.json").assert_outcomes(passed=3)
 
@@ -120,7 +122,7 @@ def test_a_partial_update_keeps_the_entries_of_tests_that_did_not_run(
 ) -> None:
     budgets.write(
         project.path / "b.json",
-        {"test_suite.py::test_marked": 7, "test_suite.py::test_deleted": 9},
+        {"test_suite.py::test_other": 7, "test_suite.py::test_deleted": 9},
     )
     result = _run(
         project,
@@ -131,7 +133,7 @@ def test_a_partial_update_keeps_the_entries_of_tests_that_did_not_run(
     )
     result.stdout.fnmatch_lines(["*did not cover the whole suite*"])
     after = _budgets(project.path / "b.json")
-    assert after["test_suite.py::test_marked"] == 7
+    assert after["test_suite.py::test_other"] == 7
     assert after["test_suite.py::test_deleted"] == 9
     assert "test_suite.py::test_queries[few]" in after
 
@@ -168,6 +170,7 @@ def test_an_update_with_xdist_has_the_tests_of_every_worker(
         "--queryguard-budgets=b.json",
         "--queryguard-update-budgets",
     ).assert_outcomes(passed=3)
+    del counts["test_suite.py::test_marked"]
     assert _budgets(project.path / "b.json") == counts
 
 
@@ -175,7 +178,7 @@ def test_xdist_with_a_filter_keeps_the_other_entries(
     project: pytest.Pytester,
 ) -> None:
     pytest.importorskip("xdist")
-    budgets.write(project.path / "b.json", {"test_suite.py::test_marked": 7})
+    budgets.write(project.path / "b.json", {"test_suite.py::test_other": 7})
     _run(
         project,
         "-n",
@@ -185,7 +188,7 @@ def test_xdist_with_a_filter_keeps_the_other_entries(
         "--queryguard-budgets=b.json",
         "--queryguard-update-budgets",
     )
-    assert _budgets(project.path / "b.json")["test_suite.py::test_marked"] == 7
+    assert _budgets(project.path / "b.json")["test_suite.py::test_other"] == 7
 
 
 @pytest.mark.parametrize(
@@ -238,8 +241,9 @@ def test_a_broken_file_is_a_usage_error_but_an_update_replaces_it(
     result = _run(project, "--queryguard-budgets=b.json")
     assert result.ret == pytest.ExitCode.USAGE_ERROR
     result.stderr.fnmatch_lines(["*must be a non-negative integer*"])
-    _run(project, "--queryguard-budgets=b.json", "--queryguard-update-budgets")
-    assert len(_budgets(project.path / "b.json")) == 3
+    result = _run(project, "--queryguard-budgets=b.json", "--queryguard-update-budgets")
+    result.stdout.fnmatch_lines(["*the previous file was replaced*"])
+    assert len(_budgets(project.path / "b.json")) == 2
 
 
 def test_describe_counts_the_changes() -> None:
@@ -248,3 +252,82 @@ def test_describe_counts_the_changes() -> None:
     assert budgets.describe(before, after) == (
         "4 entries (1 added, 0 removed, 1 raised, 1 lowered)"
     )
+
+
+def test_a_broken_file_is_not_replaced_by_a_partial_update(
+    project: pytest.Pytester,
+) -> None:
+    (project.path / "b.json").write_text("<<<<<<< HEAD")
+    result = _run(
+        project,
+        "--queryguard-budgets=b.json",
+        "--queryguard-update-budgets",
+        "-k",
+        "few",
+    )
+    result.stdout.fnmatch_lines(["*not updated: cannot read budget file*"])
+    assert (project.path / "b.json").read_text() == "<<<<<<< HEAD"
+
+
+EXTRA = """
+import pytest
+from qgmodels import Order, make_sync_session
+
+
+@pytest.mark.skip(reason="no postgres here")
+def test_skipped():
+    pass
+
+
+@pytest.fixture
+def broken():
+    raise RuntimeError("setup failed")
+
+
+def test_setup_error(broken):
+    pass
+
+
+def test_fails_halfway():
+    session = make_sync_session()
+    session.query(Order).all()
+    assert False
+"""
+
+
+def test_tests_without_a_count_keep_their_entries(project: pytest.Pytester) -> None:
+    project.makepyfile(test_extra=EXTRA)
+    budgets.write(
+        project.path / "b.json",
+        {
+            "test_extra.py::test_skipped": 4,
+            "test_extra.py::test_setup_error": 5,
+            "test_extra.py::test_fails_halfway": 50,
+            "test_extra.py::test_deleted": 6,
+        },
+    )
+    result = _run(project, "--queryguard-budgets=b.json", "--queryguard-update-budgets")
+    result.stdout.fnmatch_lines(["*failing tests kept their previous budget*"])
+    after = _budgets(project.path / "b.json")
+    assert after["test_extra.py::test_skipped"] == 4
+    assert after["test_extra.py::test_setup_error"] == 5
+    # it stopped early: its low count would become a budget that fails later
+    assert after["test_extra.py::test_fails_halfway"] == 50
+    assert "test_extra.py::test_deleted" not in after
+
+
+def test_the_default_budget_does_not_fail_the_update(project: pytest.Pytester) -> None:
+    project.makeini(
+        "[pytest]\nqueryguard_repeat_threshold = 50\nqueryguard_max_queries = 0\n"
+    )
+    result = _run(project, "--queryguard-budgets=b.json", "--queryguard-update-budgets")
+    result.assert_outcomes(passed=3)
+    # and the written numbers then win over the default
+    _run(project, "--queryguard-budgets=b.json").assert_outcomes(passed=3)
+
+
+def test_the_json_says_which_tests_have_a_marker(project: pytest.Pytester) -> None:
+    _run(project, "--queryguard-json=c.json")
+    tests = json.loads((project.path / "c.json").read_text())["tests"]
+    assert tests["test_suite.py::test_marked"]["max_queries_marker"] is True
+    assert tests["test_suite.py::test_queries[few]"]["max_queries_marker"] is False
