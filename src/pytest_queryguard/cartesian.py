@@ -179,7 +179,7 @@ def _option(path: Path_, last: str) -> str:
 
 def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Finding]:
     """One finding per combination of collections, with the statements counted."""
-    from .messages import _display_path, _location, kind_line
+    from .messages import _display_path, _first_at, _stack, kind_line
 
     grouped: dict[tuple[Path_, ...], list[CartesianLoadEvent]] = {}
     for load in c.cartesian_loads:
@@ -188,7 +188,6 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
     for collections, loads in grouped.items():
         first = loads[0]
         site = first.callsite
-        where = "<unknown location>" if site is None else _location(site, cwd)
         names = [path[-1][0] for path in collections]
         times = "once" if len(loads) == 1 else f"{len(loads)} times"
         keep, *split = collections
@@ -198,7 +197,7 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
         message = "\n".join(
             [
                 f"  {' and '.join(names)} were joined into one query side by side, {times}",
-                f"  first at {where}",
+                *_first_at(site, cwd),
                 kind_line(KIND_CARTESIAN_LOAD, label(collections)),
                 "  each row repeats per pair of their items: the rows grow as "
                 "their product"
@@ -220,6 +219,7 @@ def findings(c: collector.QueryCollector, *, cwd: Path | None = None) -> list[Fi
                 message=message,
                 line=None if site is None else site.lineno,
                 count=len(loads),
+                stack=_stack(site, cwd),
             )
         )
     return result

@@ -78,6 +78,11 @@ class Finding:
     # which the label may leave out or quote; lets ignore patterns match any
     # spelling of the table. Not part of the identity.
     table: tuple[str | None, str] | None = field(default=None, compare=False)
+    # The application frames that called the first location, innermost first,
+    # as (file, line, function) with ``file`` shown like ``file`` above. Empty
+    # when unknown or turned off (queryguard_stack_depth = 0). Not part of the
+    # identity.
+    stack: tuple[tuple[str, int, str], ...] = field(default=(), compare=False)
 
     @property
     def identity(self) -> tuple[str, str, str | None, str | None]:

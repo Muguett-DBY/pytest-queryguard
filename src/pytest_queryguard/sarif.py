@@ -145,6 +145,7 @@ def add(store: Collected, finding: Finding, level: str) -> None:
         count=old.count + finding.count,
         tests=old.tests + finding.tests,
         peak=max(_peak(old), _peak(finding)),
+        stack=best.stack,
     )
     store[key] = (merged, LEVEL_ERROR if LEVEL_ERROR in (level, old_level) else level)
 
@@ -163,6 +164,7 @@ def to_wire(store: Collected) -> list[dict[str, Any]]:
             "count": f.count,
             "tests": f.tests,
             "peak": f.peak,
+            "stack": [list(frame) for frame in f.stack],
             "level": level,
         }
         for f, level in store.values()
@@ -182,6 +184,10 @@ def merge_wire(store: Collected, wire: Iterable[Mapping[str, Any]]) -> None:
             count=entry["count"],
             tests=entry.get("tests", 1),
             peak=entry.get("peak"),
+            stack=tuple(
+                (str(file), int(line), str(function))
+                for file, line, function in entry.get("stack", ())
+            ),
         )
         add(store, finding, entry["level"])
 
@@ -265,23 +271,52 @@ def _properties(finding: Finding) -> dict[str, Any]:
     return properties
 
 
-def _result(finding: Finding, level: str, prefix: str = "") -> dict[str, Any] | None:
-    path = repo_path(finding.file)
+def _location(
+    file: str | None, line: int | None, function: str | None, prefix: str
+) -> dict[str, Any] | None:
+    path = repo_path(file)
     if path is None:
-        return None  # GitHub shows a result only with a location
+        return None
     if prefix:
         path = f"{prefix}/{path}"
-    region: dict[str, Any] = {"startLine": finding.line if finding.line else 1}
+    region: dict[str, Any] = {"startLine": line if line else 1}
     location: dict[str, Any] = {
         "physicalLocation": {
             "artifactLocation": {"uri": path},
             "region": region,
         }
     }
-    if finding.function:
-        location["logicalLocations"] = [{"name": finding.function, "kind": "function"}]
+    if function:
+        location["logicalLocations"] = [{"name": function, "kind": "function"}]
+    return location
+
+
+def _code_flows(
+    finding: Finding, location: dict[str, Any], prefix: str
+) -> list[dict[str, Any]]:
+    """The short stack as one thread flow, outermost caller first, or [].
+
+    GitHub shows a code flow as the path to the alert; callers outside the
+    repository are left out.
+    """
+    steps = []
+    for file, line, function in reversed(finding.stack):
+        caller = _location(file, line, function, prefix)
+        if caller is not None:
+            steps.append({"location": {**caller, "message": {"text": function}}})
+    if not steps:
+        return []
+    last = {**location, "message": {"text": finding.function or finding.label}}
+    steps.append({"location": last})
+    return [{"threadFlows": [{"locations": steps}]}]
+
+
+def _result(finding: Finding, level: str, prefix: str = "") -> dict[str, Any] | None:
+    location = _location(finding.file, finding.line, finding.function, prefix)
+    if location is None:
+        return None  # GitHub shows a result only with a location
     digest = fingerprint(finding.identity)
-    return {
+    result: dict[str, Any] = {
         "ruleId": rule_id(finding.kind),
         "ruleIndex": KINDS.index(finding.kind),
         "level": level,
@@ -295,6 +330,10 @@ def _result(finding: Finding, level: str, prefix: str = "") -> dict[str, Any] | 
         },
         "properties": _properties(finding),
     }
+    flows = _code_flows(finding, location, prefix)
+    if flows:
+        result["codeFlows"] = flows
+    return result
 
 
 def build(

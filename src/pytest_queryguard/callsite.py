@@ -88,9 +88,73 @@ def _parent_greenlet_frames() -> Iterator[FrameType]:
 # (filename, line, function) -> CallSite.  A suite runs the same few hundred
 # lines over and over, and CallSite is immutable, so one object per location
 # is shared instead of building a new one for every statement. Bounded, so
-# generated code cannot grow it without limit.
+# generated code cannot grow it without limit. Emptied when a measurement
+# starts (new_measurement()), so that the first statement of each line in it
+# builds the CallSite again and records its callers.
 _sites: dict[tuple[str, int, str], CallSite] = {}
 _MAX_SITES = 4096
+# CallSite -> the application frames that called it, innermost first, as seen
+# the first time the line ran since the latest measurement started. The cost
+# is one walk up the stack per line and measurement, never one per statement.
+_stacks: dict[CallSite, tuple[CallSite, ...]] = {}
+DEFAULT_STACK_DEPTH = 3
+_stack_depth = DEFAULT_STACK_DEPTH
+
+
+def new_measurement() -> None:
+    """Record the callers of each line again, the next time it runs.
+
+    The callers recorded before stay until then: an outer measurement still
+    finds those of the lines it ran before an inner one started.
+    """
+    _sites.clear()
+
+
+def swap_stack_depth(depth: int) -> int:
+    """Set how many callers are recorded per call site; return the previous value."""
+    global _stack_depth
+    old, _stack_depth = _stack_depth, depth
+    return old
+
+
+def stack_of(site: CallSite | None) -> tuple[CallSite, ...]:
+    """The application frames that called ``site``, innermost first."""
+    return () if site is None else _stacks.get(site, ())
+
+
+_runner: tuple[str, ...] | None = None
+
+
+def _runner_prefixes() -> tuple[str, ...]:
+    global _runner
+    if _runner is None:
+        paths = (_package_dir(name) for name in ("pytest", "_pytest", "pluggy"))
+        _runner = tuple(os.path.normcase(p) for p in paths if p)
+    return _runner
+
+
+def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
+    """Up to ``depth`` application frames from ``frame`` outwards.
+
+    The walk ends at the first frame of pytest or pluggy: above it is the
+    runner (and its console script), not the test.
+    """
+    found: list[CallSite] = []
+    runner = _runner_prefixes()
+    while frame is not None and len(found) < depth:
+        code = frame.f_code
+        if runner and os.path.normcase(code.co_filename).startswith(runner):
+            break
+        if not _is_internal(code.co_filename):
+            found.append(
+                CallSite(
+                    filename=code.co_filename,
+                    lineno=frame.f_lineno,
+                    function=code.co_name,
+                )
+            )
+        frame = frame.f_back
+    return tuple(found)
 
 
 def _first_external(frame: FrameType | None) -> CallSite | None:
@@ -111,6 +175,9 @@ def _first_external(frame: FrameType | None) -> CallSite | None:
                 site = _sites[key] = CallSite(
                     filename=filename, lineno=key[1], function=key[2]
                 )
+                if len(_stacks) >= _MAX_SITES:
+                    _stacks.clear()
+                _stacks[site] = _callers(frame.f_back, _stack_depth)
             return site
         frame = frame.f_back
     return None

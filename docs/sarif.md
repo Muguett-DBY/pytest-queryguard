@@ -109,6 +109,12 @@ still says `<unknown location>`, and the baseline and the ignore rules see the
 finding as before. One result per test then, because the test is part of the
 result's identity.
 
+The `called from` lines of the terminal report (`queryguard_stack_depth`)
+become a code flow on the result (`codeFlows`, one thread flow from the
+outermost caller to the finding's line), which GitHub shows as the path to
+the alert. Callers outside the rootdir are left out of it; a result with no
+caller left has no code flow.
+
 The file is written at the end of every run, also when no finding was made,
 so an upload step always has something to upload. With pytest-xdist, the
 workers send their findings to the controller, which writes the file once.
@@ -145,6 +151,20 @@ An excerpt:
   "partialFingerprints": {
     "primaryLocationLineHash": "6f1c...:1",
     "queryguardIdentity/v1": "6f1c..."
-  }
+  },
+  "codeFlows": [{ "threadFlows": [{ "locations": [
+    { "location": {
+        "physicalLocation": {
+          "artifactLocation": { "uri": "tests/test_orders.py" },
+          "region": { "startLine": 7 }
+        },
+        "message": { "text": "test_list_orders" } } },
+    { "location": {
+        "physicalLocation": {
+          "artifactLocation": { "uri": "app/orders.py" },
+          "region": { "startLine": 8 }
+        },
+        "message": { "text": "list_orders" } } }
+  ] }] }]
 }
 ```

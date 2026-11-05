@@ -185,6 +185,8 @@ tests started running more queries before anything fails.
       "findings": [
         {"kind": "relationship-load", "label": "Order.customer", "count": 50,
          "file": "app/orders.py", "function": "list_orders", "line": 12,
+         "stack": [{"file": "tests/test_orders.py", "function": "test_list_orders",
+                    "line": 7}],
          "baselined": false}
       ]
     }
@@ -198,7 +200,9 @@ tests started running more queries before anything fails.
   test ran more than `queryguard_max_events` statements, and then `by_verb`
   covers only the first of them.
 - `max_queries_marker` is true for a test with its own `max_queries` marker.
-- `findings` lists what the test found after ignores. Findings in the
+- `findings` lists what the test found after ignores. `stack` holds the
+  lines of your code that called `file:line`, innermost first, as the
+  terminal report's `called from` lines (`queryguard_stack_depth`). Findings in the
   baseline are listed too, with `"baselined": true`, so the file is the same
   whether or not the baseline is being updated. `db_time` is null when no
   statement was timed.

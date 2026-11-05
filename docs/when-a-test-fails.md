@@ -12,6 +12,7 @@ queryguard: N+1 detected
 
   Order.customer was lazy-loaded 50 times
   first at app/orders.py:10 in list_orders
+    called from tests/test_orders.py:7 in test_list_orders
   parents loaded at app/orders.py:9 in list_orders
   kind: relationship-load  label: Order.customer
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
@@ -26,6 +27,11 @@ queryguard: N+1 detected
   library and `site-packages`. If it points to your test file instead of the
   application, the application is probably installed non-editable into
   `site-packages` (see [Limitations](limitations.md)).
+- `called from` lines are the lines of your code that called it, innermost
+  first, up to the test: the path through your helpers, with the frames of
+  SQLAlchemy, pytest and the plugin left out. They are recorded the first time
+  that line runs in the test. `queryguard_stack_depth` sets how many are shown
+  (3 by default, `0` for none).
 - `parents loaded at` (relationship loads only) is the line that ran the query
   whose rows became the parent objects: the place for the loader option, even
   when the query is built in a helper and the loop is somewhere else. Parents

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Each finding shows a short stack: under `first at`, a `called from` line
+  for each line of your code that called it, innermost first, up to the test,
+  with SQLAlchemy, pytest and plugin frames left out, so the path through
+  helpers is visible. `queryguard_stack_depth` sets how many (3 by default,
+  `0` for none). The SARIF file carries them as a code flow, which GitHub
+  shows as the path to the alert, and the JSON file as `stack` on each
+  finding. They are recorded once per line and test, not per statement
+  (#226).
 - Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
   lazy load of a relationship for the second parent loaded at one line
   (`queryguard_relationship_threshold`) raises

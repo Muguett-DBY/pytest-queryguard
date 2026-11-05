@@ -5,6 +5,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from . import callsite
 from .events import (
     CallSite,
     CartesianLoadEvent,
@@ -200,6 +201,7 @@ def generation() -> int:
 def push(collector: QueryCollector) -> None:
     global _generation, _active
     _generation += 1
+    callsite.new_measurement()
     _stack.append(collector)
     _active = tuple(_stack)
 
