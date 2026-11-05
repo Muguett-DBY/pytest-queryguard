@@ -4,11 +4,13 @@ from .api import (
     NPlusOneDetected,
     Query,
     QueryBudgetExceeded,
+    QueryGuardFixture,
     QueryLog,
     max_db_time,
     max_queries,
     record_queries,
 )
+from .blocks import ignore
 from .events import CallSite
 from .warnings import (
     QueryGuardDeprecationWarning,
@@ -24,10 +26,12 @@ __all__ = [
     "Query",
     "QueryBudgetExceeded",
     "QueryGuardDeprecationWarning",
+    "QueryGuardFixture",
     "QueryGuardInternalWarning",
     "QueryGuardWarning",
     "QueryLog",
     "__version__",
+    "ignore",
     "max_db_time",
     "max_queries",
     "record_queries",
