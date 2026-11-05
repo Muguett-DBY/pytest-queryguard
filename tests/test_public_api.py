@@ -105,6 +105,7 @@ EXPECTED_FLAGS = [
     "--no-queryguard-index-check",
     "--queryguard-baseline",
     "--queryguard-index-check",
+    "--queryguard-json",
     "--queryguard-mode",
     "--queryguard-report",
     "--queryguard-sarif",
