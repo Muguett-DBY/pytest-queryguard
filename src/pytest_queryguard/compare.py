@@ -262,6 +262,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pytest-queryguard compare: {exc}", file=sys.stderr)
         return 2
     report = markdown(result, rows=max(args.rows, 1), key=args.key)
+    # a label may hold any character; a console that cannot print it gets an
+    # escape instead of a UnicodeEncodeError (the --output file is UTF-8)
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(errors="backslashreplace")
     sys.stdout.write(report)
     if args.output is not None:
         args.output.write_text(report, encoding="utf-8")
