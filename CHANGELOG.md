@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows as the path to the alert, and the JSON file as `stack` on each
   finding, and `CallSite.callers` of `record_queries()` has them too. They
   are recorded once per line and test, not per statement (#226).
+- In-app mode: `track()` works as a decorator (one unit per call, named
+  after the function; coroutine functions across their awaits, generator
+  functions over their iteration), as `async with`, and through
+  `start()`/`stop(failed=...)` for integrations whose hooks start and end a
+  unit separately, such as Celery's `task_prerun`/`task_postrun` signals.
+  One `track()` object can be entered by several threads at once.
+  `docs/in-app.md` has recipes for Celery and RQ (#240).
 - Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
   lazy load of a relationship for the second parent loaded at one line
   (`queryguard_relationship_threshold`) raises
@@ -64,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Each finding in a report has a `docs:` line, after its `kind:` line, with a
+  link to the section of the documentation that explains its kind, e.g.
+  `docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load`.
+  The SARIF rules link to the same sections in `helpUri` instead of the
+  README, so GitHub code scanning shows them as the rule's help (#227).
 - The report of a relationship load says where the parents were loaded
   (`parents loaded at app/orders.py:21 in _base_query`): the line that ran the
   query whose rows became the parent objects, which may be a helper far from
@@ -81,6 +93,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The in-app panel's Content-Security-Policy lists the SHA-256 hashes of the
+  page's own script and style instead of `'unsafe-inline'`, so an injected
+  script or style would not run. The JSON URL moved from the script into a
+  `data-json-url` attribute to keep the script the same on every mount
+  (#242).
 - On psycopg 3, the index check and the index advisor's hypopg verification
   run `EXPLAIN` without preparing it. psycopg prepares a statement on the
   server once a connection has run it five times, and the prepared `EXPLAIN`

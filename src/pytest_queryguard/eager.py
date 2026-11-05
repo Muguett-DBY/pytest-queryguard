@@ -272,7 +272,7 @@ def findings(tracker: Tracker, *, cwd: Path | None = None) -> list[Finding]:
     if _broken:
         return []
     try:
-        from .messages import _display_path, _first_at, _stack, kind_line
+        from .messages import _display_path, _first_at, _stack, docs_line, kind_line
 
         result: list[Finding] = []
         for load in unused(tracker):
@@ -284,6 +284,7 @@ def findings(tracker: Tracker, *, cwd: Path | None = None) -> list[Finding]:
                     f"  {load.label} was loaded with {load.loader} and never read",
                     *_first_at(site, stack, cwd),
                     kind_line(KIND_UNUSED_EAGER_LOAD, load.label),
+                    docs_line(KIND_UNUSED_EAGER_LOAD),
                     f"  fix: remove {option} from the query, or load it only where used",
                     "  (experimental: if it is read later, or by code the plugin",
                     "  cannot see, ignore it with allow_nplusone(kind=KIND) or",

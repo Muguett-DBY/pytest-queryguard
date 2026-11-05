@@ -34,6 +34,7 @@ queryguard: N+1 detected
   first at app/books.py:27 in titles_of
   parents loaded at app/books.py:26 in titles_of
   kind: relationship-load  label: Book.author
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT author.id, author.name FROM author WHERE author.id = ?
   fix: load it with the parent query, e.g.
        select(Book).options(joinedload(Book.author))

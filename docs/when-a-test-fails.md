@@ -15,6 +15,7 @@ queryguard: N+1 detected
     called from tests/test_orders.py:7 in test_list_orders
   parents loaded at app/orders.py:9 in list_orders
   kind: relationship-load  label: Order.customer
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   fix: load it with the parent query, e.g.
        select(Order).options(joinedload(Order.customer))
@@ -50,6 +51,9 @@ queryguard: N+1 detected
   this one. For a repeated statement the label is the normalized statement,
   which takes the place of a separate line; a statement longer than 200
   characters is cut and ends with `*`, so the label as printed still matches.
+- `docs` links to the section of [How detection works](how-detection-works.md)
+  that explains this kind of finding: what the rule counts, what it leaves
+  out and why.
 - `sql` is one of the statements, as SQLAlchemy rendered it.
 - `fix` is the usual remedy for this kind of finding. It is a hint, not a
   patch: check it against what the code needs.

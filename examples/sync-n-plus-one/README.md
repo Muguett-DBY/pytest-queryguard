@@ -24,6 +24,7 @@ queryguard: N+1 detected
     called from tests/test_orders.py:7 in test_list_orders
   parents loaded at app/orders.py:9 in list_orders
   kind: relationship-load  label: Order.customer
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   fix: load it with the parent query, e.g.
        select(Order).options(joinedload(Order.customer))
@@ -34,6 +35,7 @@ queryguard: N+1 detected
   first at app/customers.py:9 in fetch_customers
     called from tests/test_orders.py:11 in test_fetch_customers
   kind: repeated-statement  label: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop
 ____________________________ test_rename_customers _____________________________
 queryguard: expected at most 2 queries, got 4

@@ -432,7 +432,7 @@ def test_message_without_advice_keeps_the_old_fix_line() -> None:
 
 
 def test_message_with_advice_adds_the_alembic_snippet() -> None:
-    assert _block(_advice())[4:] == [
+    assert _block(_advice())[5:] == [
         "  fix: CREATE INDEX ON orders (customer_id)",
         (
             '  alembic: op.create_index("ix_orders_customer_id", "orders", '
@@ -447,7 +447,7 @@ def test_message_indents_a_multi_line_alembic_snippet() -> None:
         create_sql="CREATE INDEX ON t (a)",
         alembic='op.create_index(\n    "x",\n    "t",\n)',
     )
-    assert _block(advice)[5:] == [
+    assert _block(advice)[6:] == [
         "  alembic: op.create_index(",
         '      "x",',
         '      "t",',

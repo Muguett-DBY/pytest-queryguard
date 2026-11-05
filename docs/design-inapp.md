@@ -62,7 +62,7 @@ with queryguard.track("nightly-job") as report:  # any unit of work
 | Name | Meaning |
 |---|---|
 | `watch(engine)`, `unwatch(engine)` | Attach and detach the in-app listeners to one engine. Idempotent. |
-| `track(name, *, settings)` | Context manager: everything watched that runs in this context is one unit; yields a live `RequestReport`, finished on exit. |
+| `track(name, *, settings)` | Everything watched that runs in this context is one unit, reported when it ends: a `with`/`async with` block (yields a live `RequestReport`), a decorator (one unit per call; coroutine and generator functions included), or `start()`/`stop()` for hooks that begin and end a unit separately. |
 | `QueryGuardASGI(app, ...)` | Pure ASGI middleware: one `track()` per `http` request. |
 | `QueryGuardWSGI(app, ...)` | WSGI middleware: the same for WSGI. |
 | `Settings` | Thresholds, `repeat_scope`, `budgets`, `default_budget`, `report`, `max_events`. |
