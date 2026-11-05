@@ -572,7 +572,9 @@ def test_a_statement_is_explained_once_per_test(
     )
     result = project.runpytest(*ARGS)
     result.assert_outcomes(failed=1)
-    assert result.stdout.str().count("orders is read in full") == 1
+    # the report only: on CI the short summary repeats the whole message
+    report = result.stdout.str().split("short test summary info")[0]
+    assert report.count("orders is read in full") == 1
 
 
 def test_found_rows_is_not_disturbed(project: pytest.Pytester) -> None:
