@@ -293,7 +293,7 @@ def format_strict(finding: Finding, parents: int) -> str:
         [
             (
                 f"queryguard strict: {finding.label} was lazy-loaded for {parents} "
-                "parents that one query loaded; this access is the N+1"
+                "parents loaded at one line; this access is the N+1"
             ),
             "",
             finding.message,

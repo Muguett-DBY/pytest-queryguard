@@ -96,14 +96,15 @@ the same with pytest-xdist.
 
 The report comes when the test ends. With `queryguard_strict = true` (or
 `--queryguard-strict`) the N+1 fails the test where it happens instead: the
-second lazy load of a relationship for the parents that one query loaded
-raises `NPlusOneDetected`, and the traceback ends at the line that read the
+lazy load of a relationship for the second parent loaded at the same line
+(`queryguard_relationship_threshold`, 2 by default) raises
+`NPlusOneDetected`, and the traceback ends at the line that read the
 attribute, the frames of SQLAlchemy and the plugin left out:
 
 ```
     for order in _helper_query(session):
 >       name = order.customer.name
-E       pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents that one query loaded; this access is the N+1
+E       pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents loaded at one line; this access is the N+1
 E
 E         Order.customer was lazy-loaded 2 times
 E         first at app/orders.py:13 in list_orders
@@ -116,9 +117,16 @@ E              select(Order).options(joinedload(Order.customer))
 It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
 `preventLazyLoading()` for SQLAlchemy:
 
-- Reading a relationship of a single object never raises, and neither do
-  objects whose query is unknown (made by the test, loaded before it); the
-  report at the end still covers those.
+- Reading the relationship of one object never raises, and neither do
+  objects whose query is unknown (made by the test, loaded before it). Objects
+  loaded one by one at the same line (`for id in ids: get_order(id).customer`)
+  count together, as in the report. The report at the end still covers the
+  rest, and with `queryguard_repeat_scope = session` each Session counts on
+  its own here too.
+- The finding is the one the report makes, at the first lazy load, so
+  ignore patterns with `file=`/`function=` and baseline entries match it.
+  The analysis at the end still runs: SARIF, `--queryguard-json` and the
+  summary include the N+1, and the exception replaces the report's text.
 - It raises only what would fail the test anyway: in `fail` mode, for an N+1
   that no `allow_nplusone`, `queryguard_ignore` pattern or baseline entry
   covers. It does not raise while `--queryguard-update-baseline` records the

@@ -24,12 +24,13 @@ from .callsite import trim_to_user_code
 from .collector import QueryCollector, pop, push
 from .detectors import (
     DEFAULT_COLUMN_LOAD_THRESHOLD,
+    SCOPE_SESSION,
     SCOPE_TEST,
     SCOPES,
     RelationshipFinding,
     detect,
 )
-from .events import RelationshipLoadEvent
+from .events import CallSite, RelationshipLoadEvent
 from .findings import (
     KIND_CARTESIAN_LOAD,
     KIND_MISSING_INDEX,
@@ -218,8 +219,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         dest="queryguard_strict",
         action="store_true",
         default=None,
-        help="Raise at the second lazy load of a relationship for the parents of "
-        "one query, with the test's traceback (overrides queryguard_strict).",
+        help="Raise at the lazy load that makes an N+1 (by default the second "
+        "parent from one query line), with the test's traceback (overrides "
+        "queryguard_strict).",
     )
     group.addoption(
         "--queryguard-report",
@@ -362,8 +364,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     parser.addini(
         "queryguard_strict",
-        "Raise NPlusOneDetected at the lazy load that makes an N+1 (the second "
-        "parent of one query), instead of reporting it when the test ends",
+        "Raise NPlusOneDetected at the lazy load that makes an N+1 (the parent "
+        "that reaches queryguard_relationship_threshold among those loaded at one "
+        "line), instead of reporting it when the test ends",
         type="bool",
         default=False,
     )
@@ -579,7 +582,9 @@ def _strict(config: pytest.Config) -> bool:
 
 def _strict_hook(
     item: pytest.Item, settings: _Settings
-) -> Callable[[RelationshipLoadEvent, int], BaseException | None] | None:
+) -> (
+    Callable[[RelationshipLoadEvent, CallSite | None, int], BaseException | None] | None
+):
     """The strict-mode check of this test, or None when it cannot raise.
 
     It raises only what would fail the test anyway: an N+1 that no
@@ -595,13 +600,17 @@ def _strict_hook(
     rules = (*settings.ignore, *marker_rules)
     root = item.config.rootpath
 
-    def check(load: RelationshipLoadEvent, parents: int) -> BaseException | None:
+    def check(
+        load: RelationshipLoadEvent, first: CallSite | None, parents: int
+    ) -> BaseException | None:
+        # the finding the report would make: located at the group's first lazy
+        # load, so ignore patterns and baseline entries match it the same way
         parent = load.parent
         finding = make_finding(
             RelationshipFinding(
                 load.relationship,
                 parents,
-                load.callsite,
+                first,
                 None,
                 scalar=load.scalar,
                 parent_site=None if parent is None else parent.callsite,
@@ -612,7 +621,7 @@ def _strict_hook(
         )
         if rules and not apply_rules([finding], rules)[0]:
             return None
-        if settings.baseline and finding.identity in settings.baseline:
+        if settings.baseline and not baselines.split([finding], settings.baseline)[0]:
             return None
         error = NPlusOneDetected(format_strict(finding, parents))
         error.queryguard_strict = True  # type: ignore[attr-defined]
@@ -2034,13 +2043,18 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
     if settings.strict and settings.mode != "off":
         collector.strict = _strict_hook(item, settings)
         collector.strict_threshold = settings.relationship
+        collector.strict_by_scope = settings.repeat_scope == SCOPE_SESSION
+    strict_error: NPlusOneDetected | None = None
     try:
         result = yield
     except NPlusOneDetected as exc:
-        if getattr(exc, "queryguard_strict", False):
-            with contextlib.suppress(Exception):
-                trim_to_user_code(exc)
-        raise
+        if not getattr(exc, "queryguard_strict", False):
+            raise
+        with contextlib.suppress(Exception):
+            trim_to_user_code(exc)
+        # raised again below, after the end-of-test analysis has recorded the
+        # findings (SARIF, JSON, the summary) as for any failing N+1
+        strict_error = exc
     finally:
         try:
             _stop_measuring(item, collector, settings, tracker)
@@ -2064,6 +2078,9 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         record_error(exc, "end of the measurement")
         parts, warn_texts = [], []
     _report_internal_error(item.config)
+    if strict_error is not None:
+        # the failure at the access says it all; the report's text is the same N+1
+        raise strict_error
     if not parts:
         _emit_warnings(item, warn_texts)
     if parts:
@@ -2075,7 +2092,10 @@ def _hide_escalated_warning(
     excinfo: pytest.ExceptionInfo[BaseException] | None,
 ) -> bool:
     """Hide a plugin frame only when a ``QueryGuardWarning`` was raised as an error."""
-    return excinfo is not None and excinfo.errisinstance(QueryGuardWarning)
+    return excinfo is not None and (
+        excinfo.errisinstance(QueryGuardWarning)
+        or bool(getattr(excinfo.value, "queryguard_strict", False))
+    )
 
 
 def _emit_warnings(item: pytest.Item, texts: list[str]) -> None:

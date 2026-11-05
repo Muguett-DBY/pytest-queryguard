@@ -75,7 +75,7 @@ def test_the_second_parent_raises_at_the_access(project: pytest.Pytester) -> Non
             ">*name = order.customer.name  # the access",
             (
                 "E*pytest_queryguard.NPlusOneDetected: queryguard strict: "
-                "Order.customer was lazy-loaded for 2 parents that one query loaded*"
+                "Order.customer was lazy-loaded for 2 parents loaded at one line*"
             ),
             "E*parents loaded at test_strict_suite.py:* in _helper_query",
             "E*select(Order).options(joinedload(Order.customer))",
@@ -202,3 +202,84 @@ def test_async_access_raises_at_the_await(pytester: pytest.Pytester) -> None:
             "*queryguard strict*",
         ]
     )
+
+
+SPLIT = """
+from qgmodels import Order, make_sync_session
+
+
+def first_access(order):
+    return order.customer.name
+
+
+def render(orders):
+    for order in orders[1:]:
+        _ = order.customer.name
+
+
+def test_split():
+    session = make_sync_session()
+    orders = session.query(Order).all()
+    first_access(orders[0])
+    render(orders)
+
+
+def test_two_sessions():
+    # one order per Session, the same helper line: two requests, not a loop
+    for i in range(2):
+        session = make_sync_session()
+        order = session.query(Order).order_by(Order.id).offset(i).first()
+        _ = order.customer.name
+"""
+
+
+@pytest.fixture
+def split(pytester: pytest.Pytester) -> pytest.Pytester:
+    pytester.makepyfile(qgmodels=MODELS, test_split=SPLIT)
+    return pytester
+
+
+def test_ignore_rules_match_the_first_lazy_load_as_in_the_report(
+    split: pytest.Pytester,
+) -> None:
+    # the report locates the finding at first_access, where the first load is
+    split.makeini(
+        "[pytest]\nqueryguard_strict = true\n"
+        "queryguard_ignore = relationship-load Order.customer function=first_access\n"
+    )
+    result = _run(split, "test_split.py::test_split")
+    result.assert_outcomes(passed=1)
+    # without the rule it raises
+    split.makeini("[pytest]\nqueryguard_strict = true\n")
+    _run(split, "test_split.py::test_split").assert_outcomes(failed=1)
+
+
+def test_session_scope_counts_each_session_on_its_own(split: pytest.Pytester) -> None:
+    split.makeini(
+        "[pytest]\nqueryguard_strict = true\nqueryguard_repeat_scope = session\n"
+    )
+    _run(split, "-k", "two_sessions").assert_outcomes(passed=1)
+    split.makeini("[pytest]\nqueryguard_strict = true\n")
+    result = _run(split, "-k", "two_sessions")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*queryguard strict*"])
+
+
+def test_the_strict_n_plus_one_is_in_sarif_and_json(project: pytest.Pytester) -> None:
+    import json
+
+    result = _run(
+        project,
+        "--queryguard-strict",
+        "-k",
+        "loop",
+        "--queryguard-sarif=out.sarif",
+        "--queryguard-json=q.json",
+    )
+    result.assert_outcomes(failed=1)
+    sarif = json.loads((project.path / "out.sarif").read_text())
+    (found,) = sarif["runs"][0]["results"]
+    assert found["ruleId"] == "queryguard/relationship-load"
+    tests = json.loads((project.path / "q.json").read_text())["tests"]
+    (finding,) = tests["test_strict_suite.py::test_loop"]["findings"]
+    assert finding["label"] == "Order.customer"

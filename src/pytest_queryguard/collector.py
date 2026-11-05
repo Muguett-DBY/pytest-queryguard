@@ -23,6 +23,15 @@ _FREE_THREADED = not getattr(sys, "_is_gil_enabled", lambda: True)()
 
 
 @dataclass(slots=True, eq=False)
+class StrictGroup:
+    """The lazy loads of one relationship for the parents of one query line."""
+
+    first: CallSite | None
+    parents: set[object] = field(default_factory=set)
+    suppressed: bool = False  # its finding is ignored or baselined
+
+
+@dataclass(slots=True, eq=False)
 class QueryCollector:
     statements: list[StatementEvent] = field(default_factory=list)
     relationship_loads: list[RelationshipLoadEvent] = field(default_factory=list)
@@ -50,15 +59,19 @@ class QueryCollector:
     cartesian_load_count: int = 0
     # Seconds the statements took, all of them, stored or only counted.
     db_time: float = 0.0
-    # Strict mode (queryguard_strict): called with a lazy load when its
+    # Strict mode (queryguard_strict): called with a lazy load, the call site
+    # of the first lazy load of its group and the number of parents, once the
     # relationship has been lazy-loaded for ``strict_threshold`` parents that
-    # one query loaded; returns the exception to raise at the access, or None.
-    strict: Callable[[RelationshipLoadEvent, int], BaseException | None] | None = None
+    # one query line loaded; returns the exception to raise, or None.
+    strict: (
+        Callable[[RelationshipLoadEvent, CallSite | None, int], BaseException | None]
+        | None
+    ) = None
     strict_threshold: int = 2
-    # (relationship, query site of the parents) -> parent keys lazy-loaded
-    strict_parents: dict[tuple[str, CallSite], set[object]] = field(
-        default_factory=dict
-    )
+    # count each Session on its own, as queryguard_repeat_scope = session does
+    strict_by_scope: bool = False
+    # (relationship, query site of the parents, Session or None) -> group
+    strict_groups: dict[tuple[object, ...], StrictGroup] = field(default_factory=dict)
     # Guards the counters and the length checks on a free-threaded build.
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -129,17 +142,39 @@ class QueryCollector:
     def strict_check(self, load: RelationshipLoadEvent) -> BaseException | None:
         """The strict-mode exception for this lazy load, or None.
 
-        Only lazy loads of parents whose query is known count, so a single
-        object, or objects the test made itself, never raise here.
+        Only lazy loads of parents whose query line is known count, so an
+        object read on its own, or objects the test made itself, never raise
+        here. A group whose finding is ignored or baselined is decided once.
         """
-        if self.strict is None or load.parent is None or load.parent.callsite is None:
+        parent = load.parent
+        if self.strict is None or parent is None or parent.callsite is None:
             return None
-        key = (load.relationship, load.parent.callsite)
-        parents = self.strict_parents.setdefault(key, set())
-        parents.add(load.parent_key)
-        if len(parents) < self.strict_threshold:
+        scope = load.scope if self.strict_by_scope else None
+        key = (load.relationship, parent.callsite, scope)
+        if _FREE_THREADED:
+            with self._lock:
+                group = self._strict_group(key, load)
+        else:
+            group = self._strict_group(key, load)
+        if group is None:
             return None
-        return self.strict(load, len(parents))
+        error = self.strict(load, group.first, len(group.parents))
+        if error is None:
+            group.suppressed = True
+        return error
+
+    def _strict_group(
+        self, key: tuple[object, ...], load: RelationshipLoadEvent
+    ) -> StrictGroup | None:
+        """The group of this load once it has reached the threshold, else None."""
+        group = self.strict_groups.get(key)
+        if group is None:
+            group = self.strict_groups[key] = StrictGroup(first=load.callsite)
+        if group.suppressed:
+            return None
+        if len(group.parents) < self.strict_threshold:  # no more is needed
+            group.parents.add(load.parent_key)
+        return group if len(group.parents) >= self.strict_threshold else None
 
     def add_db_time(self, seconds: float) -> None:
         if _FREE_THREADED:
