@@ -7,14 +7,15 @@ test node id:
     {
       "statements": 12,             # every statement the test ran
       "by_verb": {"select": 10, "insert": 2},
-      "db_time": 0.0042,            # seconds, or null when not timed
+      "db_time": 0.0042,            # seconds, or null when no statement was timed
       "truncated": false,           # by_verb counts only the stored statements
       "findings": [{"kind": ..., "label": ..., "count": ..., "file": ...,
                     "function": ..., "line": ...}]
     }
 
-Findings are the ones the test reported (failing or warning), after ignores
-and the baseline. ``complete`` is false when the run was interrupted or
+Findings are the ones the test found after ignores; those in the baseline
+have ``"baselined": true``, so a file written while updating the baseline
+still lists them. ``complete`` is false when the run was interrupted or
 measurement stopped, so a consumer should not treat missing tests as gone.
 """
 
@@ -28,7 +29,7 @@ from typing import Any
 from .collector import QueryCollector
 from .fileio import atomic_write_text
 from .findings import Finding
-from .sqltext import is_transaction_control, skip_prefix
+from .sqltext import _WORD, QUOTED, is_transaction_control, skip_prefix
 
 FORMAT_VERSION = 1
 
@@ -39,7 +40,8 @@ _VERBS = {
     "UPDATE": "update",
     "DELETE": "delete",
 }
-_WORD = re.compile(r"[A-Za-z]+")
+_QUOTED = re.compile(QUOTED, re.VERBOSE | re.DOTALL)
+_MAIN_VERBS = frozenset(("SELECT", "INSERT", "UPDATE", "DELETE"))
 
 # node id -> entry
 Tests = dict[str, dict[str, Any]]
@@ -51,10 +53,32 @@ def verb(sql: str) -> str:
     word = _WORD.match(sql, start) if start is not None else None
     if word is None:
         return "other"
-    found = _VERBS.get(word[0].upper())
+    first = word[0].upper()
+    if first == "WITH":
+        return _with_verb(sql)
+    found = _VERBS.get(first)
     if found is not None:
         return found
     return "transaction" if is_transaction_control(sql) else "other"
+
+
+def _with_verb(sql: str) -> str:
+    """The verb of the statement after a WITH: the first verb outside parentheses.
+
+    ``WITH moved AS (DELETE ... RETURNING *) INSERT INTO b SELECT ...`` is an
+    insert; the statements of the CTEs are inside parentheses.
+    """
+    text = _QUOTED.sub(" ", sql)
+    depth = 0
+    for match in re.finditer(r"[()]|[A-Za-z]+", text):
+        token = match[0]
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(depth - 1, 0)
+        elif depth == 0 and token.upper() in _MAIN_VERBS:
+            return _VERBS[token.upper()]
+    return "select"
 
 
 def _entry(tests: Tests, nodeid: str) -> dict[str, Any]:
@@ -79,12 +103,19 @@ def record_counts(tests: Tests, nodeid: str, collector: QueryCollector) -> None:
     entry = _entry(tests, nodeid)
     entry["statements"] = collector.statement_count
     entry["by_verb"] = dict(sorted(by_verb.items()))
-    entry["db_time"] = collector.db_time
+    timed = any(s.duration is not None for s in collector.statements)
+    entry["db_time"] = collector.db_time if timed or not collector.statements else None
     entry["truncated"] = collector.statement_count > len(collector.statements)
     entry["findings"] = []  # filled by record_findings for this run
 
 
-def record_findings(tests: Tests, nodeid: str, findings: list[Finding]) -> None:
+def record_findings(
+    tests: Tests,
+    nodeid: str,
+    findings: list[Finding],
+    baseline: frozenset[Any] | None = None,
+) -> None:
+    """The findings of a test after ignores, those in ``baseline`` marked."""
     entry = _entry(tests, nodeid)
     entry["findings"].extend(
         {
@@ -94,6 +125,7 @@ def record_findings(tests: Tests, nodeid: str, findings: list[Finding]) -> None:
             "file": f.file,
             "function": f.function,
             "line": f.line,
+            "baselined": baseline is not None and f.identity in baseline,
         }
         for f in findings
     )

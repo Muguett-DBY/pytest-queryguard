@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--queryguard-json=PATH` writes each test's statement count, the count by
-  verb, its database time and the findings it reported as JSON, also with
+  verb, its database time and its findings (baselined ones marked) as JSON, also with
   pytest-xdist, with `complete: false` for a run that stopped early. It is the
   input for comparing a pull request's query counts with its base branch
   (`docs/ci.md`, #230).

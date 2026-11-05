@@ -538,26 +538,24 @@ def _baseline_path(config: pytest.Config) -> Path | None:
     return Path(config.rootpath, raw.strip()) if raw.strip() else None
 
 
-def _sarif_path(config: pytest.Config) -> Path | None:
-    raw: str | None = config.getoption("queryguard_sarif")
+def _output_path(config: pytest.Config, dest: str, flag: str) -> Path | None:
+    """The path of an output file option, relative to the invocation directory."""
+    raw: str | None = config.getoption(dest)
     if raw is None:
         return None
     if not raw.strip():
-        raise pytest.UsageError("--queryguard-sarif needs a path")
+        raise pytest.UsageError(f"{flag} needs a path")
     path = Path(config.invocation_params.dir, raw.strip())
-    config.option.queryguard_sarif = str(path)  # workers get the resolved path
+    setattr(config.option, dest, str(path))  # workers get the resolved path
     return path
+
+
+def _sarif_path(config: pytest.Config) -> Path | None:
+    return _output_path(config, "queryguard_sarif", "--queryguard-sarif")
 
 
 def _json_path(config: pytest.Config) -> Path | None:
-    raw: str | None = config.getoption("queryguard_json")
-    if raw is None:
-        return None
-    if not raw.strip():
-        raise pytest.UsageError("--queryguard-json needs a path")
-    path = Path(config.invocation_params.dir, raw.strip())
-    config.option.queryguard_json = str(path)  # workers get the resolved path
-    return path
+    return _output_path(config, "queryguard_json", "--queryguard-json")
 
 
 def _read_settings(config: pytest.Config) -> _Settings:
@@ -820,8 +818,9 @@ def _analyse(
             findings.extend(eager.findings(tracker, cwd=root))
         if settings.ignore or marker_rules:
             findings = _drop_ignored(item, settings, findings, marker_rules)
+        _note_found(settings, findings, item.nodeid)
         findings = _apply_baseline(settings, findings, item)
-        _note_reported(settings, findings, item.nodeid)
+        finding_groups.add(settings.groups, findings, item.nodeid)
         failing = [f for f in findings if _fails(settings, f)]
         warning = [f for f in findings if not _fails(settings, f)]
         note = ""
@@ -865,11 +864,10 @@ def _at_the_test(finding: Finding, item: pytest.Item) -> Finding:
         return finding
 
 
-def _note_reported(settings: _Settings, findings: list[Finding], nodeid: str) -> None:
-    """Remember the findings a test reported, for the summary and the JSON file."""
-    finding_groups.add(settings.groups, findings, nodeid)
+def _note_found(settings: _Settings, findings: list[Finding], nodeid: str) -> None:
+    """Note the findings of a test after ignores, before the baseline, for the JSON."""
     if settings.json_path is not None:
-        testjson.record_findings(settings.tests, nodeid, findings)
+        testjson.record_findings(settings.tests, nodeid, findings, settings.baseline)
 
 
 def _apply_baseline(
@@ -953,28 +951,24 @@ def _analyse_indexes(
     try:
         root = item.config.rootpath
         scans = select_findings(collector.scans, (*settings.ignore_tables, *exempt))
-        if (
-            settings.ignore
-            or marker_rules
-            or settings.baselining
-            or settings.sarif_path
-        ) and scans:
-            findings = [make_index_finding(scan, cwd=root) for scan in scans]
-            kept = _drop_ignored(item, settings, findings, marker_rules, indexes=True)
-            kept = _apply_baseline(settings, kept, item)
-            keep_ids = {id(f) for f in kept}
-            scans = [
-                scan
-                for scan, finding in zip(scans, findings, strict=True)
-                if id(finding) in keep_ids
-            ]
         if not scans:
             return None
-        _note_reported(
-            settings,
-            [make_index_finding(scan, cwd=root) for scan in scans],
-            item.nodeid,
-        )
+        findings = [make_index_finding(scan, cwd=root) for scan in scans]
+        kept = findings
+        if settings.ignore or marker_rules:
+            kept = _drop_ignored(item, settings, kept, marker_rules, indexes=True)
+        _note_found(settings, kept, item.nodeid)
+        if settings.baselining or settings.sarif_path:
+            kept = _apply_baseline(settings, kept, item)
+        if not kept:
+            return None
+        finding_groups.add(settings.groups, kept, item.nodeid)
+        keep_ids = {id(f) for f in kept}
+        scans = [
+            scan
+            for scan, finding in zip(scans, findings, strict=True)
+            if id(finding) in keep_ids
+        ]
         return format_index_findings(scans, cwd=root)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "missing-index analysis")

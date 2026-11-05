@@ -120,7 +120,7 @@ are matched correctly. See [SARIF output](sarif.md) for why.
 
 `pytest --queryguard-json=queryguard.json` writes one entry per test: how many
 statements it ran, the same split by verb, the database time and the findings
-it reported (after ignores and the baseline). Keep the file from the main
+it found (after ignores). Keep the file from the main
 branch as an artifact and compare a pull request's file with it to see which
 tests started running more queries before anything fails.
 
@@ -137,18 +137,23 @@ tests started running more queries before anything fails.
       "truncated": false,
       "findings": [
         {"kind": "relationship-load", "label": "Order.customer", "count": 50,
-         "file": "app/orders.py", "function": "list_orders", "line": 12}
+         "file": "app/orders.py", "function": "list_orders", "line": 12,
+         "baselined": false}
       ]
     }
   }
 }
 ```
 
-- `statements` counts every statement the test ran, setup inside the test
-  included. `by_verb` sorts the stored ones into `select`, `insert`,
+- `statements` counts the statements of the test function, as budgets do:
+  the setup and teardown of fixtures are not measured. `by_verb` sorts the stored ones into `select`, `insert`,
   `update`, `delete`, `transaction` and `other`; `truncated` is true when the
   test ran more than `queryguard_max_events` statements, and then `by_verb`
   covers only the first of them.
+- `findings` lists what the test found after ignores. Findings in the
+  baseline are listed too, with `"baselined": true`, so the file is the same
+  whether or not the baseline is being updated. `db_time` is null when no
+  statement was timed.
 - `complete` is false when the run stopped early (`-x`, Ctrl-C, a collection
   error, a crashed pytest-xdist worker) or measurement failed: tests missing
   from such a file did not run, they did not stop querying.

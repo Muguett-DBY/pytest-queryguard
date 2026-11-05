@@ -53,6 +53,16 @@ def test_not_measured_has_no_queries():
         ("  /* app:x */ select * from t", "select"),
         ("WITH a AS (SELECT 1) SELECT * FROM a", "select"),
         ("(SELECT 1) UNION (SELECT 2)", "select"),
+        (
+            "WITH RECURSIVE r(n) AS (SELECT 1 UNION SELECT n + 1 FROM r) SELECT n FROM r",
+            "select",
+        ),
+        (
+            "WITH m AS (DELETE FROM a RETURNING *) INSERT INTO b SELECT * FROM m",
+            "insert",
+        ),
+        ("with x as (select 1) update t set a = (select * from x)", "update"),
+        ("WITH x AS (SELECT ')' AS p) DELETE FROM t", "delete"),
         ("INSERT INTO t VALUES (1)", "insert"),
         ("update t set a = 1", "update"),
         ("-- note\nDELETE FROM t", "delete"),
@@ -178,3 +188,43 @@ def test_a_test_run_again_keeps_its_last_counts() -> None:
     testjson.record_counts(tests, "t.py::a", again)
     assert tests["t.py::a"]["statements"] == 0
     assert tests["t.py::a"]["findings"] == []
+
+
+def test_baselined_findings_stay_in_the_file_while_the_baseline_is_updated(
+    project: pytest.Pytester,
+) -> None:
+    project.runpytest_subprocess(
+        "-p",
+        "no:cacheprovider",
+        "--queryguard-baseline=b.json",
+        "--queryguard-update-baseline",
+        "--queryguard-json=first.json",
+    )
+    first = _load(project.path / "first.json")["tests"]
+    (finding,) = first["test_suite.py::test_nplusone[0]"]["findings"]
+    assert finding["label"] == "Order.customer"
+    # with the baseline in use, the same finding is listed and marked
+    result = project.runpytest_subprocess(
+        "-p",
+        "no:cacheprovider",
+        "--queryguard-baseline=b.json",
+        "--queryguard-json=second.json",
+    )
+    result.assert_outcomes(passed=6)
+    second = _load(project.path / "second.json")["tests"]
+    (again,) = second["test_suite.py::test_nplusone[0]"]["findings"]
+    assert again["baselined"] is True
+    assert {**again, "baselined": False} == {**finding, "baselined": False}
+
+
+def test_db_time_is_null_when_no_statement_was_timed() -> None:
+    from pytest_queryguard.collector import QueryCollector
+    from pytest_queryguard.events import StatementEvent
+
+    tests: testjson.Tests = {}
+    collector = QueryCollector()
+    collector.add_statement(StatementEvent("SELECT 1", None, None))
+    testjson.record_counts(tests, "t.py::a", collector)
+    assert tests["t.py::a"]["db_time"] is None
+    testjson.record_counts(tests, "t.py::b", QueryCollector())
+    assert tests["t.py::b"]["db_time"] == 0.0
