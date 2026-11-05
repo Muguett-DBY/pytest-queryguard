@@ -335,7 +335,9 @@ Starlette 0.33 leaves `root_path` empty inside a `Mount`, so there the panel
 is not reachable under the mount.
 
 The responses carry a strict
-`Content-Security-Policy` and `Cache-Control: no-store`, and the page writes
+`Content-Security-Policy` (no `'unsafe-inline'`: it allows only the hashes
+of the page's own script and style, and requests to the same origin) and
+`Cache-Control: no-store`, and the page writes
 every value as text, never as HTML. Bound parameter values are never stored
 in the panel, but the SQL text is, including any literal the application puts
 into it. The panel is off by default; never enable it in production.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import html
 import re
 
 import pytest
@@ -24,9 +24,9 @@ def _mounted(middleware: QueryGuardASGI, mount_path: str = "/api") -> Starlette:
 
 
 def _json_url(page: str) -> str:
-    match = re.search(r"const url = (.+);", page)
+    match = re.search(r'data-json-url="([^"]*)"', page)
     assert match is not None
-    return json.loads(match[1])
+    return html.unescape(match[1])
 
 
 @pytest.mark.parametrize("panel_path", ["/_queryguard", "/debug/qg/"])

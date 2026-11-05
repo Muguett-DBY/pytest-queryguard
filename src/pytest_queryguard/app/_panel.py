@@ -11,6 +11,8 @@ With a token, ``requests.json`` answers only ``Authorization: Bearer
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import html
 import ipaddress
@@ -34,19 +36,6 @@ _TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
 MIN_TOKEN_LENGTH = 16
 UNAUTHORIZED = b"missing or wrong panel token"
 CHALLENGE = ("www-authenticate", "Bearer")
-HEADERS = (
-    ("cache-control", "no-store"),
-    ("x-content-type-options", "nosniff"),
-    ("referrer-policy", "no-referrer"),
-    (
-        "content-security-policy",
-        (
-            "default-src 'none'; style-src 'unsafe-inline'; "
-            "script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; "
-            "form-action 'none'; frame-ancestors 'none'"
-        ),
-    ),
-)
 
 
 class History:
@@ -205,13 +194,10 @@ def json_body(history: History) -> bytes:
     return json.dumps(payload, default=str).encode("utf-8")
 
 
-def _js_string(value: str) -> str:
-    """A JavaScript string literal that cannot end the surrounding <script>."""
-    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e")
-
-
 def html_body(json_url: str) -> bytes:
-    page = _PAGE.replace("__JSON_URL__", _js_string(json_url))
+    # The URL goes into an attribute, never into the script: the script and
+    # the style stay byte for byte the same, so the CSP can list their hashes.
+    page = _PAGE.replace("__JSON_URL__", html.escape(json_url, quote=True))
     return page.replace("__VERSION__", html.escape(version)).encode("utf-8")
 
 
@@ -254,7 +240,7 @@ ol{padding-left:24px;margin:6px 0}
 li{margin:4px 0}
 code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 </style></head>
-<body><main>
+<body><main id="panel" data-json-url="__JSON_URL__">
 <header><h1>queryguard panel</h1>
 <span class="note">Development only: never enable this in production.</span>
 <span class="muted">pytest-queryguard __VERSION__</span></header>
@@ -267,7 +253,7 @@ code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 </main>
 <script>
 "use strict";
-const url = __JSON_URL__;
+const url = document.getElementById("panel").dataset.jsonUrl;
 const expanded = new Set();
 function el(tag, text, cls) {
   const e = document.createElement(tag);
@@ -369,3 +355,27 @@ document.getElementById("auto").addEventListener("change", (e) => {
 load();
 </script></body></html>
 """
+
+
+def _inline_hash(tag: str) -> str:
+    """The CSP source of the one inline ``<tag>`` element of the page."""
+    start = _PAGE.index(f"<{tag}>") + len(f"<{tag}>")
+    body = _PAGE[start : _PAGE.index(f"</{tag}>", start)]
+    if "__" in body:  # a placeholder would change the hash per request
+        raise AssertionError(f"the panel's <{tag}> must not hold a placeholder")
+    digest = hashlib.sha256(body.encode("utf-8")).digest()
+    return f"'sha256-{base64.b64encode(digest).decode('ascii')}'"
+
+
+# No 'unsafe-inline': the page runs only its own script and style.
+CONTENT_SECURITY_POLICY = (
+    f"default-src 'none'; style-src {_inline_hash('style')}; "
+    f"script-src {_inline_hash('script')}; connect-src 'self'; base-uri 'none'; "
+    "form-action 'none'; frame-ancestors 'none'"
+)
+HEADERS = (
+    ("cache-control", "no-store"),
+    ("x-content-type-options", "nosniff"),
+    ("referrer-policy", "no-referrer"),
+    ("content-security-policy", CONTENT_SECURITY_POLICY),
+)

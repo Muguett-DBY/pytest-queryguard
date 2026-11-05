@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The in-app panel's Content-Security-Policy lists the SHA-256 hashes of the
+  page's own script and style instead of `'unsafe-inline'`, so an injected
+  script or style would not run. The JSON URL moved from the script into a
+  `data-json-url` attribute to keep the script the same on every mount
+  (#242).
 - On psycopg 3, the index check and the index advisor's hypopg verification
   run `EXPLAIN` without preparing it. psycopg prepares a statement on the
   server once a connection has run it five times, and the prepared `EXPLAIN`
