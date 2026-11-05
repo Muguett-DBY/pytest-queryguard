@@ -74,7 +74,7 @@ failed. Install your own project first: the action does not know how.
 | `sarif-file` | `queryguard.sarif` | Output file, relative to `working-directory`. |
 | `upload` | `true` | Upload to code scanning. `false`: only write the file. |
 | `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload. It also names the job's query-count artifact and its pull-request comment. |
-| `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. |
+| `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. Empty: none. |
 | `compare` | `true` | On a pull request, compare the counts with the base branch and write the result to the job summary. |
 | `comment` | `true` | Also post the comparison as a pull-request comment, updated in place on later pushes. |
 | `github-token` | `github.token` | Token for the comparison and the comment. |
@@ -112,9 +112,13 @@ never fails the job.
 - Findings are matched by kind, label, file and function, so a finding that
   only moved to another line is neither new nor fixed. Baselined findings
   are left out.
-- Without `actions: read` the comparison is skipped; without
-  `pull-requests: write`, or on a pull request from a fork, there is no
-  comment and the job summary still has the report.
+- Without `actions: read` the job summary says the runs could not be
+  listed; without `pull-requests: write`, or on a pull request from another
+  repository (a fork) or Dependabot, there is no comment and the job summary
+  still has the report. The action only edits its own comment.
+- `json-file: ""` turns the file, the artifact and the comparison off. Do not
+  pass `--queryguard-json` in `pytest-args` as well: the action reads the file
+  at `json-file`.
 - Several jobs (for example one per database) keep apart by `category`.
 - The same report locally: `python -m pytest_queryguard.compare base.json head.json`.
 

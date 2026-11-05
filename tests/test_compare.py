@@ -65,7 +65,8 @@ def test_counts_and_findings_are_compared_for_the_tests_of_both_runs() -> None:
     result = compare.compare(BASE, HEAD)
     assert [(c.nodeid, c.delta) for c in result.more] == [("t.py::grows", 38)]
     assert [(c.nodeid, c.delta) for c in result.fewer] == [("t.py::shrinks", -48)]
-    assert [r.label for r in result.new] == ["Order.items"]
+    # X.y comes from a test the change added
+    assert [r.label for r in result.new] == ["Order.items", "X.y"]
     assert [r.label for r in result.fixed] == ["Order.customer"]
     assert (result.added_tests, result.removed_tests, result.compared_tests) == (
         1,
@@ -102,7 +103,7 @@ def test_the_report_leads_with_new_findings_and_more_statements() -> None:
     assert text.startswith(compare.MARKER + "\n")
     assert (
         "3 tests compared: 55 → 45 statements (-10). **1** run more, 1 fewer; "
-        "**1** new findings, 1 fixed."
+        "**2** new findings, 1 fixed."
     ) in text
     assert "Not compared: 1 new tests, 1 tests not in this run." in text
     assert text.index("#### New findings") < text.index("#### Tests that run more")
@@ -211,3 +212,19 @@ def test_a_key_names_the_comparison_and_its_marker() -> None:
     assert first == "<!-- pytest-queryguard compare postgres > x -->"
     assert title.endswith("(postgres --> x)")
     assert compare.marker() == compare.MARKER
+
+
+def test_a_finding_of_a_new_test_is_new() -> None:
+    base = _doc({"t.py::old": {}})
+    head = _doc({"t.py::old": {}, "t.py::added": {"findings": [_finding("A.b")]}})
+    assert [r.tests for r in compare.compare(base, head).new] == [("t.py::added",)]
+
+
+def test_a_finding_moved_into_the_baseline_is_not_fixed() -> None:
+    base = _doc({"t.py::a": {"findings": [_finding("A.b")]}})
+    head = _doc({"t.py::a": {"findings": [_finding("A.b", baselined=True)]}})
+    result = compare.compare(base, head)
+    assert result.fixed == [] and result.new == []
+    # and taken out of the baseline again it is not new either
+    result = compare.compare(head, base)
+    assert result.fixed == [] and result.new == []

@@ -66,7 +66,8 @@ inputs:
     description: >-
       Where to write the per-test query counts (--queryguard-json), relative
       to working-directory. The file is uploaded as the artifact
-      queryguard-json-<category>, which later runs compare against.
+      queryguard-json-<category>, which later runs compare against. Empty: no
+      file, no artifact and no comparison.
     required: false
     default: queryguard.json
   compare:
@@ -139,6 +140,9 @@ runs:
         if [ -n "$QG_BASELINE" ]; then
           extra+=("--queryguard-baseline=$QG_BASELINE")
         fi
+        if [ -n "$QG_JSON" ]; then
+          extra+=("--queryguard-json=$QG_JSON")
+        fi
         args=()
         if [ -n "$QG_ARGS" ]; then
           while IFS= read -r -d '' word; do
@@ -146,7 +150,7 @@ runs:
           done < <(python -c 'import os,shlex,sys; sys.stdout.write("".join(w + "\0" for w in shlex.split(os.environ["QG_ARGS"])))')
         fi
         set +e
-        python -m pytest "--queryguard-sarif=$QG_SARIF" "--queryguard-json=$QG_JSON" "${extra[@]}" "${args[@]}"
+        python -m pytest "--queryguard-sarif=$QG_SARIF" "${extra[@]}" "${args[@]}"
         code=$?
         set -e
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
@@ -170,7 +174,7 @@ runs:
         always() && inputs.upload == 'true' && steps.sarif.outputs.path != ''
         && github.actor != 'dependabot[bot]'
         && !(github.event_name == 'pull_request'
-        && github.event.pull_request.head.repo.fork)
+        && github.event.pull_request.head.repo.full_name != github.repository)
       # An upload that is refused (read-only token in a case not listed above)
       # must not fail a job whose tests passed.
       continue-on-error: true
@@ -187,8 +191,13 @@ runs:
       env:
         QG_JSON: ${{ inputs.json-file }}
       run: |
+        if [ -z "$QG_JSON" ]; then
+          exit 0
+        fi
         if [ -f "$QG_JSON" ]; then
           echo "path=$(realpath "$QG_JSON")" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::pytest did not write $QG_JSON; the query counts are not uploaded or compared"
         fi
 
     - name: Upload the query counts
@@ -223,12 +232,25 @@ runs:
         workflow="${QG_WORKFLOW_REF%%@*}"
         workflow="${workflow##*/}"
         dir="$QG_TMP/queryguard-base"
-        rm -rf "$dir"
+        # the latest finished runs of this workflow on the base branch, of any
+        # event (push, merge queue, schedule); the artifact is uploaded whether
+        # the tests passed or not
+        if ! runs="$(gh run list -R "$QG_REPO" --workflow "$workflow" --branch "$QG_BASE" \
+            --status completed --limit 10 --json databaseId --jq '.[].databaseId' 2>&1)"; then
+          {
+            echo "### pytest-queryguard: query counts not compared"
+            echo
+            echo "Listing the runs of \`$workflow\` failed; the job needs the \`actions: read\` permission."
+            echo
+            echo '```'
+            echo "$runs"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
         found=""
-        # the latest finished runs of this workflow on the base branch; the
-        # artifact is uploaded whether the tests passed or not
-        for run in $(gh run list -R "$QG_REPO" --workflow "$workflow" --branch "$QG_BASE" \
-            --event push --status completed --limit 10 --json databaseId --jq '.[].databaseId'); do
+        for run in $runs; do
+          rm -rf "$dir"
           if gh run download "$run" -R "$QG_REPO" -n "queryguard-json-$QG_CATEGORY" -D "$dir" 2>/dev/null; then
             found="$run"
             break
@@ -256,7 +278,7 @@ runs:
       if: >-
         always() && inputs.comment == 'true' && steps.compare.outputs.report != ''
         && github.actor != 'dependabot[bot]'
-        && !github.event.pull_request.head.repo.fork
+        && github.event.pull_request.head.repo.full_name == github.repository
       continue-on-error: true
       shell: bash
       env:
@@ -265,10 +287,12 @@ runs:
         QG_PR: ${{ github.event.pull_request.number }}
         QG_REPORT: ${{ steps.compare.outputs.report }}
       run: |
-        # One comment per category: find it by the marker on its first line.
-        marker="$(head -n 1 "$QG_REPORT")"
+        # One comment per category: the action's own comment, found by the
+        # marker on its first line. A comment of anyone else is never edited.
+        export QG_MARKER="$(head -n 1 "$QG_REPORT")"
         id="$(gh api --paginate "repos/$QG_REPO/issues/$QG_PR/comments" \
-          --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)"
+          --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith(env.QG_MARKER))) | .id' \
+          | head -n 1)"
         if [ -n "$id" ]; then
           gh api -X PATCH "repos/$QG_REPO/issues/comments/$id" -F "body=@$QG_REPORT" > /dev/null
         else

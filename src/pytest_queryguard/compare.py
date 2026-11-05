@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .baseline import Identity
+
 MARKER = "<!-- pytest-queryguard compare -->"
 
 
@@ -84,26 +86,24 @@ def load(path: Path) -> dict[str, Any]:
     return data
 
 
-Identity = tuple[str, str, str | None, str | None]
-
-
-def _findings(tests: dict[str, Any]) -> dict[Identity, tuple[int, list[str]]]:
-    """identity -> (total count, node ids), baselined findings left out."""
-    found: dict[Identity, tuple[int, list[str]]] = {}
+def _findings(
+    tests: dict[str, Any], *, baselined: bool
+) -> dict[Identity, tuple[int, set[str]]]:
+    """identity -> (total count, node ids); baselined ones only when asked."""
+    found: dict[Identity, tuple[int, set[str]]] = {}
     for nodeid, entry in tests.items():
         for f in entry.get("findings", []):
-            if f.get("baselined"):
+            if f.get("baselined") and not baselined:
                 continue
-            key = (f["kind"], f["label"], f.get("file"), f.get("function"))
-            count, ids = found.get(key, (0, []))
-            if nodeid not in ids:
-                ids.append(nodeid)
+            key: Identity = (f["kind"], f["label"], f.get("file"), f.get("function"))
+            count, ids = found.get(key, (0, set()))
+            ids.add(nodeid)
             found[key] = (count + int(f.get("count", 0)), ids)
     return found
 
 
 def _rows(
-    found: dict[Identity, tuple[int, list[str]]], keys: set[Identity]
+    found: dict[Identity, tuple[int, set[str]]], keys: set[Identity]
 ) -> list[FindingRow]:
     rows = [
         FindingRow(*key, found[key][0], tuple(sorted(found[key][1]))) for key in keys
@@ -131,12 +131,17 @@ def compare(base: dict[str, Any], head: dict[str, Any]) -> Comparison:
             result.fewer.append(Change(nodeid, old, new))
     result.more.sort(key=lambda c: (-c.delta, c.nodeid))
     result.fewer.sort(key=lambda c: (c.delta, c.nodeid))
-    # Findings of tests that ran in both runs only: a test that was removed or
-    # deselected did not fix anything.
-    old_found = _findings({k: before[k] for k in common})
-    new_found = _findings({k: after[k] for k in common})
-    result.new = _rows(new_found, set(new_found) - set(old_found))
-    result.fixed = _rows(old_found, set(old_found) - set(new_found))
+    # New: a finding of the change (new tests included) that the base run did
+    # not have at all, baselined or not. Fixed: a finding of the base run, in a
+    # test that still ran, that the change no longer has at all; a test that
+    # was removed or deselected fixed nothing, and a finding moved into the
+    # baseline is suppressed, not fixed.
+    new_found = _findings(after, baselined=False)
+    old_any = _findings(before, baselined=True)
+    old_found = _findings({k: before[k] for k in common}, baselined=False)
+    new_any = _findings({k: after[k] for k in common}, baselined=True)
+    result.new = _rows(new_found, set(new_found) - set(old_any))
+    result.fixed = _rows(old_found, set(old_found) - set(new_any))
     return result
 
 
