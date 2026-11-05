@@ -16,9 +16,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unit separately, such as Celery's `task_prerun`/`task_postrun` signals.
   One `track()` object can be entered by several threads at once.
   `docs/in-app.md` has recipes for Celery and RQ (#240).
+- Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
+  lazy load of a relationship for the second parent loaded at one line
+  (`queryguard_relationship_threshold`) raises
+  `NPlusOneDetected` at the access, with a traceback that ends at the line
+  that read the attribute, instead of a report when the test ends. Single
+  objects never raise; `allow_nplusone`, `queryguard_ignore` and the baseline
+  apply as for the report (#239).
+- A new finding kind, `cartesian-load`: one SELECT that loads two collections
+  with `joinedload` side by side, e.g.
+  `select(Customer).options(joinedload(Customer.orders), joinedload(Customer.notes))`,
+  whose rows grow as the product of the collections while the query count
+  stays at one. Chains, `selectinload` and `contains_eager()` are understood;
+  a product inside the SELECT of a `selectinload` is found too. It warns by
+  default; `queryguard_cartesian_load = fail` or `off` (#229). A suite that
+  turns warnings into errors (`filterwarnings = error`) and has such a query
+  fails after the upgrade: fix the query, ignore the finding, or set
+  `queryguard_cartesian_load = off`.
+- `queryguard_max_queries` gives every test without a `max_queries` marker a
+  default query budget (#232).
+- A budget file: `pytest --queryguard-budgets=queryguard-budgets.json
+  --queryguard-update-budgets` records each test's query count, and with
+  `queryguard_budgets` set a test that runs more queries than its entry
+  fails, saying where the limit comes from. An update on part of the suite
+  keeps the other entries, one on the whole suite drops tests that no longer
+  exist, one that stops early writes nothing; pytest-xdist included. The order
+  is marker, file, default (#232, #244).
+- On a pull request the GitHub Action compares the per-test query counts with
+  the latest run on the base branch and writes the result to the job summary
+  and to one pull-request comment, updated on later pushes: tests that run
+  more statements, new findings and fixed ones. The action now writes
+  `--queryguard-json` and uploads it as an artifact; new inputs `json-file`,
+  `compare`, `comment` and `github-token`. `python -m pytest_queryguard.compare
+  base.json head.json` prints the same report locally (#231).
+- `--queryguard-json=PATH` writes each test's statement count, the count by
+  verb, its database time and its findings (baselined ones marked) as JSON, also with
+  pytest-xdist, with `complete: false` for a run that stopped early. It is the
+  input for comparing a pull request's query counts with its base branch
+  (`docs/ci.md`, #230).
+- The terminal summary names a finding that several tests reported once,
+  with the number of tests and of places in the code it came from:
+  `30 tests  relationship-load  Order.customer  (900 times in total, from one
+  place in the code; e.g. tests/test_orders.py::test_list[0])`, the most tests
+  first, also with pytest-xdist. A shared helper that runs an N+1 no longer
+  hides behind 30 identical blocks (#228).
 
 ### Changed
 
+- Each finding in a report has a `docs:` line, after its `kind:` line, with a
+  link to the section of the documentation that explains its kind, e.g.
+  `docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load`.
+  The SARIF rules link to the same sections in `helpUri` instead of the
+  README, so GitHub code scanning shows them as the rule's help (#227).
 - The report of a relationship load says where the parents were loaded
   (`parents loaded at app/orders.py:21 in _base_query`): the line that ran the
   query whose rows became the parent objects, which may be a helper far from

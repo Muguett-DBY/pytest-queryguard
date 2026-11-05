@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
 from .findings import (
+    KIND_CARTESIAN_LOAD,
     KIND_COLUMN_LOAD,
     KIND_MISSING_INDEX,
     KIND_RELATIONSHIP,
@@ -22,6 +23,7 @@ KINDS = (
     KIND_COLUMN_LOAD,
     KIND_WRITE_LOOP,
     KIND_UNUSED_EAGER_LOAD,
+    KIND_CARTESIAN_LOAD,
     KIND_MISSING_INDEX,
 )
 _OPTION = re.compile(r"\s+(file|function)=(\S+)$")

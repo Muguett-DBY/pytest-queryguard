@@ -92,9 +92,13 @@ EXPECTED_INI = {
     "queryguard_repeat_scope": "test",
     "queryguard_write_loop_threshold": "0",
     "queryguard_unused_eager_load": "off",
+    "queryguard_cartesian_load": "warn",
+    "queryguard_strict": "False",
     "queryguard_fail_on": "[]",
     "queryguard_ignore": "[]",
     "queryguard_baseline": "",
+    "queryguard_budgets": "",
+    "queryguard_max_queries": "",
     "queryguard_index_check": "False",
     "queryguard_index_ignore_tables": "[]",
     "queryguard_index_advisor": "True",
@@ -104,11 +108,15 @@ EXPECTED_INI = {
 EXPECTED_FLAGS = [
     "--no-queryguard-index-check",
     "--queryguard-baseline",
+    "--queryguard-budgets",
     "--queryguard-index-check",
+    "--queryguard-json",
     "--queryguard-mode",
     "--queryguard-report",
     "--queryguard-sarif",
+    "--queryguard-strict",
     "--queryguard-update-baseline",
+    "--queryguard-update-budgets",
 ]
 
 EXPECTED_MARKERS = [

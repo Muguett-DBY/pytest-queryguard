@@ -8,12 +8,16 @@
 | `queryguard_small_repeat_threshold` | `0` or integer ≥ 2, below the repeat threshold | `0` (off) | Number of runs of one statement from one source line, each with different parameters, that count as N+1 although they are below `queryguard_repeat_threshold`. Pagination and writes are not counted. |
 | `queryguard_repeat_scope` | `test`, `session` | `test` | What the repeat, relationship, column-load and write-loop rules count together. `test` adds up everything one test runs. `session` counts each SQLAlchemy `Session` (or, for a connection no `Session` opened, each connection checkout) on its own, which is what a test that makes several independent requests needs. See [Tests with several sessions or requests](several-sessions.md). |
 | `queryguard_write_loop_threshold` | `0` or integer ≥ 2 | `0` (off) | Number of single-row `INSERT`, `UPDATE` or `DELETE` statements of one shape from one source line that count as a write loop (kind `write-loop`). |
+| `queryguard_strict` | bool | `false` | Raise `NPlusOneDetected` at the lazy load that makes an N+1, with the test's traceback, instead of reporting it when the test ends. See [A test failed](when-a-test-fails.md#strict-mode-fail-at-the-access). |
+| `queryguard_cartesian_load` | `off`, `warn`, `fail` | `warn` | Reports a SELECT that joins two collections side by side, whose rows grow as their product (kind `cartesian-load`, see [How detection works](how-detection-works.md#cartesian-load)); `warn` only warns, `fail` fails the test in `fail` mode. |
 | `queryguard_unused_eager_load` | `off`, `warn`, `fail` | `off` | Experimental (exempt from the [deprecation policy](stability.md#experimental)). Reports relationships a test eager-loads and never reads (kind `unused-eager-load`); `warn` only warns, `fail` fails the test in `fail` mode. See [docs/unused-eager-load.md](unused-eager-load.md). |
 | `queryguard_fail_on` | kinds or `fnmatch` patterns, one per line | empty (all kinds) | The finding kinds that fail a test in `fail` mode; the other kinds are reported as `QueryGuardWarning` and the test passes. For example `relationship-load` alone. Budgets always fail. |
 | `queryguard_column_load_threshold` | integer ≥ 2 | `5` | Number of different instances of one class that must load deferred or expired columns on their own to count as N+1. |
 | `queryguard_max_events` | integer ≥ 0 | `10000` | Statements (and relationship loads) stored per test for reports. Beyond it they are only counted, and the report says so. `0` stores everything. |
 | `queryguard_ignore` | patterns, one per line | empty | Findings to leave out of reports: `KIND LABEL [file=GLOB] [function=GLOB]`, see [Opting out](ignoring.md). |
 | `queryguard_baseline` | path | empty | Baseline file, relative to the rootdir: findings listed in it do not fail or warn, see [Baseline](baseline.md). |
+| `queryguard_budgets` | path | empty | Budget file, relative to the rootdir: each test listed in it fails above its number of queries, see [Budgets](budgets.md#lock-todays-counts-the-budget-file). |
+| `queryguard_max_queries` | integer | empty | Default query budget of every test without a `max_queries` marker or an entry in the budget file. |
 | `queryguard_index_check` | `true`, `false` | `false` | Checks each `SELECT` for a missing index (PostgreSQL 16 or newer, and `SELECT`, `UPDATE` and `DELETE` on SQLite, MySQL and MariaDB). |
 | `queryguard_index_advisor` | `true`, `false` | `true` | Suggests an index for each missing-index finding, see [Index advisor](index-advisor.md). Used with the index check. |
 | `queryguard_hypopg` | `auto`, `on`, `off` | `auto` | Verifies the suggested indexes with the hypopg extension: `auto` when it is installed, `on` also creates it inside the check's savepoint, `off` never uses it. |
@@ -21,7 +25,7 @@
 
 Any invalid value stops pytest with a usage error.
 
-The options with a fixed set of values (`queryguard_mode`, `queryguard_repeat_scope`, `queryguard_unused_eager_load`, `queryguard_hypopg`) and `--queryguard-mode` ignore case and surrounding spaces: `WARN`, `Warn` and `warn` mean the same.
+The options with a fixed set of values (`queryguard_mode`, `queryguard_repeat_scope`, `queryguard_unused_eager_load`, `queryguard_cartesian_load`, `queryguard_hypopg`) and `--queryguard-mode` ignore case and surrounding spaces: `WARN`, `Warn` and `warn` mean the same.
 
 In `pyproject.toml`:
 
@@ -79,7 +83,11 @@ Command-line options:
 | `--queryguard-report` | Prints the 10 tests with the most queries at the end of the session. |
 | `--queryguard-baseline=PATH` | Baseline file for this run; overrides `queryguard_baseline`. |
 | `--queryguard-sarif=PATH` | Writes the findings of this run to `PATH` as SARIF 2.1.0. |
+| `--queryguard-json=PATH` | Writes each test's statement counts (total and by verb), database time and findings to `PATH` as JSON, to compare runs. See [CI](ci.md#query-counts-as-json). |
 | `--queryguard-update-baseline` | Writes the findings of this run to the baseline file instead of reporting them. |
+| `--queryguard-strict` | Turns `queryguard_strict` on for this run. |
+| `--queryguard-budgets=PATH` | Budget file for this run; overrides `queryguard_budgets`. |
+| `--queryguard-update-budgets` | Writes each test's query count of this run to the budget file. |
 | `--queryguard-index-check` | Turns the missing-index check on for this run. |
 | `--no-queryguard-index-check` | Turns the missing-index check off for this run, whatever `queryguard_index_check` says. |
 

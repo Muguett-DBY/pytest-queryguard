@@ -255,6 +255,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # the first run compares its query counts with main and comments them
+      actions: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Report the finding, do not fail
@@ -270,11 +273,20 @@ jobs:
       - name: Check the SARIF file and the outputs
         env:
           EXIT_CODE: ${{ steps.report.outputs.exit-code }}
+          JSON_FILE: ${{ steps.report.outputs.json-file }}
         run: |
           python - <<'PY'
           import json, os
 
           assert os.environ["EXIT_CODE"] == "1", os.environ["EXIT_CODE"]
+          with open(os.path.join("examples/action-sample", os.environ["JSON_FILE"])) as handle:
+              counts = json.load(handle)
+          assert counts["complete"] is True, counts
+          (finding,) = [
+              f for entry in counts["tests"].values() for f in entry["findings"]
+          ]
+          assert finding["kind"] == "relationship-load", finding
+          print("JSON ok:", len(counts["tests"]), "tests")
           with open("examples/action-sample/report.sarif") as handle:
               document = json.load(handle)
           (result,) = document["runs"][0]["results"]
@@ -296,6 +308,8 @@ jobs:
           working-directory: examples/action-sample
           sarif-file: strict.sarif
           upload: "false"
+          compare: "false"
+          category: strict  # its own artifact name, the first run's stays
       - name: The step must have failed
         env:
           OUTCOME: ${{ steps.strict.outcome }}
@@ -309,6 +323,8 @@ jobs:
           baseline: queryguard-baseline.json
           pytest-args: -v -k "n_plus_one"
           upload: "false"
+          compare: "false"
+          category: baselined
       - name: The baselined run must be clean
         env:
           EXIT_CODE: ${{ steps.baseline.outputs.exit-code }}

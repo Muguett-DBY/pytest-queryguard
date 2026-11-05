@@ -14,6 +14,7 @@ queryguard: N+1 detected
   first at app/orders.py:10 in list_orders
   parents loaded at app/orders.py:9 in list_orders
   kind: relationship-load  label: Order.customer
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   fix: load it with the parent query, e.g.
        select(Order).options(joinedload(Order.customer))
@@ -44,6 +45,9 @@ queryguard: N+1 detected
   this one. For a repeated statement the label is the normalized statement,
   which takes the place of a separate line; a statement longer than 200
   characters is cut and ends with `*`, so the label as printed still matches.
+- `docs` links to the section of [How detection works](how-detection-works.md)
+  that explains this kind of finding: what the rule counts, what it leaves
+  out and why.
 - `sql` is one of the statements, as SQLAlchemy rendered it.
 - `fix` is the usual remedy for this kind of finding. It is a hint, not a
   patch: check it against what the code needs.
@@ -71,6 +75,68 @@ pytest --queryguard-baseline=/tmp/findings.json --queryguard-update-baseline
 
 The SARIF file (`--queryguard-sarif=PATH`) carries the `kind:` line in each
 message and the kind as the `queryguard/<kind>` rule id.
+
+### The same finding in many tests
+
+A loop in a shared helper or fixture is reported by every test that runs it,
+and each of them prints the same block. After the run, the summary names such
+a finding once:
+
+```
+========== queryguard: the same finding in several tests ==========
+   30 tests  relationship-load  Order.customer  (900 times in total, from one place in the code; e.g. tests/test_orders.py::test_list[0])
+a finding from one place in the code is fixed once for all its tests
+```
+
+A finding is listed when two tests or more reported it, failing or as a
+warning, grouped by kind and label. "From one place in the code" means every
+test reached it through the same function; with several places, the same
+relationship or statement is loaded in a loop in more than one function. The
+example is the first of the tests by name. Ignored and baselined findings are
+not counted, a test that runs again (a rerun plugin) counts once, and it works
+the same with pytest-xdist.
+
+### Strict mode: fail at the access
+
+The report comes when the test ends. With `queryguard_strict = true` (or
+`--queryguard-strict`) the N+1 fails the test where it happens instead: the
+lazy load of a relationship for the second parent loaded at the same line
+(`queryguard_relationship_threshold`, 2 by default) raises
+`NPlusOneDetected`, and the traceback ends at the line that read the
+attribute, the frames of SQLAlchemy and the plugin left out:
+
+```
+    for order in _helper_query(session):
+>       name = order.customer.name
+E       pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents loaded at one line; this access is the N+1
+E
+E         Order.customer was lazy-loaded 2 times
+E         first at app/orders.py:13 in list_orders
+E         parents loaded at app/orders.py:7 in _helper_query
+E         kind: relationship-load  label: Order.customer
+E         fix: load it with the parent query, e.g.
+E              select(Order).options(joinedload(Order.customer))
+```
+
+It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
+`preventLazyLoading()` for SQLAlchemy:
+
+- Reading the relationship of one object never raises, and neither do
+  objects whose query is unknown (made by the test, loaded before it). Objects
+  loaded one by one at the same line (`for id in ids: get_order(id).customer`)
+  count together, as in the report. The report at the end still covers the
+  rest, and with `queryguard_repeat_scope = session` each Session counts on
+  its own here too.
+- The finding is the one the report makes, at the first lazy load, so
+  ignore patterns with `file=`/`function=` and baseline entries match it.
+  The analysis at the end still runs: SARIF, `--queryguard-json` and the
+  summary include the N+1, and the exception replaces the report's text.
+- It raises only what would fail the test anyway: in `fail` mode, for an N+1
+  that no `allow_nplusone`, `queryguard_ignore` pattern or baseline entry
+  covers. It does not raise while `--queryguard-update-baseline` records the
+  findings.
+- Code that catches `AssertionError` around the loop does not hide the N+1:
+  the report at the end still fails the test.
 
 ## 2. Is it real?
 

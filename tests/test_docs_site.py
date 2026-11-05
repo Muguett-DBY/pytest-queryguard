@@ -152,3 +152,17 @@ def test_the_page_list_collapses_on_narrow_screens(site: Path) -> None:
     assert "matchMedia('(max-width:48rem)')" in script
     css = (site / "style.css").read_text(encoding="utf-8")
     assert "nav.side summary{display:none}" in css
+
+
+def test_the_docs_link_of_every_finding_kind_has_its_page_and_anchor(
+    site: Path,
+) -> None:
+    # The report prints these links (docs_url); a renamed heading breaks them.
+    from pytest_queryguard.findings import _KIND_DOCS, DOCS_URL, docs_url
+
+    for kind, target in _KIND_DOCS.items():
+        assert docs_url(kind) == DOCS_URL + target
+        page, _, anchor = target.partition("#")
+        text = (site / page).read_text(encoding="utf-8")
+        if anchor:
+            assert f'id="{anchor}"' in text, f"{kind}: no #{anchor} in {page}"

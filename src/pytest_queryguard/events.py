@@ -14,6 +14,20 @@ class CallSite:
     function: str
 
 
+@dataclass(slots=True, frozen=True)
+class CartesianLoadEvent:
+    """One SELECT that joins two or more collections side by side.
+
+    ``collections`` are the joined collection paths, each a tuple of
+    ``(Class.relationship, loader)`` steps from the query's entity; ``root``
+    is the entity's class name.
+    """
+
+    collections: tuple[tuple[tuple[str, str], ...], ...]
+    root: str
+    callsite: CallSite | None
+
+
 @dataclass(slots=True)
 class StatementEvent:
     sql: str

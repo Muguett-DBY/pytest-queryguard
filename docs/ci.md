@@ -23,6 +23,8 @@ jobs:
     permissions:
       contents: read
       security-events: write   # needed to upload to code scanning
+      actions: read            # compare query counts with the base branch
+      pull-requests: write     # comment the comparison on the pull request
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -71,9 +73,54 @@ failed. Install your own project first: the action does not know how.
 | `working-directory` | `.` | Where to run pytest. Locations in the SARIF file are still relative to the repository root (see [SARIF output](sarif.md#paths-and-the-repository-root)). |
 | `sarif-file` | `queryguard.sarif` | Output file, relative to `working-directory`. |
 | `upload` | `true` | Upload to code scanning. `false`: only write the file. |
-| `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload. |
+| `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload. It also names the job's query-count artifact and its pull-request comment. |
+| `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. Empty: none. |
+| `compare` | `true` | On a pull request, compare the counts with the base branch and write the result to the job summary. |
+| `comment` | `true` | Also post the comparison as a pull-request comment, updated in place on later pushes. |
+| `github-token` | `github.token` | Token for the comparison and the comment. |
 
-Outputs: `exit-code` (pytest's) and `sarif-file`.
+Outputs: `exit-code` (pytest's), `sarif-file` and `json-file`.
+
+### Query counts on pull requests
+
+On every run the action writes the [query counts](#query-counts-as-json) and
+uploads them as an artifact. On a pull request it downloads the file of the
+latest finished run of the same workflow on the base branch, compares the
+two, and writes the result to the job summary and to one pull-request
+comment:
+
+```
+### pytest-queryguard: queries compared with the base branch
+
+412 tests compared: 3120 -> 3187 statements (+67). 2 run more, 1 fewer; 1 new findings, 0 fixed.
+
+#### New findings
+| Kind | Label | Where | Times | Tests |
+| relationship-load | `Order.items` | `app/orders.py in list_orders` | 50 | `tests/test_orders.py::test_list` |
+
+#### Tests that run more statements
+| Test | Before | After | Change |
+| `tests/test_orders.py::test_list` | 3 | 53 | +50 |
+```
+
+A reviewer sees that a change made a test run more queries even when no
+rule fired yet (a new loop of two, a test under its budget). The comparison
+never fails the job.
+
+- The base branch needs one run of the workflow with this version of the
+  action first (a push to `main`); until then the summary says so.
+- Findings are matched by kind, label, file and function, so a finding that
+  only moved to another line is neither new nor fixed. Baselined findings
+  are left out.
+- Without `actions: read` the job summary says the runs could not be
+  listed; without `pull-requests: write`, or on a pull request from another
+  repository (a fork) or Dependabot, there is no comment and the job summary
+  still has the report. The action only edits its own comment.
+- `json-file: ""` turns the file, the artifact and the comparison off. Do not
+  pass `--queryguard-json` in `pytest-args` as well: the action reads the file
+  at `json-file`.
+- Several jobs (for example one per database) keep apart by `category`.
+- The same report locally: `python -m pytest_queryguard.compare base.json head.json`.
 
 A typical rollout: run once with `fail: "false"` to see the alerts, create a
 [baseline](baseline.md) for what you cannot fix yet, then switch to
@@ -115,6 +162,54 @@ A typical rollout: run once with `fail: "false"` to see the alerts, create a
 The upload step prints one warning per finding (`Calculated fingerprint ... but found
 existing inconsistent fingerprint value`). It is noise: the upload succeeds and alerts
 are matched correctly. See [SARIF output](sarif.md) for why.
+
+## Query counts as JSON
+
+`pytest --queryguard-json=queryguard.json` writes one entry per test: how many
+statements it ran, the same split by verb, the database time and the findings
+it found (after ignores). Keep the file from the main
+branch as an artifact and compare a pull request's file with it to see which
+tests started running more queries before anything fails.
+
+```json
+{
+  "format": 1,
+  "tool": {"name": "pytest-queryguard", "version": "0.6.0"},
+  "complete": true,
+  "tests": {
+    "tests/test_orders.py::test_list_orders": {
+      "statements": 51,
+      "by_verb": {"select": 51},
+      "db_time": 0.0003,
+      "truncated": false,
+      "findings": [
+        {"kind": "relationship-load", "label": "Order.customer", "count": 50,
+         "file": "app/orders.py", "function": "list_orders", "line": 12,
+         "baselined": false}
+      ]
+    }
+  }
+}
+```
+
+- `statements` counts the statements of the test function, as budgets do:
+  the setup and teardown of fixtures are not measured. `by_verb` sorts the stored ones into `select`, `insert`,
+  `update`, `delete`, `transaction` and `other`; `truncated` is true when the
+  test ran more than `queryguard_max_events` statements, and then `by_verb`
+  covers only the first of them.
+- `max_queries_marker` is true for a test with its own `max_queries` marker.
+- `findings` lists what the test found after ignores. Findings in the
+  baseline are listed too, with `"baselined": true`, so the file is the same
+  whether or not the baseline is being updated. `db_time` is null when no
+  statement was timed.
+- `complete` is false when the run stopped early (`-x`, Ctrl-C, a collection
+  error, a crashed pytest-xdist worker) or measurement failed: tests missing
+  from such a file did not run, they did not stop querying.
+- With pytest-xdist the controller writes one file with the tests of every
+  worker. With `queryguard_mode = off` nothing is measured and `tests` is
+  empty.
+- `format` changes only when an existing field changes meaning; new fields
+  may be added.
 
 ## How this repository tests the action
 
