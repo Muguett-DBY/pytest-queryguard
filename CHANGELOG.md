@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--queryguard-json=PATH` writes each test's statement count, the count by
+  verb, its database time and its findings (baselined ones marked) as JSON, also with
+  pytest-xdist, with `complete: false` for a run that stopped early. It is the
+  input for comparing a pull request's query counts with its base branch
+  (`docs/ci.md`, #230).
 - The terminal summary names a finding that several tests reported once,
   with the number of tests and of places in the code it came from:
   `30 tests  relationship-load  Order.customer  (900 times in total, from one

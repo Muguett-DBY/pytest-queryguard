@@ -15,7 +15,7 @@ from typing import Any, cast
 import pytest
 
 from . import baseline as baselines
-from . import catalog, eager, hypopg, indexes, sarif
+from . import catalog, eager, hypopg, indexes, sarif, testjson
 from . import groups as finding_groups
 from .baseline import BaselineError, Identity, sorted_identities
 from .collector import QueryCollector, pop, push
@@ -111,6 +111,12 @@ class _Settings:
         self.reported: sarif.Collected = {}
         # the same counted finding in several tests, for the terminal summary
         self.groups: finding_groups.Groups = {}
+        # per-test counts and findings for --queryguard-json
+        self.json_path: Path | None = None
+        self.tests: testjson.Tests = {}
+        self.json_incomplete = False
+        self.json_result: str | None = None
+        self.json_failed: str | None = None
         self.sarif_result: str | None = None
         self.sarif_failed: str | None = None
         self.update_baseline = update_baseline
@@ -217,6 +223,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         metavar="PATH",
         help="Write the findings of this run to PATH as SARIF 2.1.0 (GitHub "
         "code scanning). Findings in the baseline are left out.",
+    )
+    group.addoption(
+        "--queryguard-json",
+        dest="queryguard_json",
+        default=None,
+        metavar="PATH",
+        help="Write each test's statement counts and findings to PATH as JSON, "
+        "to compare runs (a pull request against its base branch).",
     )
     parser.addini("queryguard_mode", "fail, warn or off", default="fail")
     parser.addini(
@@ -524,15 +538,24 @@ def _baseline_path(config: pytest.Config) -> Path | None:
     return Path(config.rootpath, raw.strip()) if raw.strip() else None
 
 
-def _sarif_path(config: pytest.Config) -> Path | None:
-    raw: str | None = config.getoption("queryguard_sarif")
+def _output_path(config: pytest.Config, dest: str, flag: str) -> Path | None:
+    """The path of an output file option, relative to the invocation directory."""
+    raw: str | None = config.getoption(dest)
     if raw is None:
         return None
     if not raw.strip():
-        raise pytest.UsageError("--queryguard-sarif needs a path")
+        raise pytest.UsageError(f"{flag} needs a path")
     path = Path(config.invocation_params.dir, raw.strip())
-    config.option.queryguard_sarif = str(path)  # workers get the resolved path
+    setattr(config.option, dest, str(path))  # workers get the resolved path
     return path
+
+
+def _sarif_path(config: pytest.Config) -> Path | None:
+    return _output_path(config, "queryguard_sarif", "--queryguard-sarif")
+
+
+def _json_path(config: pytest.Config) -> Path | None:
+    return _output_path(config, "queryguard_json", "--queryguard-json")
 
 
 def _read_settings(config: pytest.Config) -> _Settings:
@@ -587,6 +610,7 @@ def _read_settings(config: pytest.Config) -> _Settings:
     )
     settings.baseline_previous_error = previous_error
     settings.rootpath = config.rootpath
+    settings.json_path = _json_path(config)
     return settings
 
 
@@ -630,7 +654,7 @@ def _configure(config: pytest.Config) -> None:
     catalog.reset()
     settings = _read_settings(config)
     config.stash[_settings] = settings
-    if settings.baselining or settings.sarif_path:
+    if settings.baselining or settings.sarif_path or settings.json_path:
         config.pluginmanager.register(
             _CollectionErrors(settings), "queryguard-collection-errors"
         )
@@ -794,6 +818,7 @@ def _analyse(
             findings.extend(eager.findings(tracker, cwd=root))
         if settings.ignore or marker_rules:
             findings = _drop_ignored(item, settings, findings, marker_rules)
+        _note_found(settings, findings, item.nodeid)
         findings = _apply_baseline(settings, findings, item)
         finding_groups.add(settings.groups, findings, item.nodeid)
         failing = [f for f in findings if _fails(settings, f)]
@@ -837,6 +862,12 @@ def _at_the_test(finding: Finding, item: pytest.Item) -> Finding:
         )
     except Exception:  # noqa: BLE001  # a plugin bug must never break the user suite
         return finding
+
+
+def _note_found(settings: _Settings, findings: list[Finding], nodeid: str) -> None:
+    """Note the findings of a test after ignores, before the baseline, for the JSON."""
+    if settings.json_path is not None:
+        testjson.record_findings(settings.tests, nodeid, findings, settings.baseline)
 
 
 def _apply_baseline(
@@ -920,28 +951,24 @@ def _analyse_indexes(
     try:
         root = item.config.rootpath
         scans = select_findings(collector.scans, (*settings.ignore_tables, *exempt))
-        if (
-            settings.ignore
-            or marker_rules
-            or settings.baselining
-            or settings.sarif_path
-        ) and scans:
-            findings = [make_index_finding(scan, cwd=root) for scan in scans]
-            kept = _drop_ignored(item, settings, findings, marker_rules, indexes=True)
-            kept = _apply_baseline(settings, kept, item)
-            keep_ids = {id(f) for f in kept}
-            scans = [
-                scan
-                for scan, finding in zip(scans, findings, strict=True)
-                if id(finding) in keep_ids
-            ]
         if not scans:
             return None
-        finding_groups.add(
-            settings.groups,
-            [make_index_finding(scan, cwd=root) for scan in scans],
-            item.nodeid,
-        )
+        findings = [make_index_finding(scan, cwd=root) for scan in scans]
+        kept = findings
+        if settings.ignore or marker_rules:
+            kept = _drop_ignored(item, settings, kept, marker_rules, indexes=True)
+        _note_found(settings, kept, item.nodeid)
+        if settings.baselining or settings.sarif_path:
+            kept = _apply_baseline(settings, kept, item)
+        if not kept:
+            return None
+        finding_groups.add(settings.groups, kept, item.nodeid)
+        keep_ids = {id(f) for f in kept}
+        scans = [
+            scan
+            for scan, finding in zip(scans, findings, strict=True)
+            if id(finding) in keep_ids
+        ]
         return format_index_findings(scans, cwd=root)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "missing-index analysis")
@@ -1061,12 +1088,15 @@ def _budget_report(
 
 
 def _record(item: pytest.Item, collector: QueryCollector, settings: _Settings) -> None:
-    """Remember the test's statement count for the session report."""
-    counts = item.config.stash.get(_report, None)
+    """Remember the test's statement count for the session report and the JSON."""
     # After an internal error the listeners stop recording, so a count would be wrong.
-    if counts is None or settings.mode == "off" or internal_error() is not None:
+    if settings.mode == "off" or internal_error() is not None:
         return
-    counts.append((item.nodeid, collector.statement_count))
+    if settings.json_path is not None:
+        testjson.record_counts(settings.tests, item.nodeid, collector)
+    counts = item.config.stash.get(_report, None)
+    if counts is not None:
+        counts.append((item.nodeid, collector.statement_count))
 
 
 def _write_report(
@@ -1146,6 +1176,14 @@ def pytest_testnodedown(node: Any, error: object) -> None:
     if settings is None:
         return
     output = getattr(node, "workeroutput", None) or {}
+    if settings.json_path is not None:
+        try:
+            if error is not None or output.get("queryguard_json_incomplete", True):
+                settings.json_incomplete = True
+            testjson.merge(settings.tests, output.get("queryguard_tests", {}))
+        except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+            settings.json_incomplete = True
+            record_error(exc, "merging the results of a pytest-xdist worker")
     try:
         finding_groups.merge_wire(settings.groups, output.get("queryguard_groups", []))
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
@@ -1278,12 +1316,18 @@ def pytest_sessionfinish(
 ) -> None:
     config = session.config
     settings = config.stash.get(_settings, None)
-    if settings is not None and settings.groups and _is_worker(config):
+    if settings is not None and _is_worker(config):
         try:
             output = cast(Any, config).workeroutput
-            output["queryguard_groups"] = finding_groups.to_wire(settings.groups)
+            if settings.groups:
+                output["queryguard_groups"] = finding_groups.to_wire(settings.groups)
+            if settings.json_path is not None:
+                output["queryguard_tests"] = settings.tests
+                output["queryguard_json_incomplete"] = internal_error() is not None
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "sending the results to the pytest-xdist controller")
+    elif settings is not None and settings.json_path is not None:
+        _write_json(session, settings, exitstatus)
     if settings is None or not (settings.baselining or settings.sarif_path):
         return
     if _is_worker(config):
@@ -1369,6 +1413,35 @@ def _write_sarif(settings: _Settings) -> None:
     if omitted:
         text += f" ({omitted} left out: no location inside the rootdir)"
     settings.sarif_result = text
+
+
+def _write_json(
+    session: pytest.Session, settings: _Settings, exitstatus: int | pytest.ExitCode
+) -> None:
+    path = settings.json_path
+    if path is None:
+        return
+    try:
+        version = importlib.metadata.version("pytest-queryguard")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    complete = not (
+        settings.json_incomplete
+        or internal_error() is not None
+        or settings.collection_failed
+        or exitstatus in _ABNORMAL_EXIT
+        or session.shouldstop
+        or session.shouldfail
+    )
+    try:
+        testjson.write(path, testjson.document(settings.tests, version, complete))
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        settings.json_failed = f"could not write {path}: {exc}"
+        return
+    text = f"{path}: {len(settings.tests)} tests"
+    if not complete:
+        text += " (incomplete: the run stopped early or measurement failed)"
+    settings.json_result = text
 
 
 def _update_baseline(
@@ -1476,6 +1549,17 @@ def _write_groups(
     )
 
 
+def _write_json_summary(
+    terminalreporter: pytest.TerminalReporter, settings: _Settings
+) -> None:
+    if settings.json_failed is not None:
+        terminalreporter.write_sep("=", "queryguard: JSON", red=True)
+        terminalreporter.write_line(f"queryguard JSON {settings.json_failed}")
+    elif settings.json_result is not None:
+        terminalreporter.write_sep("=", "queryguard: JSON written")
+        terminalreporter.write_line(settings.json_result)
+
+
 def _write_sarif_summary(
     terminalreporter: pytest.TerminalReporter, settings: _Settings
 ) -> None:
@@ -1529,6 +1613,10 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
         _write_sarif_summary(terminalreporter, settings)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "SARIF summary")
+    try:
+        _write_json_summary(terminalreporter, settings)
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        record_error(exc, "JSON summary")
     _report_internal_error(config)
     try:
         _write_internal_failure(terminalreporter)

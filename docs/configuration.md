@@ -79,6 +79,7 @@ Command-line options:
 | `--queryguard-report` | Prints the 10 tests with the most queries at the end of the session. |
 | `--queryguard-baseline=PATH` | Baseline file for this run; overrides `queryguard_baseline`. |
 | `--queryguard-sarif=PATH` | Writes the findings of this run to `PATH` as SARIF 2.1.0. |
+| `--queryguard-json=PATH` | Writes each test's statement counts (total and by verb), database time and findings to `PATH` as JSON, to compare runs. See [CI](ci.md#query-counts-as-json). |
 | `--queryguard-update-baseline` | Writes the findings of this run to the baseline file instead of reporting them. |
 | `--queryguard-index-check` | Turns the missing-index check on for this run. |
 | `--no-queryguard-index-check` | Turns the missing-index check off for this run, whatever `queryguard_index_check` says. |
