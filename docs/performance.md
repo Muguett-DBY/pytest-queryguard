@@ -129,43 +129,46 @@ scope, the autoflush attribution), and an in-memory SQLite statement is so
 cheap that each step shows as a few percentage points. Run to run the same
 commit varies by about 5 points, so a bisect needs repeated, pinned runs.
 
-## First comparison with other plugins
+## Comparison with other plugins
 
-One first measurement against queryspy and pytest-querycount, on
-2026-11-01. It is a single session on the machine above, with Python 3.14,
-SQLAlchemy 2.1 and pytest-queryguard from the development branch before
-0.5.0; the full write-up, with the exact versions and a script you can run, is
-tracked in [issue #253](https://github.com/MaciejZiel/pytest-queryguard/issues/253).
-Until then, read these numbers as preliminary.
+pytest-queryguard 0.5.0, pytest-querycount 0.4.0 and queryspy 0.6.0, measured
+on 2026-11-05 with Python 3.14.4, SQLAlchemy 2.1.1 and pytest 9.1.1 on the
+machine above, by `scripts/compare/run.py`:
 
 - Whole suite: the generated 300-test suite of `scripts/bench_suite.py`
-  against file-based SQLite, pinned to one core, each tool in a fresh pytest
-  process, with the tools' runs interleaved and the order reversed every
-  round. Each tool ran with the settings that make it report N+1:
-  pytest-queryguard with `--queryguard-mode=warn`, queryspy with
-  `--queryspy-strict`, pytest-querycount with a `no_n_plus_one(threshold=3)`
-  marker on every test.
-- Per statement: Core `select` by key, ORM `select` by primary key and one
-  lazy load, against in-memory SQLite, 15 processes per tool, the fastest of
-  5 blocks in each.
+  against file-based SQLite, 9 rounds. Each tool ran with the settings that
+  make it report N+1: pytest-queryguard with `--queryguard-mode=warn`,
+  queryspy with `--queryspy-strict` (stack capture on, its default),
+  pytest-querycount with a `no_n_plus_one(threshold=3)` marker on every test.
+- Per statement: a Core `select` by key, an ORM `select` by primary key and
+  one lazy load, against in-memory SQLite (`scripts/compare/bench_micro.py`),
+  15 processes per tool, the fastest of 5 blocks of 2000 statements in each,
+  then the median.
+
+Each tool has its own virtual environment with the same Python, pytest and
+SQLAlchemy; every run is a fresh process pinned to one core, the tools'
+runs are interleaved and their order reversed every round. Two complete
+runs, one after the other (the cells show both when they differ):
 
 | | pytest-queryguard | pytest-querycount | queryspy |
 |---|---|---|---|
-| 300-test suite, added time | +0.3 to +1.3 % | +5.5 % | +28 % |
-| Core `select`, added per statement | +24 us | +46 us | +10 us |
-| ORM `select`, added per statement | +56 us | +76 us | +72 us |
-| Lazy load, added per statement | +101 us | +96 us | +106 us |
+| 300-test suite, added time | +1.8 to +2.4 % | +27 to +29 % | +40 to +43 % |
+| Core `select`, added per statement | +25 to +27 us | +108 to +112 us | +13 us |
+| ORM `select`, added per statement | +55 to +66 us | +184 to +187 us | +172 to +176 us |
+| Lazy load, added per statement | +100 to +102 us | +189 us | +208 to +209 us |
 
-Per statement the three are close on ORM work, and queryspy adds the least
-to a Core statement. On the whole suite the differences come from what each
-plugin does per test, not only per statement. The absolute per-statement
-figures are higher than in the sections above because this was another
-session; as said in [Method](#method), only numbers measured back to back
-compare.
+queryspy adds the least to a Core statement; on ORM statements, lazy loads
+and the whole suite pytest-queryguard adds the least. The absolute
+per-statement figures differ from the sections above because they are
+another session; as said in [Method](#method), only numbers measured back to
+back compare. A first, informal measurement on 2026-11-01 used a development
+build of pytest-queryguard and earlier versions of the other two.
 
 ## Reproduce
 
 ```bash
+uv run python scripts/compare/run.py           # the comparison above
+uv run python scripts/compare/run.py --queryguard .   # this checkout instead of 0.5.0
 uv run python scripts/bench_overhead.py --statements 5000 --runs 15
 uv run python scripts/bench_suite.py --runs 7
 uv run python scripts/bench_suite.py --runs 7 --backend postgres \

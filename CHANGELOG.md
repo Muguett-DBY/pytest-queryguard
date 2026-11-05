@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/compare/run.py` measures the overhead of pytest-queryguard,
+  pytest-querycount and queryspy side by side, each in its own environment,
+  and `docs/performance.md` has its results for 0.5.0, 0.4.0 and 0.6.0 (#253).
 - Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
   lazy load of a relationship for the second parent loaded at one line
   (`queryguard_relationship_threshold`) raises

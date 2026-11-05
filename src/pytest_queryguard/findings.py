@@ -23,6 +23,7 @@ _KIND_DOCS = {
     KIND_WRITE_LOOP: "how-detection-works.html#write-loop",
     KIND_MISSING_INDEX: "how-detection-works.html#missing-index",
     KIND_UNUSED_EAGER_LOAD: "unused-eager-load.html",
+    KIND_CARTESIAN_LOAD: "how-detection-works.html#cartesian-load",
 }
 
 
