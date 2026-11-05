@@ -9,6 +9,7 @@ KIND_MISSING_INDEX = "missing-index"
 KIND_COLUMN_LOAD = "column-load"
 KIND_WRITE_LOOP = "write-loop"
 KIND_UNUSED_EAGER_LOAD = "unused-eager-load"
+KIND_CARTESIAN_LOAD = "cartesian-load"
 
 SEVERITY_ERROR = "error"
 

@@ -4,7 +4,13 @@ import sys
 import threading
 from dataclasses import dataclass, field
 
-from .events import ColumnLoadEvent, RelationshipLoadEvent, ScanEvent, StatementEvent
+from .events import (
+    CartesianLoadEvent,
+    ColumnLoadEvent,
+    RelationshipLoadEvent,
+    ScanEvent,
+    StatementEvent,
+)
 
 # Without the GIL (free-threaded CPython) ``count += 1`` from several threads
 # loses updates, so the add_* methods take a lock there. With the GIL the
@@ -19,6 +25,8 @@ class QueryCollector:
     statements: list[StatementEvent] = field(default_factory=list)
     relationship_loads: list[RelationshipLoadEvent] = field(default_factory=list)
     column_loads: list[ColumnLoadEvent] = field(default_factory=list)
+    # SELECTs that join collections side by side (cartesian.py); few per test
+    cartesian_loads: list[CartesianLoadEvent] = field(default_factory=list)
     # Missing-index check (see indexes.py); only used when index_check is set.
     index_check: bool = False
     # Suggest an index for each finding; hypopg is "auto", "on" or "off".
@@ -90,6 +98,15 @@ class QueryCollector:
         self.column_load_count += 1
         if self.max_events is None or len(self.column_loads) < self.max_events:
             self.column_loads.append(event)
+
+    def add_cartesian_load(self, event: CartesianLoadEvent) -> None:
+        if self.max_events is not None and len(self.cartesian_loads) >= self.max_events:
+            return
+        if _FREE_THREADED:
+            with self._lock:
+                self.cartesian_loads.append(event)
+            return
+        self.cartesian_loads.append(event)
 
     def add_db_time(self, seconds: float) -> None:
         if _FREE_THREADED:

@@ -278,6 +278,55 @@ requests](several-sessions.md).
 
 Off by default. See [Unused eager loads](unused-eager-load.md).
 
+### cartesian-load
+
+One query, so no count rule and no budget sees it:
+
+```python
+select(Customer).options(joinedload(Customer.orders), joinedload(Customer.notes))
+```
+
+The SELECT joins both collections to the customer, so each customer comes
+back once per pair of an order and a note: 20 orders and 20 notes are 400
+rows for one customer, and the ORM folds them back into 20 + 20 objects. The
+rows grow as the product of the collections, which is slow and memory-heavy
+long before a test notices.
+
+The rule reads the loader options of each top-level ORM SELECT. It reports a
+statement in which two collections are loaded with `joinedload` side by side:
+
+- **side by side**: neither is on the path of the other.
+  `joinedload(Customer.orders).joinedload(Order.items)` is a chain whose rows
+  grow with the number of items, not a product, and is not reported;
+  `joinedload(Order.customer).joinedload(Customer.notes)` with
+  `joinedload(Order.items)` is (a scalar on the way does not multiply, the
+  two collections still do).
+- **in one statement**: a `selectinload` or `subqueryload` on the way starts
+  a SELECT of its own, so `selectinload(Customer.orders).joinedload(Order.items)`
+  and `...joinedload(Order.tags)` are a product inside that second SELECT and
+  are reported, while `joinedload(Customer.orders)` with
+  `selectinload(Customer.notes)` is not.
+- `contains_eager()` is left out: a query that joins on purpose to filter
+  chose its rows.
+
+The label names the collections, `Customer.notes + Customer.orders`; the fix
+keeps one `joinedload` and turns the others into `selectinload`, one more
+query each and no repeated rows:
+
+```
+  Customer.notes and Customer.orders were joined into one query side by side, once
+  first at app/customers.py:12 in list_customers
+  kind: cartesian-load  label: Customer.notes + Customer.orders
+  each row repeats per pair of their items: the rows grow as their product
+  fix: load all but one of them with selectinload (one more query each, no repeated rows), e.g.
+       select(Customer).options(joinedload(Customer.notes), selectinload(Customer.orders))
+```
+
+It warns by default (`queryguard_cartesian_load = warn`); `fail` fails the
+test in `fail` mode, `off` turns the check off. Loader strategies set on the
+mapping (`relationship(lazy="joined")`) are not options of the query and are
+not seen.
+
 ### missing-index
 
 Off by default; PostgreSQL 16 and newer, SQLite, MySQL and MariaDB. See the

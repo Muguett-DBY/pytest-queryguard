@@ -240,6 +240,7 @@ RULE_NAMES = {
     "column-load": "ColumnLoad",
     "write-loop": "WriteLoop",
     "unused-eager-load": "UnusedEagerLoad",
+    "cartesian-load": "CartesianLoad",
     "missing-index": "MissingIndex",
 }
 

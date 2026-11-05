@@ -16,12 +16,17 @@ import pytest
 
 from . import baseline as baselines
 from . import budgets as budget_files
-from . import catalog, eager, hypopg, indexes, sarif, testjson
+from . import cartesian, catalog, eager, hypopg, indexes, sarif, testjson
 from . import groups as finding_groups
 from .baseline import BaselineError, Identity, sorted_identities
 from .collector import QueryCollector, pop, push
 from .detectors import DEFAULT_COLUMN_LOAD_THRESHOLD, SCOPE_TEST, SCOPES, detect
-from .findings import KIND_MISSING_INDEX, KIND_UNUSED_EAGER_LOAD, Finding
+from .findings import (
+    KIND_CARTESIAN_LOAD,
+    KIND_MISSING_INDEX,
+    KIND_UNUSED_EAGER_LOAD,
+    Finding,
+)
 from .ignores import IgnoreRule, apply_rules, check_kind, parse_rules
 from .indexes import select_findings
 from .listeners import (
@@ -51,6 +56,7 @@ from .warnings import QueryGuardInternalWarning, QueryGuardWarning, warn_interna
 _MODES = ("fail", "warn", "off")
 _EAGER_MODES = ("off", "warn", "fail")
 _eager_enabled = pytest.StashKey[bool]()
+_cartesian_enabled = pytest.StashKey[bool]()
 _internal_reported = pytest.StashKey[bool]()
 _failure_summarised = pytest.StashKey[bool]()
 _outer_error = pytest.StashKey[BaseException | None]()
@@ -112,6 +118,7 @@ class _Settings:
         self.reported: sarif.Collected = {}
         # the same counted finding in several tests, for the terminal summary
         self.groups: finding_groups.Groups = {}
+        self.cartesian = "warn"  # queryguard_cartesian_load
         # budgets: queryguard_max_queries, the budget file and its update
         self.default_budget: int | None = None
         self.budgets_path: Path | None = None
@@ -333,6 +340,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=[],
     )
     parser.addini(
+        "queryguard_cartesian_load",
+        "One SELECT that joins two collections side by side (joinedload of both), "
+        "whose rows grow as their product: warn (default), fail or off",
+        default="warn",
+    )
+    parser.addini(
         "queryguard_unused_eager_load",
         "EXPERIMENTAL: report relationships a test loads with selectinload, "
         "joinedload, subqueryload or immediateload and never reads: off "
@@ -523,6 +536,10 @@ def _ignore_rules(config: pytest.Config) -> tuple[IgnoreRule, ...]:
         raise pytest.UsageError(f"{name}: {exc}") from None
 
 
+def _cartesian_mode(config: pytest.Config) -> str:
+    return _choice(config, "queryguard_cartesian_load", _EAGER_MODES)
+
+
 def _unused_eager(config: pytest.Config) -> str:
     return _choice(config, "queryguard_unused_eager_load", _EAGER_MODES)
 
@@ -687,6 +704,7 @@ def _read_settings(config: pytest.Config) -> _Settings:
     settings.baseline_previous_error = previous_error
     settings.rootpath = config.rootpath
     settings.json_path = _json_path(config)
+    settings.cartesian = _cartesian_mode(config)
     settings.default_budget = _default_budget(config)
     settings.budgets_path = _budgets_path(config)
     settings.update_budgets = bool(config.getoption("queryguard_update_budgets"))
@@ -772,6 +790,9 @@ def _configure(config: pytest.Config) -> None:
         if settings.unused_eager != "off":
             config.stash[_eager_enabled] = True  # set first: undone even if it fails
             eager.enable()
+        if settings.cartesian != "off":
+            config.stash[_cartesian_enabled] = True
+            cartesian.enable()
 
 
 class _CollectionErrors:
@@ -802,6 +823,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     # session its state back.
     steps: tuple[Callable[[], object], ...] = (
         lambda: _disable_eager(config),
+        lambda: _disable_cartesian(config),
         lambda: swap_error(stash.get(_outer_error, None)),
         lambda: indexes.swap_stopped(stash.get(_outer_stopped, None)),
         lambda: indexes.swap_catalog_error(stash.get(_outer_catalog_error, None)),
@@ -821,6 +843,12 @@ def pytest_unconfigure(config: pytest.Config) -> None:
                     f"pytest-queryguard could not clean up after the session: {exc!r}"
                 )
             )
+
+
+def _disable_cartesian(config: pytest.Config) -> None:
+    if config.stash.get(_cartesian_enabled, False):
+        config.stash[_cartesian_enabled] = False
+        cartesian.disable()
 
 
 def _disable_eager(config: pytest.Config) -> None:
@@ -895,6 +923,8 @@ def _fails(settings: _Settings, finding: Finding) -> bool:
     """True when the finding fails the test; else it is only a warning."""
     if finding.kind == KIND_UNUSED_EAGER_LOAD and settings.unused_eager != "fail":
         return False
+    if finding.kind == KIND_CARTESIAN_LOAD and settings.cartesian != "fail":
+        return False
     return settings.fails(finding.kind)
 
 
@@ -929,6 +959,8 @@ def _analyse(
         )
         if tracker is not None:
             findings.extend(eager.findings(tracker, cwd=root))
+        if settings.cartesian != "off" and collector.cartesian_loads:
+            findings.extend(cartesian.findings(collector, cwd=root))
         if settings.ignore or marker_rules:
             findings = _drop_ignored(item, settings, findings, marker_rules)
         _note_found(settings, findings, item.nodeid)
