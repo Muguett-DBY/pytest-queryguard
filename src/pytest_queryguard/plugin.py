@@ -33,9 +33,12 @@ from .detectors import (
 from .events import CallSite, RelationshipLoadEvent, ScanEvent
 from .findings import (
     KIND_CARTESIAN_LOAD,
+    KIND_COLUMN_LOAD,
     KIND_MISSING_INDEX,
     KIND_RELATIONSHIP,
+    KIND_REPEAT,
     KIND_UNUSED_EAGER_LOAD,
+    KIND_WRITE_LOOP,
     Finding,
 )
 from .ignores import IgnoreRule, apply_rules, check_kind, parse_rules
@@ -1048,24 +1051,17 @@ def _analyse(
         return None, None
     try:
         root = item.config.rootpath
-        findings = make_findings(
-            detect(
-                collector,
-                relationship_threshold=settings.relationship,
-                repeat_threshold=settings.repeat,
-                column_load_threshold=settings.column_load,
-                small_repeat_threshold=settings.small_repeat,
-                write_loop_threshold=settings.write_loop,
-                scope=settings.repeat_scope,
-                sieve=sieve,
-            ),
-            cwd=root,
-        )
-        if tracker is not None:
-            findings.extend(eager.findings(tracker, cwd=root, sieve=sieve))
-        if settings.cartesian != "off" and collector.cartesian_loads:
-            findings.extend(cartesian.findings(collector, cwd=root, sieve=sieve))
-        if settings.ignore or marker_rules:
+        rules = bool(settings.ignore or marker_rules)
+        findings = _findings(collector, settings, tracker, root, None)
+        if sieve is not None and _in_blocks(collector, tracker):
+            # The patterns and markers are matched against what the test found
+            # without the blocks, so one that a block also covers is not stale.
+            if rules:
+                _drop_ignored(item, settings, findings, marker_rules)
+            findings = _findings(collector, settings, tracker, root, sieve)
+            if rules:
+                findings = apply_rules(findings, (*settings.ignore, *marker_rules))[0]
+        elif rules:
             findings = _drop_ignored(item, settings, findings, marker_rules)
         _note_found(settings, findings, item.nodeid)
         findings = _apply_baseline(settings, findings, item)
@@ -1082,6 +1078,46 @@ def _analyse(
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "N+1 analysis")
         return None, None
+
+
+def _findings(
+    collector: QueryCollector,
+    settings: _Settings,
+    tracker: eager.Tracker | None,
+    root: Path,
+    sieve: blocks.Sieve | None,
+) -> list[Finding]:
+    """The N+1 findings of the test; with a sieve, minus those of ignore() blocks."""
+    findings = make_findings(
+        detect(
+            collector,
+            relationship_threshold=settings.relationship,
+            repeat_threshold=settings.repeat,
+            column_load_threshold=settings.column_load,
+            small_repeat_threshold=settings.small_repeat,
+            write_loop_threshold=settings.write_loop,
+            scope=settings.repeat_scope,
+            sieve=sieve,
+        ),
+        cwd=root,
+    )
+    if tracker is not None:
+        findings.extend(eager.findings(tracker, cwd=root, sieve=sieve))
+    if settings.cartesian != "off" and collector.cartesian_loads:
+        findings.extend(cartesian.findings(collector, cwd=root, sieve=sieve))
+    return findings
+
+
+def _in_blocks(collector: QueryCollector, tracker: eager.Tracker | None) -> bool:
+    """True when some event of the test ran inside an ignore() block."""
+    events: tuple[Sequence[Any], ...] = (
+        collector.relationship_loads,
+        collector.statements,
+        collector.column_loads,
+        collector.cartesian_loads,
+        () if tracker is None else tracker.loads,
+    )
+    return any(event.ignores for group in events for event in group)
 
 
 def _at_the_test(finding: Finding, item: pytest.Item) -> Finding:
@@ -1201,14 +1237,21 @@ def _analyse_indexes(
     try:
         root = item.config.rootpath
         scans = select_findings(collector.scans, (*settings.ignore_tables, *exempt))
-        if scans and sieve is not None:
-            scans = _drop_blocked_scans(collector.scans, scans, sieve)
         if not scans:
             return None
         findings = [make_index_finding(scan, cwd=root) for scan in scans]
         kept = findings
         if settings.ignore or marker_rules:
             kept = _drop_ignored(item, settings, kept, marker_rules, indexes=True)
+        if sieve is not None:
+            # after the patterns, which are matched (and credited) on all
+            blocked = _blocked_scans(collector, scans, sieve)
+            if blocked:
+                kept = [
+                    finding
+                    for scan, finding in zip(scans, findings, strict=True)
+                    if id(scan) not in blocked and any(f is finding for f in kept)
+                ]
         _note_found(settings, kept, item.nodeid)
         if settings.baselining or settings.sarif_path:
             kept = _apply_baseline(settings, kept, item)
@@ -1227,34 +1270,52 @@ def _analyse_indexes(
         return None
 
 
-def _drop_blocked_scans(
-    every: Sequence[ScanEvent], selected: list[ScanEvent], sieve: blocks.Sieve
-) -> list[ScanEvent]:
-    """The selected scans minus those whose every scan ran inside ignore() blocks."""
-    if not any(scan.ignores for scan in every):
-        return selected
-    same: dict[tuple[object, ...], list[ScanEvent]] = {}
-    for scan in every:
-        same.setdefault(scan_key(scan.issue), []).append(scan)
-    return [
-        scan
-        for scan in selected
-        if not sieve.drops(same[scan_key(scan.issue)], KIND_MISSING_INDEX)
-    ]
+def _blocked_scans(
+    collector: QueryCollector, selected: list[ScanEvent], sieve: blocks.Sieve
+) -> set[int]:
+    """The ids of the selected scans whose every run was inside ignore() blocks.
+
+    A statement is explained at its first run only; ``index_runs`` holds the
+    blocks of its later runs.
+    """
+    if not any(scan.ignores for scan in collector.scans):
+        return set()
+    runs: dict[tuple[object, ...], list[tuple[blocks.IgnoreBlock, ...]]] = {}
+    for scan in collector.scans:
+        later = collector.index_runs.get(scan.key)
+        runs.setdefault(scan_key(scan.issue), []).extend(
+            [scan.ignores] if later is None else later
+        )
+    found: set[int] = set()
+    for scan in selected:
+        hidden = blocks.covering_tags(runs[scan_key(scan.issue)], KIND_MISSING_INDEX)
+        if hidden:
+            sieve.note(hidden)
+            found.add(id(scan))
+    return found
 
 
-def _note_blocks(item: pytest.Item, settings: _Settings, sieve: blocks.Sieve) -> None:
+def _note_blocks(
+    item: pytest.Item,
+    settings: _Settings,
+    sieve: blocks.Sieve,
+    entered: blocks.Entered,
+    kinds: tuple[str, ...],
+) -> None:
     """Note the ignore() blocks of the test, for the stale-block report.
 
     A block is stale when no test that entered it left out a finding with it.
-    Blocks of a test whose analysis did not run (an internal error, a bare
-    allow_nplusone marker) are not noted: they could not have left anything out.
+    Not noted: blocks of a test whose analysis did not run (an internal error,
+    a bare allow_nplusone marker) or stopped storing events, and blocks for
+    kinds the test did not look for (``kinds``): they could not have left
+    anything out.
     """
-    entered = blocks.take_entered()
     if internal_error() is not None or _nplusone_ignores(item)[0]:
         return
     root = item.config.rootpath
-    for block in entered:
+    for block in list(entered.values()):
+        if not any(block.matches(kind) for kind in kinds):
+            continue
         where = _block_site(block, root)
         if where is not None:
             settings.blocks_entered.setdefault(where, block.describe())
@@ -1262,6 +1323,24 @@ def _note_blocks(item: pytest.Item, settings: _Settings, sieve: blocks.Sieve) ->
         where = _block_site(block, root)
         if where is not None:
             settings.blocks_used.add(where)
+
+
+def _analysed_kinds(
+    settings: _Settings, collector: QueryCollector, tracker: eager.Tracker | None
+) -> tuple[str, ...]:
+    """The finding kinds the test was checked for; none past the event cap."""
+    if collector.truncated:
+        return ()  # the blocks do not apply then (see detectors.detect)
+    kinds = [KIND_RELATIONSHIP, KIND_REPEAT, KIND_COLUMN_LOAD]
+    if settings.write_loop is not None:
+        kinds.append(KIND_WRITE_LOOP)
+    if tracker is not None:
+        kinds.append(KIND_UNUSED_EAGER_LOAD)
+    if settings.cartesian != "off":
+        kinds.append(KIND_CARTESIAN_LOAD)
+    if collector.index_check:
+        kinds.append(KIND_MISSING_INDEX)
+    return tuple(kinds)
 
 
 def _block_site(block: blocks.IgnoreBlock, root: Path) -> str | None:
@@ -2125,6 +2204,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         collector.strict_threshold = settings.relationship
         collector.strict_by_scope = settings.repeat_scope == SCOPE_SESSION
     strict_error: NPlusOneDetected | None = None
+    recording = blocks.record_entered(collector.blocks_entered)
     try:
         result = yield
     except NPlusOneDetected as exc:
@@ -2136,6 +2216,8 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         # findings (SARIF, JSON, the summary) as for any failing N+1
         strict_error = exc
     finally:
+        with contextlib.suppress(Exception):
+            blocks.stop_recording(recording)
         try:
             _stop_measuring(item, collector, settings, tracker)
             entry = settings.tests.get(item.nodeid) if settings.counting else None
@@ -2198,7 +2280,6 @@ def _start_measuring(
     if budgets:
         install()  # idempotent; budgets also work when the mode is off
     collector = QueryCollector()
-    blocks.take_entered()  # entered outside a measured test: not this test's
     collector.max_events = settings.max_events
     collector.index_check = index_check
     collector.index_advisor = settings.index_advisor
@@ -2273,7 +2354,8 @@ def _results(
         failing, warning = _analyse(item, collector, settings, tracker, sieve)
         index = _analyse_indexes(item, collector, settings, exempt, sieve)
         try:
-            _note_blocks(item, settings, sieve)
+            kinds = _analysed_kinds(settings, collector, tracker)
+            _note_blocks(item, settings, sieve, collector.blocks_entered, kinds)
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "stale ignore() blocks")
         if index is not None:

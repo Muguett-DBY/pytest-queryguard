@@ -16,7 +16,7 @@ from typing import Any
 from . import advisor, blocks, hypopg, partial, predicates
 from . import catalog as catalogs
 from .callsite import find_callsite
-from .collector import QueryCollector
+from .collector import QueryCollector, note_index_first_run, note_index_reruns
 from .detectors import collapse_lists
 from .events import Advice, Catalog, ScanEvent, ScanIssue, Verification
 from .sqltext import QUOTED, skip_prefix
@@ -1654,6 +1654,7 @@ def check(
     # Literals stay: a partial index may serve one value and not another.
     key = (engine_key(conn.engine), collapse_lists(statement))
     fresh = [target for target in targets if key not in target.explained]
+    note_index_reruns(targets, fresh, key)
     if not fresh:
         return
     notice = version_notice(dialect)
@@ -1729,7 +1730,8 @@ def check(
         return
     site = find_callsite()
     ignores = blocks.current()
+    note_index_first_run(fresh, key, ignores)
     for issue in found:
-        scan = ScanEvent(issue, statement, site, ignores)
+        scan = ScanEvent(issue, statement, site, ignores, key=key)
         for target in fresh:
             target.scans.append(scan)

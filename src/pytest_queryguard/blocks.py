@@ -16,15 +16,18 @@ from __future__ import annotations
 import functools
 import inspect
 import sys
+import threading
 from collections.abc import Callable, Iterable
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from fnmatch import fnmatchcase
 from types import TracebackType
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
-from . import collector
 from .events import CallSite
 from .ignores import check_kind
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -35,7 +38,7 @@ class IgnoreBlock:
     Not constructible by users: call ``ignore()``.
     """
 
-    __slots__ = ("kinds", "reason", "site")
+    __slots__ = ("_matched", "kinds", "reason", "site")
 
     def __init__(
         self, kinds: tuple[str, ...], reason: str | None, site: CallSite | None
@@ -43,16 +46,26 @@ class IgnoreBlock:
         self.kinds = kinds
         self.reason = reason
         self.site = site  # where ignore() was called: the with or the decorator
+        self._matched: dict[str, bool] = {}  # kind -> matches, filled on use
 
     def matches(self, kind: str) -> bool:
-        return any(fnmatchcase(kind, pattern) for pattern in self.kinds)
+        matched = self._matched.get(kind)
+        if matched is None:
+            matched = any(fnmatchcase(kind, pattern) for pattern in self.kinds)
+            self._matched[kind] = matched
+        return matched
 
-    def __enter__(self) -> None:
+    def __enter__(self) -> Self:
         _blocks.set((*_blocks.get(), self))
-        if collector.active() and self.site is not None:
-            # for the stale-block report; a block entered while nothing is
-            # measured could not have ignored anything
-            _entered.setdefault((self.site.filename, self.site.lineno), self)
+        entered = _entered.get()
+        if entered is not None and self.site is not None:
+            # for the stale-block report: only in the context of a test the
+            # plugin measures (see record_entered)
+            key = (self.site.filename, self.site.lineno)
+            if key not in entered:
+                with _lock:
+                    entered.setdefault(key, self)
+        return self
 
     def __exit__(
         self,
@@ -139,16 +152,30 @@ _blocks: ContextVar[tuple[IgnoreBlock, ...]] = ContextVar(
 # What the listeners store on each event; bound once, called per event.
 current = _blocks.get
 
-# (filename, line) -> a block entered there while a collector was active,
-# since the plugin last took them (once per test).
-_entered: dict[tuple[str, int], IgnoreBlock] = {}
+# Set by the plugin around a measured test: (filename, line) -> a block
+# entered there, in the test's context (its thread, its tasks, and threads
+# that run in a copy of it). Threads left over from other tests and code
+# outside a measured test do not see it.
+_entered: ContextVar[dict[tuple[str, int], IgnoreBlock] | None] = ContextVar(
+    "pytest_queryguard_ignore_entered", default=None
+)
+_lock = threading.Lock()  # threads given the context may enter blocks at once
+
+Entered = dict[tuple[str, int], IgnoreBlock]
 
 
-def take_entered() -> list[IgnoreBlock]:
-    """The blocks entered since the last call, one per call site; clears them."""
-    found = list(_entered.values())
-    _entered.clear()
-    return found
+def record_entered(
+    entered: Entered,
+) -> Token[Entered | None]:
+    """Note the blocks entered from now on in this context in ``entered``."""
+    return _entered.set(entered)
+
+
+def stop_recording(token: Token[Entered | None]) -> None:
+    try:
+        _entered.reset(token)
+    except ValueError:  # reset in another context than the one that set it
+        _entered.set(None)
 
 
 class _Tagged(Protocol):
@@ -162,9 +189,15 @@ def covering(events: Iterable[_Tagged], kind: str) -> tuple[IgnoreBlock, ...]:
     Empty unless every event was recorded inside a block for ``kind``; then
     the innermost such block of each event, in order of first use.
     """
+    return covering_tags((event.ignores for event in events), kind)
+
+
+def covering_tags(
+    runs: Iterable[tuple[IgnoreBlock, ...]], kind: str
+) -> tuple[IgnoreBlock, ...]:
+    """``covering`` for the tags of each event (or run) instead of the events."""
     found: dict[IgnoreBlock, None] = {}
-    for event in events:
-        tags = event.ignores
+    for tags in runs:
         if not tags:
             return ()
         for block in reversed(tags):
@@ -179,11 +212,6 @@ def covering(events: Iterable[_Tagged], kind: str) -> tuple[IgnoreBlock, ...]:
 def covers(tags: tuple[IgnoreBlock, ...], kind: str) -> bool:
     """True when one of ``tags`` (an event's blocks) is a block for ``kind``."""
     return any(block.matches(kind) for block in tags)
-
-
-def site_key(block: IgnoreBlock) -> tuple[str, int] | None:
-    site = block.site
-    return None if site is None else (site.filename, site.lineno)
 
 
 class Sieve:

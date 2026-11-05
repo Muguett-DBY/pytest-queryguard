@@ -256,6 +256,103 @@ def test_block():
     result.stdout.no_fnmatch_line("*stale ignores*")
 
 
+def test_an_ignore_pattern_that_a_block_also_covers_is_not_stale(
+    pytester: pytest.Pytester,
+) -> None:
+    _project(
+        pytester,
+        """
+@pytest.mark.allow_nplusone("Order.customer")
+def test_both_marker():
+    with ignore("relationship-load"):
+        loop(make_sync_session())
+
+
+def test_both_ini():
+    with ignore("relationship-load"):
+        loop(make_sync_session())
+""",
+    )
+    pytester.makeini(
+        """
+        [pytest]
+        queryguard_ignore = relationship-load Order.customer function=loop
+        """
+    )
+    result = _run(pytester)
+    result.assert_outcomes(passed=2)
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_past_the_event_cap_a_block_leaves_nothing_out(
+    pytester: pytest.Pytester,
+) -> None:
+    # Unstored events may have run outside the block: the finding stays, and
+    # the block is not called stale either.
+    _project(
+        pytester,
+        """
+def test_capped():
+    session = make_sync_session()
+    orders = session.query(Order).all()
+    with ignore("relationship-load"):
+        for order in orders:
+            _ = order.customer.name
+""",
+    )
+    pytester.makeini("[pytest]\nqueryguard_max_events = 2\n")
+    result = _run(pytester)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*kind: relationship-load  label: Order.customer*"])
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_a_block_for_a_kind_not_checked_is_not_stale(
+    pytester: pytest.Pytester,
+) -> None:
+    _project(
+        pytester,
+        """
+def test_off_kinds():
+    with ignore("write-loop", "cartesian-load", "missing-index"):
+        pass
+""",
+    )
+    result = _run(pytester, "-o", "queryguard_cartesian_load=off")
+    result.assert_outcomes(passed=1)
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_only_blocks_in_the_test_context_are_noted(
+    pytester: pytest.Pytester,
+) -> None:
+    # A thread without the test's context (a leftover worker, say) is not the
+    # test's; one given a copy of the context is.
+    _project(
+        pytester,
+        """
+def enter(kind):
+    with ignore(kind):
+        pass
+
+
+def test_threads():
+    plain = threading.Thread(target=enter, args=("repeated-statement",))
+    plain.start()
+    plain.join()
+    context = contextvars.copy_context()
+    given = threading.Thread(target=context.run, args=(enter, "column-load"))
+    given.start()
+    given.join()
+""",
+    )
+    result = _run(pytester)
+    result.assert_outcomes(passed=1)
+    text = result.stdout.str()
+    assert "ignore('column-load')" in text
+    assert "ignore('repeated-statement')" not in text
+
+
 # --- threads and tasks ---
 
 
@@ -449,6 +546,34 @@ def test_column_load():
     result.stdout.no_fnmatch_line("*stale ignores*")
 
 
+def test_a_statement_run_again_outside_the_block_is_reported(
+    pytester: pytest.Pytester,
+) -> None:
+    # The index check explains a statement at its first run only; the later
+    # run outside the block must still count.
+    _project(
+        pytester,
+        """
+def test_scan_again():
+    session = make_sync_session()
+    with ignore("missing-index"):
+        session.query(Order).filter(Order.customer_id == 1).count()
+    session.query(Order).filter(Order.customer_id == 1).count()
+
+
+def test_scan_twice_inside():
+    session = make_sync_session()
+    with ignore("missing-index"):
+        session.query(Order).filter(Order.customer_id == 1).count()
+    with ignore("missing-index"):
+        session.query(Order).filter(Order.customer_id == 1).count()
+""",
+    )
+    result = _run(pytester, "--queryguard-index-check")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["FAILED*test_scan_again*"])
+
+
 def test_missing_index(pytester: pytest.Pytester) -> None:
     _project(
         pytester,
@@ -495,7 +620,7 @@ def test_not_used():
 
 
 def test_stale():
-    with ignore("write-loop"):
+    with ignore("column-load"):
         pass
 """,
     )
@@ -505,7 +630,7 @@ def test_stale():
         [
             "*queryguard: stale ignores*",
             "ignore() blocks that left out no finding in this run:",
-            "  test_suite.py:*: ignore('write-loop')",
+            "  test_suite.py:*: ignore('column-load')",
         ]
     )
     assert "ignore('relationship-load')" not in result.stdout.str()
@@ -543,7 +668,8 @@ def test_the_block_records_where_it_was_written() -> None:
 
 def test_one_object_entered_twice_nests() -> None:
     block = ignore("*")
-    with block:
+    with block as entered:
+        assert entered is block
         with block:
             assert blocks.current() == (block, block)
         assert blocks.current() == (block,)

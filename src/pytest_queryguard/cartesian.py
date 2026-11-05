@@ -190,6 +190,9 @@ def findings(
     """
     from .messages import _display_path, _location, kind_line
 
+    if c.truncated:
+        sieve = None  # unstored events may have run outside the blocks
+
     grouped: dict[tuple[Path_, ...], list[CartesianLoadEvent]] = {}
     for load in c.cartesian_loads:
         grouped.setdefault(load.collections, []).append(load)

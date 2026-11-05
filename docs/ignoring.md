@@ -112,13 +112,33 @@ The kinds are the ones above, or `fnmatch` patterns for them (`"*"` for every
 kind); an unknown kind raises `ValueError`. `reason` is for the reader only.
 
 A finding is left out when every statement or load it counts ran inside a
-block for its kind. A finding made partly outside the block, such as an N+1
-whose first lazy loads ran before the block, is reported in full, as if the
-block were not there. In [strict mode](when-a-test-fails.md#strict-mode-fail-at-the-access) a lazy load inside
-the block never raises; a later one outside it still can. The block applies
-to `record_queries()` and `log.assert_no_nplusone()` and to the
-[in-application mode](in-app.md) too. Budgets (`max_queries`) still count
-the statements of the block.
+block for its kind. One of them outside the block is enough to report the
+finding in full, with every load counted, as if the block were not there.
+This catches the usual slip, a lazy load that happens after the block:
+
+```python
+def test_export(session):
+    with ignore("relationship-load"):
+        orders = export_report(session)  # lazy-loads order.customer
+    assert orders[1].customer.name == "Ann"  # one more lazy load, outside
+```
+
+Here the assertion lazy-loads one more customer outside the block, so the N+1
+is reported with all its loads and the block is listed as stale. Put every
+access to the relationship inside the block (the assertion too), or load it
+with the query instead.
+
+In [strict mode](when-a-test-fails.md#strict-mode-fail-at-the-access) a lazy
+load inside the block never raises; a later one outside it still can. The
+block applies to `record_queries()` and `log.assert_no_nplusone()` and to the
+[in-application mode](in-app.md) too. Budgets (`max_queries`) still count the
+statements of the block. A pattern or marker that matches the same finding
+as a block is used too, and neither is listed as stale.
+
+When a test runs more statements or loads than `queryguard_max_events`, the
+plugin stops storing them and only counts the rest, so it cannot tell whether
+those ran inside the block: the blocks then leave nothing out in that test,
+and the findings are reported as without them.
 
 What "inside" means: the block is kept in a context variable, so it covers the
 thread or the asyncio task that entered it, and the tasks created inside it
@@ -135,9 +155,10 @@ thread or the asyncio task that entered it, and the tasks created inside it
   live-server test: the block of the test does not reach the requests it
   serves. Put the block in the code that handles the request instead, or use
   the marker or `queryguard_ignore`;
-- the missing-index check where the statement already ran earlier in the test
-  outside the block: each statement is explained once per test, at its first
-  run.
+
+For the missing-index check, every run of the statement in the test counts,
+although it is explained only at its first run: a statement run inside the
+block and again outside it is reported.
 
 A block that left out nothing in the whole run, in any test that entered
 it, is listed in the same "stale ignores" summary, with the file and line of
@@ -149,7 +170,12 @@ ignore() blocks that left out no finding in this run:
 ```
 
 Unlike the patterns, the blocks are also reported under pytest-xdist: the
-workers send the blocks they entered and used to the controller. A block that
-only ran in tests with a bare `allow_nplusone` marker, or in no measured test,
-is not listed.
+workers send the blocks they entered and used to the controller. A block is
+noted only when it is entered in the context of a measured test (its thread,
+its tasks, or a thread given a copy of its context), so a thread left over
+from another test does not count. It is not listed when it only ran in tests
+with a bare `allow_nplusone` marker or past `queryguard_max_events`, or when
+none of its kinds was checked there (a `write-loop` block while
+`queryguard_write_loop_threshold` is off, a `missing-index` block without the
+index check).
 

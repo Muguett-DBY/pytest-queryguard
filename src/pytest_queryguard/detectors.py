@@ -876,8 +876,12 @@ def detect(
     """Run the count rules; ``scope`` is "test" (all) or "session" (per Session).
 
     With a ``sieve``, a finding whose events all ran inside ``ignore()``
-    blocks for its kind is left out, and the sieve notes those blocks.
+    blocks for its kind is left out, and the sieve notes those blocks. Not
+    when the collector stopped storing events (``max_events``): the events it
+    only counted may have run outside the blocks.
     """
+    if collector.truncated:
+        sieve = None
     scoped = scope == SCOPE_SESSION
     findings: list[Detection] = []
     findings.extend(

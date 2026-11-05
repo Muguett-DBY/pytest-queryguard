@@ -179,6 +179,9 @@ class ScanEvent:
     sql: str
     callsite: CallSite | None
     ignores: tuple[IgnoreBlock, ...] = ()
+    # the key the index check explained the statement under (see
+    # QueryCollector.index_runs)
+    key: object = field(default=None, compare=False)
 
 
 @dataclass(slots=True)

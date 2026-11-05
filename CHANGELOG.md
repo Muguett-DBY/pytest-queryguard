@@ -16,9 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the thread or asyncio task that entered it (or a task created inside it);
   threads started inside the block are not covered unless they run in a copy
   of the context. Strict mode does not raise inside it, and
-  `log.assert_no_nplusone()` and the in-application mode honour it too. A
-  block that left out nothing in the whole run is listed under "stale
-  ignores" with its file and line, also with pytest-xdist (#234).
+  `log.assert_no_nplusone()` and the in-application mode honour it too; past
+  `queryguard_max_events` it leaves nothing out. A block that left out
+  nothing in the whole run, for a kind that was checked, is listed under
+  "stale ignores" with its file and line, also with pytest-xdist (#234).
 - Strict mode, `queryguard_strict = true` or `--queryguard-strict`: the
   lazy load of a relationship for the second parent loaded at one line
   (`queryguard_relationship_threshold`) raises
