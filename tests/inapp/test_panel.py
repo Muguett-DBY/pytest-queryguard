@@ -171,24 +171,25 @@ def test_the_wsgi_json_url_escapes_the_script_name(watched: Engine) -> None:
         "REMOTE_ADDR": "127.0.0.1",
     }
     page = b"".join(app(environ, lambda status, headers: None)).decode()
-    assert 'const url = "/team%20%232/_queryguard/requests.json";' in page
+    assert 'data-json-url="/team%20%232/_queryguard/requests.json"' in page
     # Raw UTF-8 bytes of "/café/", decoded as latin-1 per PEP 3333.
     environ["SCRIPT_NAME"] = "/café/".encode().decode("latin-1")
     page = b"".join(app(environ, lambda status, headers: None)).decode()
-    assert 'const url = "/caf%C3%A9/_queryguard/requests.json";' in page
+    assert 'data-json-url="/caf%C3%A9/_queryguard/requests.json"' in page
 
 
 def test_the_json_url_is_escaped() -> None:
     page = html_body('/x"><script>alert(1)</script>').decode()
     assert "<script>alert(1)" not in page
-    assert "</script>" not in page.split("const url = ", 1)[1].split(";", 1)[0]
-    assert 'const url = "/x\\"\\u003e\\u003cscript\\u003e' in page
+    # an attribute value, HTML-escaped: it cannot end the attribute or the tag
+    assert 'data-json-url="/x&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"' in page
 
 
 def test_the_json_url_keeps_an_ampersand() -> None:
     # A root_path or SCRIPT_NAME with "&" must reach fetch() unchanged.
     page = html_body("/a&b/_queryguard/requests.json").decode()
-    assert 'const url = "/a&b/_queryguard/requests.json";' in page
+    # escaped as &amp; in the attribute; dataset.jsonUrl gives "&" back
+    assert 'data-json-url="/a&amp;b/_queryguard/requests.json"' in page
 
 
 @pytest.mark.parametrize(
@@ -251,3 +252,19 @@ def test_loopback_clients(host: str, loopback: bool) -> None:
     # A Unix socket peer has no address; behind a proxy it may be anyone.
     assert not allowed(None, loopback_only=True)
     assert allowed(None, loopback_only=False)
+
+
+def test_the_csp_allows_exactly_the_page_s_own_script_and_style() -> None:
+    import base64
+    import hashlib
+
+    from pytest_queryguard.app import _panel
+
+    policy = dict(_panel.HEADERS)["content-security-policy"]
+    assert "unsafe-inline" not in policy
+    for json_url in ("/_queryguard/requests.json", '/x"><b>&amp;/requests.json'):
+        page = html_body(json_url).decode()
+        for tag, directive in (("script", "script-src"), ("style", "style-src")):
+            body = page.split(f"<{tag}>", 1)[1].split(f"</{tag}>", 1)[0]
+            digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+            assert f"{directive} 'sha256-{digest}'" in policy
