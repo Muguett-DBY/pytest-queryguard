@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/compare/run.py` measures the overhead of pytest-queryguard,
+  pytest-querycount and queryspy side by side, each in its own environment,
+  and `docs/performance.md` has its results for 0.5.0, 0.4.0 and 0.6.0 (#253).
 - In-app mode: `track()` works as a decorator (one unit per call, named
   after the function; coroutine functions across their awaits, generator
   functions over their iteration), as `async with`, and through

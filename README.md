@@ -55,7 +55,7 @@ not cover. The two work together: see the [FAQ](https://maciejziel.github.io/pyt
 | Question | Answer | Details |
 |---|---|---|
 | What does it catch? | Lazy loads, plus loops of ORM, Core and `text()` statements, column reloads, row-by-row writes and missing indexes | [Comparison](https://maciejziel.github.io/pytest-queryguard/comparison.html): 45 scenarios against two other plugins |
-| What does it cost? | First measurement (2026-11-01, Python 3.14, SQLAlchemy 2.1, 300-test suite on file-based SQLite): about +1 % suite time; pytest-querycount +5.5 %, queryspy +28 % | [Performance](https://maciejziel.github.io/pytest-queryguard/performance.html#first-comparison-with-other-plugins) |
+| What does it cost? | Measured 2026-11-05 (0.5.0 against pytest-querycount 0.4.0 and queryspy 0.6.0; 300-test suite on file-based SQLite): about +2 % suite time; pytest-querycount +27 to +29 %, queryspy +40 to +43 % | [Performance](https://maciejziel.github.io/pytest-queryguard/performance.html#comparison-with-other-plugins) |
 | Can a legacy suite adopt it? | Yes: warn first, record a baseline, then only new findings fail | [Legacy recipe](https://maciejziel.github.io/pytest-queryguard/recipes-legacy.html) |
 
 For adoption: a [baseline](https://maciejziel.github.io/pytest-queryguard/baseline.html) so that only new

@@ -239,24 +239,25 @@ simple cases and says "an expression index may be needed" for `i06`;
 pytest-querycount's suggests `CREATE INDEX` for plain columns and gives no
 suggestion for the expression.
 
-### Overhead (first measurement)
+### Overhead
 
-Measured once, on 2026-11-01 (Python 3.14, SQLAlchemy 2.1), on the generated
+Measured on 2026-11-05 (pytest-queryguard 0.5.0, pytest-querycount 0.4.0,
+queryspy 0.6.0; Python 3.14, SQLAlchemy 2.1), twice, on the generated
 300-test suite of `scripts/bench_suite.py` against file-based SQLite: added
-suite time was +0.3 to +1.3 % for pytest-queryguard, +5.5 % for
-pytest-querycount and +28 % for queryspy in strict mode. Per statement the
-three were closer, and queryspy added the least to a Core statement. The
-method and the per-statement numbers are in
-[Performance](performance.md#first-comparison-with-other-plugins). This is a
-first, single-session measurement; publishing it with a script you can run is
-[issue #253](https://github.com/MaciejZiel/pytest-queryguard/issues/253).
+suite time was +1.8 to +2.4 % for pytest-queryguard, +27 to +29 % for
+pytest-querycount and +40 to +43 % for queryspy in strict mode. Per
+statement queryspy added the least to a Core statement (+13 us against +25
+us) and pytest-queryguard the least to ORM statements and lazy loads. The
+method, the per-statement numbers and the script
+(`scripts/compare/run.py`) are in
+[Performance](performance.md#comparison-with-other-plugins).
 
 ### What I did not measure
 
 SQLite for the index check (the page for it has its own tests), MySQL,
 PostgreSQL versions other than 17, async drivers in this comparison, memory,
-other SQLAlchemy versions, and any real application. Speed was measured once,
-above; the overhead gate in `scripts/bench_overhead.py` covers
+other SQLAlchemy versions, and any real application. Speed was measured on
+one machine, above; the overhead gate in `scripts/bench_overhead.py` covers
 pytest-queryguard only.
 
 ## Choosing
