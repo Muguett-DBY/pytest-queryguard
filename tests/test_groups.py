@@ -160,8 +160,10 @@ def test_the_summary_names_a_finding_of_several_tests_once(
         ]
     )
     # a finding of one test only is not repeated in the summary
-    summary = result.stdout.str().split("several tests", 1)[1]
-    assert "Customer.orders" not in summary
+    after = result.stdout.str().split("the same finding in several tests", 1)[1]
+    section = after.split("\n=", 1)[0]  # up to the next pytest separator
+    assert "Order.customer" in section
+    assert "Customer.orders" not in section
 
 
 def test_no_summary_when_every_finding_belongs_to_one_test(
