@@ -60,6 +60,7 @@ queryguard: N+1 detected
   Order.customer was lazy-loaded 5 times
   first at app/main.py:48 in list_orders
   kind: relationship-load  label: Order.customer
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   fix: load it with the parent query, e.g.
        select(Order).options(joinedload(Order.customer))
@@ -145,6 +146,7 @@ queryguard: N+1 detected
   Order.customer was lazy-loaded 5 times
   first at app/flask_app.py:41 in list_orders
   kind: relationship-load  label: Order.customer
+  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   fix: load it with the parent query, e.g.
        select(Order).options(joinedload(Order.customer))
@@ -174,7 +176,9 @@ that do not already support one.
 
 ## Outside HTTP
 
-`track()` measures any block, for a job, a command or a message handler:
+`track()` measures any unit of work that is not a request: a job, a CLI
+command, a message handler, a task of Celery or RQ. Each unit is reported
+like a request, with its own budget (`default_budget`):
 
 ```python
 from pytest_queryguard import app as queryguard
@@ -183,6 +187,63 @@ with queryguard.track("nightly export", default_budget=50) as report:
     ...  # run the job
 print(report.statement_count, [f.label for f in report.findings])
 ```
+
+As a decorator, each call is a unit, named after the function unless a name
+is given. A coroutine function is measured across its awaits, a generator
+function over its whole iteration, and `async with` works too:
+
+```python
+@queryguard.track(default_budget=20)
+def export_invoices(month): ...
+
+@queryguard.track("orders consumer")
+async def handle(message): ...
+
+async with queryguard.track("sync accounts") as report: ...
+```
+
+Units in concurrent tasks or threads never mix: each counts the statements
+of its own context, also when they enter one shared `track()` object (a
+module-level `UNIT = queryguard.track("handler")`).
+
+### Celery
+
+Decorate the task function under `@app.task`, or measure every task from
+the worker's signals, which run in the task's context:
+
+```python
+from celery.signals import task_postrun, task_prerun
+from pytest_queryguard import app as queryguard
+
+queryguard.watch(engine)
+_units: dict[str, queryguard.track] = {}
+
+
+@task_prerun.connect
+def _start_unit(task_id, task, **_):
+    unit = queryguard.track(task.name, default_budget=100)
+    unit.start()
+    _units[task_id] = unit
+
+
+@task_postrun.connect
+def _stop_unit(task_id, state=None, **_):
+    unit = _units.pop(task_id, None)
+    if unit is not None:
+        unit.stop(failed=state != "SUCCESS")
+```
+
+`start()` and `stop()` are the two halves of the `with` block for code that
+cannot wrap the work in one: `stop()` returns the `RequestReport`, and
+`failed=True` keeps a warning turned into an error from being raised over
+the task's own failure. One object runs one such unit at a time; starting it
+again, or stopping it twice, raises `RuntimeError`.
+
+### RQ
+
+RQ runs a job function by its import path, so decorating the function is
+enough: `@queryguard.track()` on the function the job names. Call
+`queryguard.watch(engine)` where the worker imports the application.
 
 ## Settings
 
@@ -335,7 +396,9 @@ Starlette 0.33 leaves `root_path` empty inside a `Mount`, so there the panel
 is not reachable under the mount.
 
 The responses carry a strict
-`Content-Security-Policy` and `Cache-Control: no-store`, and the page writes
+`Content-Security-Policy` (no `'unsafe-inline'`: it allows only the hashes
+of the page's own script and style, and requests to the same origin) and
+`Cache-Control: no-store`, and the page writes
 every value as text, never as HTML. Bound parameter values are never stored
 in the panel, but the SQL text is, including any literal the application puts
 into it. The panel is off by default; never enable it in production.

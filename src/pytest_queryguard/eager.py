@@ -294,7 +294,7 @@ def findings(
     if _broken:
         return []
     try:
-        from .messages import kind_line
+        from .messages import docs_line, kind_line
 
         result: list[Finding] = []
         for load in unused(tracker, sieve):
@@ -306,6 +306,7 @@ def findings(
                     f"  {load.label} was loaded with {load.loader} and never read",
                     where,
                     kind_line(KIND_UNUSED_EAGER_LOAD, load.label),
+                    docs_line(KIND_UNUSED_EAGER_LOAD),
                     f"  fix: remove {option} from the query, or load it only where used",
                     "  (experimental: if it is read later, or by code the plugin",
                     "  cannot see, ignore it with allow_nplusone(kind=KIND) or",

@@ -13,6 +13,23 @@ KIND_CARTESIAN_LOAD = "cartesian-load"
 
 SEVERITY_ERROR = "error"
 
+DOCS_URL = "https://maciejziel.github.io/pytest-queryguard/"
+# The documentation section of each kind. The anchors are pinned by a test of
+# the built site (tests/test_docs_site.py), so a renamed heading fails there.
+_KIND_DOCS = {
+    KIND_RELATIONSHIP: "how-detection-works.html#relationship-load",
+    KIND_REPEAT: "how-detection-works.html#repeated-statement",
+    KIND_COLUMN_LOAD: "how-detection-works.html#column-load",
+    KIND_WRITE_LOOP: "how-detection-works.html#write-loop",
+    KIND_MISSING_INDEX: "how-detection-works.html#missing-index",
+    KIND_UNUSED_EAGER_LOAD: "unused-eager-load.html",
+}
+
+
+def docs_url(kind: str) -> str:
+    """The page and section that explain a finding kind and how to fix it."""
+    return DOCS_URL + _KIND_DOCS.get(kind, "when-a-test-fails.html")
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IndexAdvice:

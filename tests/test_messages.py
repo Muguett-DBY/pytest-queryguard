@@ -28,6 +28,7 @@ def test_relationship_message_has_fix_hint() -> None:
         "  Order.customer was lazy-loaded 50 times",
         "  first at app/api/orders.py:42 in list_orders",
         "  kind: relationship-load  label: Order.customer",
+        "  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load",
         "  fix: load it with the parent query, e.g.",
         "       select(Order).options(selectinload(Order.customer))",
     ]
@@ -40,9 +41,10 @@ def test_relationship_message_shows_sample_sql_truncated() -> None:
     sql = "SELECT customer.id\nFROM customer\nWHERE customer.id = ?"
     finding = RelationshipFinding("Order.customer", 50, site, sql)
     lines = format_findings([finding], cwd=CWD).splitlines()
-    assert lines[3:6] == [
+    assert lines[3:7] == [
         "  first at app/api/orders.py:42 in list_orders",
         "  kind: relationship-load  label: Order.customer",
+        "  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load",
         "  sql: SELECT customer.id FROM customer WHERE customer.id = ?",
     ]
     long_sql = "SELECT " + "x" * 300
@@ -63,6 +65,7 @@ def test_repeat_message() -> None:
         "  the same statement ran 50 times",
         "  first at app/services/orders.py:18 in fetch_customers",
         f"  kind: repeated-statement  label: {sql}",
+        "  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement",
         "  fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop",
     ]
 
@@ -166,6 +169,7 @@ def test_index_message_for_a_filter_with_hint() -> None:
         "  orders is read in full: Seq Scan with filter (orders.customer_id = $1)",
         "  first at app/orders.py:12 in orders_for",
         "  kind: missing-index  label: orders",
+        "  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#missing-index",
         "  sql: SELECT orders.id FROM orders WHERE orders.customer_id = %s::INTEGER",
         "  fix: CREATE INDEX ON orders (customer_id)",
         "",
@@ -179,13 +183,14 @@ def test_index_message_without_hint_in_another_schema() -> None:
         "Sales", "order", "Seq Scan", "filter", "((o.a = $1) AND (o.b = $2))", None
     )
     lines = format_index_findings([_scan(issue)], cwd=CWD).splitlines()
-    assert lines[2:7] == [
+    assert lines[2:8] == [
         (
             '  "Sales"."order" is read in full: Seq Scan with filter '
             "((o.a = $1) AND (o.b = $2))"
         ),
         "  first at <unknown location>",
         '  kind: missing-index  label: "Sales"."order"',
+        "  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#missing-index",
         "  sql: SELECT 1",
         "  fix: add an index that matches this condition",
     ]
@@ -203,7 +208,7 @@ def test_index_message_suggests_an_expression_index() -> None:
         expression=True,
     )
     lines = format_index_findings([_scan(issue)], cwd=CWD).splitlines()
-    assert lines[6] == (
+    assert lines[7] == (
         "  fix: add an index that matches this condition "
         "(an expression index may be needed)"
     )
@@ -226,7 +231,7 @@ def test_index_message_for_a_trailing_index_column() -> None:
         "condition (orders.status = $1) does not match the start of any index"
     )
     assert "read in full" not in "\n".join(lines)
-    assert lines[6] == "  fix: CREATE INDEX ON orders (status)"
+    assert lines[7] == "  fix: CREATE INDEX ON orders (status)"
 
 
 def test_index_message_names_the_index_and_quotes_the_hint() -> None:
@@ -245,7 +250,7 @@ def test_index_message_names_the_index_and_quotes_the_hint() -> None:
         '  "Order" scans the whole index Order_pkey: the filter '
         '("Order"."customerId" = $1) does not match the start of any index'
     )
-    assert lines[6] == '  fix: CREATE INDEX ON "Order" ("customerId")'
+    assert lines[7] == '  fix: CREATE INDEX ON "Order" ("customerId")'
 
 
 def test_index_message_separates_blocks_and_truncates() -> None:
@@ -327,7 +332,7 @@ def test_a_scan_of_an_existing_index_does_not_say_the_table_is_read_in_full() ->
         "users.status = ? does not match the start of any index"
     )
     assert "read in full" not in "\n".join(lines)
-    assert lines[6] == "  fix: CREATE INDEX ON users (status)"
+    assert lines[7] == "  fix: CREATE INDEX ON users (status)"
 
 
 def test_a_join_condition_on_a_walked_index_says_join_condition() -> None:
@@ -479,6 +484,7 @@ def test_relationship_message_names_the_parent_site_and_chains_the_loader() -> N
         "  first at app/views.py:30 in render",
         "  parents loaded at app/orders.py:21 in _base_query",
         "  kind: relationship-load  label: Item.product",
+        "  docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load",
         "  fix: load it with the parent query, e.g.",
         (
             "       select(Customer).options(selectinload(Customer.orders)"

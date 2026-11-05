@@ -308,7 +308,7 @@ EXPECTED_APP_SIGNATURES = {
     "is_watched": "(engine: 'Any') -> 'bool'",
     "track": (
         "(name: 'str' = '', *, settings: 'Settings | None' = None, "
-        "**options: 'Any') -> 'Iterator[RequestReport]'"
+        "**options: 'Any') -> 'track'"
     ),
     "set_route": "(template: 'str') -> 'None'",
     "internal_error": "() -> 'BaseException | None'",

@@ -25,6 +25,7 @@ from .findings import (
     KIND_UNUSED_EAGER_LOAD,
     KIND_WRITE_LOOP,
     Finding,
+    docs_url,
 )
 
 SARIF_VERSION = "2.1.0"
@@ -237,7 +238,7 @@ def _rule(kind: str) -> dict[str, Any]:
         "shortDescription": {"text": short},
         "fullDescription": {"text": full},
         "help": {"text": text, "markdown": f"{full}\n\n**Fix:** {fix}"},
-        "helpUri": f"{INFORMATION_URI}#readme",
+        "helpUri": docs_url(kind),
         "defaultConfiguration": {"level": LEVEL_ERROR},
         "properties": {"tags": ["performance", "database"], "kind": kind},
     }
