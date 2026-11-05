@@ -435,7 +435,7 @@ def test_an_index_finding_and_an_unused_eager_load_name_theirs(
         loader = "joinedload"
         callsite = None
 
-    monkeypatch.setattr(eager, "unused", lambda tracker: [Load()])
+    monkeypatch.setattr(eager, "unused", lambda tracker, sieve=None: [Load()])
     (finding,) = eager.findings(object())  # type: ignore[arg-type]
     assert "  kind: unused-eager-load  label: Order.customer" in finding.message
 

@@ -10,6 +10,7 @@ from .api import (
     max_queries,
     record_queries,
 )
+from .blocks import ignore
 from .events import CallSite
 from .warnings import (
     QueryGuardDeprecationWarning,
@@ -30,6 +31,7 @@ __all__ = [
     "QueryGuardWarning",
     "QueryLog",
     "__version__",
+    "ignore",
     "max_db_time",
     "max_queries",
     "record_queries",

@@ -21,7 +21,7 @@ from sqlalchemy.orm.context import QueryContext
 from sqlalchemy.orm.session import SessionTransaction
 from sqlalchemy.pool import Pool
 
-from . import catalog, collector, indexes, mysql_index, sqlite_index, sqltext
+from . import blocks, catalog, collector, indexes, mysql_index, sqlite_index, sqltext
 from .callsite import find_callsite, find_flush
 from .events import (
     CAUSE_DEFERRED,
@@ -705,6 +705,7 @@ def classify_column_load(state: ORMExecuteState) -> tuple[Any, ColumnLoadEvent] 
         key,
         find_callsite(),
         scope=scope_of_session(state.session),
+        ignores=blocks.current(),
     )
     return instance, load
 
@@ -764,6 +765,7 @@ def _on_orm_execute(state: ORMExecuteState) -> None:
             scalar,
             scope_of_session(state.session),
             None if parent is None else _parent_load(parent, prop),
+            blocks.current(),
         )
         for target in targets:
             target.add_relationship_load(load)
@@ -835,6 +837,7 @@ def _on_cursor_execute(
             executemany=bool(executemany),
             flush=find_flush() if write else None,
             scope=scope_of_connection(conn),
+            ignores=blocks.current(),
         )
         for target in targets:
             target.add_statement(stmt)

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from . import callsite
+from .blocks import IgnoreBlock, covers
+from .blocks import current as current_blocks
 from .events import (
     CallSite,
     CartesianLoadEvent,
@@ -15,6 +17,7 @@ from .events import (
     ScanEvent,
     StatementEvent,
 )
+from .findings import KIND_RELATIONSHIP
 
 # Without the GIL (free-threaded CPython) ``count += 1`` from several threads
 # loses updates, so the add_* methods take a lock there. With the GIL the
@@ -45,7 +48,16 @@ class QueryCollector:
     # Suggest an index for each finding; hypopg is "auto", "on" or "off".
     index_advisor: bool = False
     hypopg: str = "auto"
+    # The ignore() blocks entered in the measured test's context, for the
+    # stale-block report (see blocks.record_entered).
+    blocks_entered: dict[tuple[str, int], IgnoreBlock] = field(default_factory=dict)
     explained: set[object] = field(default_factory=set)
+    # A statement is explained at its first run only. For one first explained
+    # inside an ignore() block: explain key -> the blocks of every run of it
+    # (blocks.current() of each), so a run outside the block is not missed.
+    index_runs: dict[object, dict[tuple[IgnoreBlock, ...], None]] = field(
+        default_factory=dict
+    )
     scans: list[ScanEvent] = field(default_factory=list)
     index_notices: dict[str, None] = field(default_factory=dict)  # ordered set
     explain_errors: list[tuple[str, str]] = field(default_factory=list)
@@ -154,6 +166,7 @@ class QueryCollector:
         Only lazy loads of parents whose query line is known count, so an
         object read on its own, or objects the test made itself, never raise
         here. A group whose finding is ignored or baselined is decided once.
+        A load inside an ``ignore("relationship-load")`` block never raises.
         """
         parent = load.parent
         if self.strict is None or parent is None or parent.callsite is None:
@@ -166,6 +179,10 @@ class QueryCollector:
         else:
             group = self._strict_group(key, load)
         if group is None:
+            return None
+        if load.ignores and covers(load.ignores, KIND_RELATIONSHIP):
+            # inside an ignore() block: the load counts for the group (a
+            # later load outside the block raises), this one never raises
             return None
         error = self.strict(load, group.first, len(group.parents))
         if error is None:
@@ -185,12 +202,46 @@ class QueryCollector:
             group.parents.add(load.parent_key)
         return group if len(group.parents) >= self.strict_threshold else None
 
+    def note_index_run(self, key: object, tags: tuple[IgnoreBlock, ...]) -> None:
+        """Another run of an explained statement (see ``index_runs``)."""
+        runs = self.index_runs.get(key)
+        if runs is not None and tags not in runs:
+            runs[tags] = None
+
     def add_db_time(self, seconds: float) -> None:
         if _FREE_THREADED:
             with self._lock:
                 self.db_time += seconds
         else:
             self.db_time += seconds
+
+
+def note_index_reruns(
+    targets: Sequence[QueryCollector], fresh: Sequence[QueryCollector], key: object
+) -> None:
+    """The statement under ``key`` ran again for the targets not in ``fresh``.
+
+    Only a statement first explained inside an ignore() block is followed, so
+    the usual cost is a dict lookup per collector.
+    """
+    if len(fresh) == len(targets):
+        return
+    tags: tuple[IgnoreBlock, ...] | None = None
+    for target in targets:
+        if key not in target.index_runs or any(t is target for t in fresh):
+            continue
+        if tags is None:
+            tags = current_blocks()
+        target.note_index_run(key, tags)
+
+
+def note_index_first_run(
+    fresh: Sequence[QueryCollector], key: object, tags: tuple[IgnoreBlock, ...]
+) -> None:
+    """The statement under ``key`` was explained, with scans, inside ``tags``."""
+    if tags:
+        for target in fresh:
+            target.index_runs[key] = {tags: None}
 
 
 # Process-wide on purpose: the code under test may run in another thread.

@@ -17,6 +17,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import ORMExecuteState, Session
 
+from .. import blocks
 from ..callsite import find_callsite, find_flush
 from ..collector import QueryCollector
 from ..events import ColumnLoadEvent, RelationshipLoadEvent, StatementEvent
@@ -100,6 +101,7 @@ def _on_orm_execute(state: ORMExecuteState) -> None:
             find_callsite(),
             getattr(prop, "uselist", None) is False,
             scope_of_session(state.session),
+            ignores=blocks.current(),
         )
         _pending.set((collector, rel, None, counted))
     except Exception as exc:  # noqa: BLE001  # never break the application
@@ -176,6 +178,7 @@ def _on_before_cursor_execute(
             executemany=bool(executemany),
             flush=find_flush() if write else None,
             scope=scope_of_connection(conn),
+            ignores=blocks.current(),
         )
         collector.add_statement(stmt)
         if context is not None:

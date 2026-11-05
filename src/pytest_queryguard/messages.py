@@ -335,8 +335,8 @@ def format_strict(finding: Finding, parents: int) -> str:
             "",
             finding.message,
             "",
-            "  (queryguard_strict raises at the lazy load; allow_nplusone or",
-            "  queryguard_ignore lets it pass, as for the report)",
+            "  (queryguard_strict raises at the lazy load; allow_nplusone,",
+            "  queryguard_ignore or an ignore() block lets it pass, as for the report)",
         ]
     )
 
@@ -635,9 +635,14 @@ def format_failure(failure: Failure) -> list[str]:
 
 
 def format_stale_ignores(
-    patterns: Sequence[object], markers: Sequence[tuple[str, object]]
+    patterns: Sequence[object],
+    markers: Sequence[tuple[str, object]],
+    blocks: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
-    """The session summary lines for ignores that matched no finding."""
+    """The session summary lines for ignores that matched no finding.
+
+    ``blocks`` are ignore() blocks as ("file:line", "ignore('kind')").
+    """
     lines: list[str] = []
     if patterns:
         lines.append("queryguard_ignore patterns that matched no finding in this run:")
@@ -645,6 +650,9 @@ def format_stale_ignores(
     if markers:
         lines.append("allow_nplusone patterns that matched no finding in their test:")
         lines.extend(f"  {nodeid}: {rule}" for nodeid, rule in markers)
+    if blocks:
+        lines.append("ignore() blocks that left out no finding in this run:")
+        lines.extend(f"  {where}: {text}" for where, text in blocks)
     if lines:
         lines.append("Remove them if the finding is fixed, or fix a mistyped pattern.")
     return lines

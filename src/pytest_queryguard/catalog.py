@@ -109,6 +109,7 @@ def clear() -> None:
         entry.roots = {}
     for target in collector.active():
         target.explained.clear()
+        target.index_runs.clear()
 
 
 def reset() -> None:

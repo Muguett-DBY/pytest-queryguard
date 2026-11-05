@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .partial import PartialIndex
+
+if TYPE_CHECKING:
+    from .blocks import IgnoreBlock
+
+# Every event carries the ignore() blocks active in the thread or task that
+# recorded it (blocks.current()), innermost last; () outside any block.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -33,6 +40,7 @@ class CartesianLoadEvent:
     collections: tuple[tuple[tuple[str, str], ...], ...]
     root: str
     callsite: CallSite | None
+    ignores: tuple[IgnoreBlock, ...] = ()
 
 
 @dataclass(slots=True)
@@ -62,6 +70,7 @@ class StatementEvent:
     # in: a number, the same for every statement of that Session. None when
     # unknown. See listeners.scope_of_connection().
     scope: int | None = None
+    ignores: tuple[IgnoreBlock, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +95,7 @@ class RelationshipLoadEvent:
     scalar: bool = False  # many-to-one or one-to-one, not a collection
     scope: int | None = None  # the Session that lazy-loaded it
     parent: ParentLoad | None = None  # None when nothing is known about it
+    ignores: tuple[IgnoreBlock, ...] = ()
 
 
 # What made the instance load columns again.
@@ -105,6 +115,7 @@ class ColumnLoadEvent:
     callsite: CallSite | None
     sql: str | None = None  # set when the statement runs
     scope: int | None = None  # the Session that loaded the columns
+    ignores: tuple[IgnoreBlock, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +185,10 @@ class ScanEvent:
     issue: ScanIssue
     sql: str
     callsite: CallSite | None
+    ignores: tuple[IgnoreBlock, ...] = ()
+    # the key the index check explained the statement under (see
+    # QueryCollector.index_runs)
+    key: object = field(default=None, compare=False)
 
 
 @dataclass(slots=True)

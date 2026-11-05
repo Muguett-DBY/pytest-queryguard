@@ -86,7 +86,8 @@ An ini option set to `0` for "off" is `None` here.
 requests](several-sessions.md)); the default is `"test"`.
 
 It does not read the ini options, `queryguard_mode` or the `allow_nplusone`
-marker; calling it is an explicit request. A project that sets
+marker; calling it is an explicit request. It does leave out what ran inside
+an [`ignore()` block](#leaving-out-a-block-ignore), as the plugin does. A project that sets
 `queryguard_repeat_threshold = 10` in its configuration therefore has to pass
 `repeat_threshold=10` here as well, or the helper keeps using 5 (the same for
 `queryguard_relationship_threshold` and `relationship_threshold`). With the
@@ -143,3 +144,39 @@ Recording changes nothing else. The plugin's N+1 detection, budgets and
 index check see the same statements. Like `max_queries()`, `record_queries()`
 also works outside pytest.
 
+## Leaving out a block: `ignore()`
+
+`ignore(*kinds, reason=None)` leaves out the findings of the given kinds that
+the code inside the block makes, for the plugin, for
+`log.assert_no_nplusone()` and for the [in-application mode](in-app.md):
+
+```python
+from pytest_queryguard import ignore
+
+with ignore("relationship-load", reason="one-off export"):
+    export_report(session)
+
+
+@ignore("repeated-statement")
+def warm_cache(session): ...
+```
+
+- `kinds`: one or more finding kinds (`"relationship-load"`,
+  `"repeated-statement"`, `"column-load"`, `"write-loop"`,
+  `"unused-eager-load"`, `"cartesian-load"`, `"missing-index"`) or `fnmatch`
+  patterns for them, such as `"*"`. None, or a pattern that matches no kind,
+  raises `TypeError` or `ValueError`.
+- `reason`: a string for the reader; not used.
+
+It returns a context manager that is also a decorator, for a function or a
+coroutine function (a generator function raises `TypeError`, because the
+block would end before the generator runs). One object may be entered again,
+nested or from several tasks at once. Its class is not public: use it only
+through `ignore()`.
+
+A finding is left out only when everything it counts ran inside a block for
+its kind, in the thread or asyncio task that entered the block or in a task
+created inside it. Threads started inside the block are not covered unless
+they run in a copy of the context. A block that left out nothing in the whole
+run is listed as stale in the session summary. The details are in
+[Ignoring findings](ignoring.md#the-ignore-block).

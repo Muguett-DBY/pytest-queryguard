@@ -162,7 +162,7 @@ Command-line options:
 - `--queryguard-sarif=PATH`: writes the findings as SARIF 2.1.0 for GitHub code scanning (docs/sarif.md).
 - `--queryguard-index-check` / `--no-queryguard-index-check`: turn the missing-index check on or off for this run.
 
-Adopting on an existing project: record a baseline, run the GitHub Action in `action/` (pytest, SARIF upload; docs/ci.md), and ignore single findings with `allow_nplusone("Order.customer", kind=..., file=..., function=...)` or `queryguard_ignore`.
+Adopting on an existing project: record a baseline, run the GitHub Action in `action/` (pytest, SARIF upload; docs/ci.md), and ignore single findings with `allow_nplusone("Order.customer", kind=..., file=..., function=...)` or `queryguard_ignore`, or a block of code with `with pytest_queryguard.ignore("relationship-load"):` (covers the thread or asyncio task that enters it, not threads started inside it).
 
 ## Missing-index check (PostgreSQL 16+, SQLite, MySQL and MariaDB)
 
