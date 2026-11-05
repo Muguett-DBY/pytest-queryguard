@@ -64,7 +64,28 @@ def test_a_finding_is_counted_once_per_test_and_its_counts_add_up() -> None:
         "t.py::a",
     )
     group = store[(KIND_RELATIONSHIP, "Order.customer")]
-    assert (group.tests, group.count, group.first) == (2, 10, "t.py::a")
+    assert group.tests == {"t.py::b": 3, "t.py::a": 7}
+
+
+def test_a_test_run_again_counts_once_with_its_last_count() -> None:
+    # pytest-rerunfailures, pytest-repeat and flaky run the same node id again
+    store: groups.Groups = {}
+    groups.add(store, [_finding(KIND_RELATIONSHIP, "A.b", 3)], "t.py::a")
+    groups.add(store, [_finding(KIND_RELATIONSHIP, "A.b", 4)], "t.py::a")
+    groups.add(store, [_finding(KIND_RELATIONSHIP, "A.b", 3)], "t.py::b")
+    (line,) = groups.summary_lines(store)
+    assert line.startswith("    2 tests  relationship-load  A.b  (7 times in total")
+
+
+def test_the_places_in_the_code_are_counted() -> None:
+    store: groups.Groups = {}
+    groups.add(store, [_finding(KIND_RELATIONSHIP, "A.b")], "t.py::a")
+    other = Finding(
+        kind=KIND_RELATIONSHIP, label="A.b", file="b.py", function="g", message=""
+    )
+    groups.add(store, [other], "t.py::b")
+    (line,) = groups.summary_lines(store)
+    assert "from 2 places;" in line
 
 
 def test_only_findings_of_two_tests_or_more_are_listed_most_tests_first() -> None:
@@ -77,9 +98,12 @@ def test_only_findings_of_two_tests_or_more_are_listed_most_tests_first() -> Non
     assert groups.summary_lines(store) == [
         (
             "    3 tests  repeated-statement  SELECT 1  "
-            "(9 times in total, first in t.py::r0)"
+            "(9 times in total, from one place in the code; e.g. t.py::r0)"
         ),
-        "    2 tests  relationship-load  A.b  (6 times in total, first in t.py::a0)",
+        (
+            "    2 tests  relationship-load  A.b  "
+            "(6 times in total, from one place in the code; e.g. t.py::a0)"
+        ),
     ]
 
 
@@ -102,7 +126,16 @@ def test_the_wire_form_round_trips_and_merges() -> None:
     groups.merge_wire(controller, groups.to_wire(worker_a))
     groups.merge_wire(controller, groups.to_wire(worker_b))
     group = controller[(KIND_RELATIONSHIP, "A.b")]
-    assert (group.tests, group.count, group.first) == (2, 6, "t.py::y")
+    assert group.tests == {"t.py::z": 3, "t.py::y": 3}
+    assert group.sites == {("app.py", "f")}
+
+
+def test_a_malformed_wire_merges_nothing() -> None:
+    store: groups.Groups = {}
+    good = [KIND_RELATIONSHIP, "A.b", [["t.py::a", 3]], [["app.py", "f"]]]
+    with pytest.raises(ValueError):
+        groups.merge_wire(store, [good, [KIND_RELATIONSHIP, "C.d", [["t", "x"]], []]])
+    assert store == {}
 
 
 @pytest.fixture
@@ -121,9 +154,9 @@ def test_the_summary_names_a_finding_of_several_tests_once(
             HEADER,
             (
                 "    4 tests  relationship-load  Order.customer  "
-                "(* times in total, first in test_shared.py::test_nplusone[[]0[]])"
+                "(* times in total, from one place in the code; e.g. test_shared.py::test_nplusone[[]0[]])"
             ),
-            "fix it once where it starts*",
+            "a finding from one place in the code is fixed once*",
         ]
     )
     # a finding of one test only is not repeated in the summary
@@ -160,7 +193,29 @@ def test_the_workers_findings_are_grouped_on_the_controller(
             HEADER,
             (
                 "    4 tests  relationship-load  Order.customer  "
-                "(* times in total, first in test_shared.py::test_nplusone[[]0[]])"
+                "(* times in total, from one place in the code; e.g. test_shared.py::test_nplusone[[]0[]])"
             ),
         ]
     )
+
+
+INDEX = """
+import pytest
+from qgmodels import Customer, make_sync_session
+
+
+@pytest.mark.parametrize("i", range(3))
+def test_by_name(i):
+    make_sync_session().query(Customer).filter(Customer.name == "x").all()
+"""
+
+
+def test_missing_index_findings_are_grouped_without_other_options(
+    pytester: pytest.Pytester,
+) -> None:
+    pytester.makepyfile(qgmodels=MODELS, test_index=INDEX)
+    result = pytester.runpytest_subprocess(
+        "-p", "no:cacheprovider", "--queryguard-index-check"
+    )
+    result.assert_outcomes(failed=3)
+    result.stdout.fnmatch_lines([HEADER, "    3 tests  missing-index  customers  *"])

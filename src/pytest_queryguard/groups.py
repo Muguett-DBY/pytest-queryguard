@@ -1,15 +1,16 @@
 """The same finding in several tests, for one line each in the terminal summary.
 
-A finding in a shared helper or fixture fails every test that runs it, and
-each test prints the same block. The summary names the finding once, with the
-number of tests and the first of them, so the cause is fixed once. Findings
-are grouped by kind and label (``relationship-load Order.customer``), the
-pattern an ignore rule or ``allow_nplusone`` would use, wherever they are.
+A finding in a shared helper or fixture is reported by every test that runs
+it, and each test prints the same block. The summary names the finding once,
+with the number of tests and of places in the code, so a cause shared by many
+tests is fixed once. Findings are grouped by kind and label
+(``relationship-load Order.customer``), the pattern an ignore rule or
+``allow_nplusone`` would use.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .findings import Finding
@@ -19,9 +20,11 @@ _LABEL_LIMIT = 100
 
 @dataclass(slots=True)
 class Group:
-    tests: int
-    count: int
-    first: str  # the smallest node id, so the line does not depend on the order
+    # node id -> count in that test; a test run again (a rerun plugin) keeps
+    # its last count instead of counting as another test
+    tests: dict[str, int] = field(default_factory=dict)
+    # (file, function) of the call sites the finding came from
+    sites: set[tuple[str | None, str | None]] = field(default_factory=set)
 
 
 # (kind, label) -> group
@@ -29,46 +32,58 @@ Groups = dict[tuple[str, str], Group]
 
 
 def add(groups: Groups, findings: list[Finding], nodeid: str) -> None:
-    """Count the findings one test reported, each (kind, label) once per test."""
-    seen: dict[tuple[str, str], int] = {}
+    """Note the findings one test reported."""
+    counts: dict[tuple[str, str], int] = {}
     for finding in findings:
         key = (finding.kind, finding.label)
-        seen[key] = seen.get(key, 0) + finding.count
-    for key, count in seen.items():
-        _merge(groups, key, Group(1, count, nodeid))
-
-
-def _merge(groups: Groups, key: tuple[str, str], other: Group) -> None:
-    group = groups.get(key)
-    if group is None:
-        groups[key] = Group(other.tests, other.count, other.first)
-        return
-    group.tests += other.tests
-    group.count += other.count
-    group.first = min(group.first, other.first)
+        counts[key] = counts.get(key, 0) + finding.count
+        groups.setdefault(key, Group()).sites.add((finding.file, finding.function))
+    for key, count in counts.items():
+        groups[key].tests[nodeid] = count
 
 
 def to_wire(groups: Groups) -> list[list[Any]]:
     """The groups as plain data a pytest-xdist worker can send."""
-    return [[k, label, g.tests, g.count, g.first] for (k, label), g in groups.items()]
+    return [
+        [kind, label, sorted(g.tests.items()), sorted(g.sites, key=_site_key)]
+        for (kind, label), g in groups.items()
+    ]
 
 
 def merge_wire(groups: Groups, wire: list[list[Any]]) -> None:
-    for kind, label, tests, count, first in wire:
-        _merge(groups, (kind, label), Group(int(tests), int(count), str(first)))
+    """Add a worker's groups; nothing is merged when any entry is malformed."""
+    parsed = [
+        (
+            (str(kind), str(label)),
+            {str(nodeid): int(count) for nodeid, count in tests},
+            {(file, function) for file, function in sites},
+        )
+        for kind, label, tests, sites in wire
+    ]
+    for key, tests, sites in parsed:
+        group = groups.setdefault(key, Group())
+        group.tests.update(tests)
+        group.sites.update(sites)
+
+
+def _site_key(site: tuple[str | None, str | None]) -> tuple[str, str]:
+    return site[0] or "", site[1] or ""
 
 
 def summary_lines(groups: Groups) -> list[str]:
-    """One line per finding seen in two tests or more, the most tests first."""
-    shared = [(key, g) for key, g in groups.items() if g.tests > 1]
-    shared.sort(key=lambda item: (-item[1].tests, item[0]))
+    """One line per finding of two tests or more, the most tests first."""
+    shared = [(key, g) for key, g in groups.items() if len(g.tests) > 1]
+    shared.sort(key=lambda item: (-len(item[1].tests), item[0]))
     lines = []
     for (kind, label), group in shared:
         label = " ".join(label.split())
         if len(label) > _LABEL_LIMIT:
             label = label[:_LABEL_LIMIT] + "*"
+        places = len(group.sites)
+        where = "one place in the code" if places == 1 else f"{places} places"
         lines.append(
-            f"{group.tests:>5} tests  {kind}  {label}  "
-            f"({group.count} times in total, first in {group.first})"
+            f"{len(group.tests):>5} tests  {kind}  {label}  "
+            f"({sum(group.tests.values())} times in total, from {where}; "
+            f"e.g. {min(group.tests)})"
         )
     return lines

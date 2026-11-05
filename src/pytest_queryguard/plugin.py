@@ -795,6 +795,7 @@ def _analyse(
         if settings.ignore or marker_rules:
             findings = _drop_ignored(item, settings, findings, marker_rules)
         findings = _apply_baseline(settings, findings, item)
+        finding_groups.add(settings.groups, findings, item.nodeid)
         failing = [f for f in findings if _fails(settings, f)]
         warning = [f for f in findings if not _fails(settings, f)]
         note = ""
@@ -851,7 +852,6 @@ def _apply_baseline(
             findings = []
         else:
             findings = baselines.split(findings, settings.baseline or frozenset())[0]
-    finding_groups.add(settings.groups, findings, item.nodeid)
     if settings.sarif_path is not None:
         for finding in findings:
             level = (
@@ -937,6 +937,11 @@ def _analyse_indexes(
             ]
         if not scans:
             return None
+        finding_groups.add(
+            settings.groups,
+            [make_index_finding(scan, cwd=root) for scan in scans],
+            item.nodeid,
+        )
         return format_index_findings(scans, cwd=root)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "missing-index analysis")
@@ -1140,15 +1145,14 @@ def pytest_testnodedown(node: Any, error: object) -> None:
         return
     if settings is None:
         return
+    output = getattr(node, "workeroutput", None) or {}
     try:
-        output = getattr(node, "workeroutput", None) or {}
         finding_groups.merge_wire(settings.groups, output.get("queryguard_groups", []))
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "merging the results of a pytest-xdist worker")
     if not (settings.baselining or settings.sarif_path):
         return
     try:
-        output = getattr(node, "workeroutput", None) or {}
         if error is not None or output.get("queryguard_incomplete", True):
             settings.baseline_incomplete = True
         for identity in output.get("queryguard_seen", []):
@@ -1468,7 +1472,7 @@ def _write_groups(
     for line in lines:
         terminalreporter.write_line(line)
     terminalreporter.write_line(
-        "fix it once where it starts; each test above reports it on its own"
+        "a finding from one place in the code is fixed once for all its tests"
     )
 
 

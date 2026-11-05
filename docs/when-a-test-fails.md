@@ -74,19 +74,23 @@ message and the kind as the `queryguard/<kind>` rule id.
 
 ### The same finding in many tests
 
-A loop in a shared helper or fixture fails every test that runs it, and each
-of them prints the same block. After the run, the summary names such a
-finding once:
+A loop in a shared helper or fixture is reported by every test that runs it,
+and each of them prints the same block. After the run, the summary names such
+a finding once:
 
 ```
 ========== queryguard: the same finding in several tests ==========
-   30 tests  relationship-load  Order.customer  (900 times in total, first in tests/test_orders.py::test_list[0])
-fix it once where it starts; each test above reports it on its own
+   30 tests  relationship-load  Order.customer  (900 times in total, from one place in the code; e.g. tests/test_orders.py::test_list[0])
+a finding from one place in the code is fixed once for all its tests
 ```
 
-A finding is listed when two tests or more reported it, grouped by kind and
-label wherever it was found, the most tests first. Ignored and baselined
-findings are not counted. It works the same with pytest-xdist.
+A finding is listed when two tests or more reported it, failing or as a
+warning, grouped by kind and label. "From one place in the code" means every
+test reached it through the same function; with several places, the same
+relationship or statement is loaded in a loop in more than one function. The
+example is the first of the tests by name. Ignored and baselined findings are
+not counted, a test that runs again (a rerun plugin) counts once, and it works
+the same with pytest-xdist.
 
 ## 2. Is it real?
 
