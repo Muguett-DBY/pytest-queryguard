@@ -164,3 +164,94 @@ def test_the_unit_s_own_exception_wins(watched: Engine) -> None:
         warnings.simplefilter("error", QueryGuardWarning)
         with pytest.raises(KeyError):
             export()
+
+
+def test_one_shared_unit_object_in_many_threads(watched: Engine) -> None:
+    import threading
+
+    seen: list[RequestReport] = []
+    unit = queryguard.track("handler", report=seen.append)
+    errors: list[BaseException] = []
+
+    def handler() -> None:
+        try:
+            with unit:
+                _lazy_loop(watched)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=handler) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert len(seen) == 8
+    assert all(r.statement_count == 1 + CUSTOMERS for r in seen)
+
+
+def test_a_generator_function_is_measured_over_its_iteration(watched: Engine) -> None:
+    seen: list[RequestReport] = []
+
+    @queryguard.track(report=seen.append)
+    def names():  # type: ignore[no-untyped-def]
+        with Session(watched) as session:
+            for order in session.scalars(select(Order)):
+                yield order.customer.name
+
+    assert len(list(names())) == CUSTOMERS * 2
+    (report,) = seen
+    assert report.statement_count == 1 + CUSTOMERS
+
+
+def test_an_async_generator_function_is_measured_over_its_iteration(
+    async_engine: AsyncEngine,
+) -> None:
+    queryguard.watch(async_engine)
+    seen: list[RequestReport] = []
+
+    @queryguard.track(report=seen.append)
+    async def names():  # type: ignore[no-untyped-def]
+        async with AsyncSession(async_engine) as session:
+            for order in (await session.scalars(select(Order))).all():
+                yield (await order.awaitable_attrs.customer).name
+
+    async def main() -> list[str]:
+        return [name async for name in names()]
+
+    assert len(asyncio.run(main())) == CUSTOMERS * 2
+    (report,) = seen
+    assert report.statement_count == 1 + CUSTOMERS
+
+
+def test_an_object_with_an_async_call_is_awaited_inside_the_unit(
+    async_engine: AsyncEngine,
+) -> None:
+    queryguard.watch(async_engine)
+    seen: list[RequestReport] = []
+
+    class Handler:
+        async def __call__(self) -> None:
+            async with AsyncSession(async_engine) as session:
+                await session.scalars(select(Order))
+
+    handle = queryguard.track("handler", default_budget=0, report=seen.append)(
+        Handler()
+    )
+    asyncio.run(handle())
+    (report,) = seen
+    assert report.statement_count == 1 and report.over_budget
+
+
+def test_stop_of_a_failed_unit_does_not_raise_its_warning(watched: Engine) -> None:
+    unit = queryguard.track("task", report="warn")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", QueryGuardWarning)
+        unit.start()
+        _lazy_loop(watched)
+        report = unit.stop(failed=True)
+        assert report.findings
+        unit.start()
+        _lazy_loop(watched)
+        with pytest.raises(QueryGuardWarning):
+            unit.stop()

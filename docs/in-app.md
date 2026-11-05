@@ -187,7 +187,8 @@ print(report.statement_count, [f.label for f in report.findings])
 ```
 
 As a decorator, each call is a unit, named after the function unless a name
-is given; coroutine functions work the same, and so does `async with`:
+is given. A coroutine function is measured across its awaits, a generator
+function over its whole iteration, and `async with` works too:
 
 ```python
 @queryguard.track(default_budget=20)
@@ -200,7 +201,8 @@ async with queryguard.track("sync accounts") as report: ...
 ```
 
 Units in concurrent tasks or threads never mix: each counts the statements
-of its own context.
+of its own context, also when they enter one shared `track()` object (a
+module-level `UNIT = queryguard.track("handler")`).
 
 ### Celery
 
@@ -223,15 +225,17 @@ def _start_unit(task_id, task, **_):
 
 
 @task_postrun.connect
-def _stop_unit(task_id, **_):
+def _stop_unit(task_id, state=None, **_):
     unit = _units.pop(task_id, None)
     if unit is not None:
-        unit.stop()
+        unit.stop(failed=state != "SUCCESS")
 ```
 
 `start()` and `stop()` are the two halves of the `with` block for code that
-cannot wrap the work in one: `stop()` returns the `RequestReport`. A unit
-starts once; using it again, or stopping it twice, raises `RuntimeError`.
+cannot wrap the work in one: `stop()` returns the `RequestReport`, and
+`failed=True` keeps a warning turned into an error from being raised over
+the task's own failure. One object runs one such unit at a time; starting it
+again, or stopping it twice, raises `RuntimeError`.
 
 ### RQ
 

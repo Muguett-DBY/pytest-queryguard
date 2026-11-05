@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 from ..api import Query, _to_query
 from ..collector import QueryCollector
@@ -306,6 +306,9 @@ class Active:
     tracker: Tracker
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
 current: contextvars.ContextVar[Active | None] = contextvars.ContextVar(
     "queryguard_app_current", default=None
 )
@@ -510,7 +513,7 @@ class track:  # a function to its callers, as in 0.5.0
         @track()                      # named after the function
         def export(): ...
 
-        @track(default_budget=20)     # coroutine functions too
+        @track(default_budget=20)     # coroutine and generator functions too
         async def handle(message): ...
 
         unit = track(task.name)       # from signals that start and end a task
@@ -521,6 +524,10 @@ class track:  # a function to its callers, as in 0.5.0
     The ``RequestReport`` is filled and reported when the unit ends. A
     ``QueryGuardWarning`` that a warning filter turned into an error is
     raised when the unit ends without an exception of its own.
+
+    One object can be entered by several threads or tasks at once (a
+    module-level ``UNIT = track("handler")``): each ``with`` is a unit of its
+    own. ``start()`` and ``stop()`` are for one unit at a time.
     """
 
     __slots__ = ("_name", "_settings", "_tracker")
@@ -532,64 +539,108 @@ class track:  # a function to its callers, as in 0.5.0
         self._settings = _settings(settings, options)
         self._tracker: Tracker | None = None
 
+    def _begin(self) -> Tracker:
+        tracker = Tracker(self._settings, self._name or "track()")
+        tracker.start()
+        return tracker
+
     def start(self) -> RequestReport:
         """Begin the unit in the current context; pair with ``stop()``."""
         if self._tracker is not None:
             raise RuntimeError("this track() unit has already started")
-        self._tracker = Tracker(self._settings, self._name or "track()")
-        self._tracker.start()
+        self._tracker = self._begin()
         return self._tracker.report
 
-    def stop(self) -> RequestReport:
-        """End the unit, report it and return its report."""
-        tracker = self._end()
-        if tracker.warning is not None:
-            raise tracker.warning
-        return tracker.report
+    def stop(self, *, failed: bool = False) -> RequestReport:
+        """End the unit, report it and return its report.
 
-    def _end(self) -> Tracker:
+        ``failed=True`` when the work itself failed: a warning turned into an
+        error is then not raised, as a ``with`` block does not raise it over
+        the block's own exception. Called from another context than
+        ``start()``, it still ends the unit; statements that later run in the
+        starting context are dropped.
+        """
         tracker, self._tracker = self._tracker, None
         if tracker is None:
             raise RuntimeError("this track() unit has not started")
         tracker.finish()
-        return tracker
+        if not failed and tracker.warning is not None:
+            raise tracker.warning
+        return tracker.report
 
     def __enter__(self) -> RequestReport:
-        return self.start()
+        return self._begin().report
 
     def __exit__(self, kind: object, value: object, tb: object) -> None:
-        tracker = self._end()
+        # Units nest like the blocks, so the current one is this block's own.
+        active = current.get()
+        if active is None:
+            return
+        tracker = active.tracker
+        tracker.finish()
         if kind is None and tracker.warning is not None:
             raise tracker.warning
 
     async def __aenter__(self) -> RequestReport:
-        return self.start()
+        return self.__enter__()
 
     async def __aexit__(self, kind: object, value: object, tb: object) -> None:
         self.__exit__(kind, value, tb)
 
-    def __call__(self, function: Callable[..., Any]) -> Callable[..., Any]:
-        """Measure each call of ``function`` as a unit of its own."""
+    def __call__(self, function: Callable[_P, _R]) -> Callable[_P, _R]:
+        """Measure each call of ``function`` as a unit of its own.
+
+        For a generator function the unit spans the iteration, from the first
+        item to the last; a coroutine function is measured across its awaits.
+        """
         if self._tracker is not None:
             raise RuntimeError("a started track() unit cannot decorate a function")
         name = self._name or getattr(function, "__qualname__", repr(function))
-        settings = self._settings
+        unit = track(name, settings=self._settings)
+        call: Any = function
+        wrapper: Callable[..., Any]
 
-        if inspect.iscoroutinefunction(function):
+        if inspect.isasyncgenfunction(function):
 
-            @functools.wraps(function)
-            async def measured_async(*args: Any, **kwargs: Any) -> Any:
-                async with track(name, settings=settings):
-                    return await function(*args, **kwargs)
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                async with unit:
+                    async for item in call(*args, **kwargs):
+                        yield item
 
-            return measured_async
+        elif inspect.isgeneratorfunction(function):
 
-        @functools.wraps(function)
-        def measured(*args: Any, **kwargs: Any) -> Any:
-            with track(name, settings=settings):
-                return function(*args, **kwargs)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                with unit:
+                    return (yield from call(*args, **kwargs))
 
-        return measured
+        elif _is_async(function):
+
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                async with unit:
+                    return await call(*args, **kwargs)
+
+        else:
+
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                with unit:
+                    return call(*args, **kwargs)
+
+        result: Callable[_P, _R] = functools.wraps(function)(wrapper)
+        return result
+
+
+# What inspect.signature() shows: calling track(...) gives a unit.
+track.__signature__ = inspect.signature(track).replace(  # type: ignore[attr-defined]
+    return_annotation="track"
+)
+
+
+def _is_async(function: Callable[..., Any]) -> bool:
+    """A coroutine function, or an object whose ``__call__`` is one."""
+    if inspect.iscoroutinefunction(function):
+        return True
+    method = type(function).__dict__.get("__call__")  # an instance with async __call__
+    return method is not None and inspect.iscoroutinefunction(method)
 
 
 def _settings(settings: Settings | None, options: Mapping[str, Any]) -> Settings:
