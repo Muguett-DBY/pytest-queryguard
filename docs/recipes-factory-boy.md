@@ -241,7 +241,7 @@ only if `tests/factories.py` itself sent the statements, for example a factory
 whose own `_create` calls `session.flush()`.
 
 The pattern syntax, and the per-test marker
-(`@pytest.mark.allow_nplusone("*", kind="write-loop")`), are in
+(`@pytest.mark.queryguard_ignore("*", kind="write-loop")`), are in
 [Ignoring findings](ignoring.md). Keep the kind in the pattern: `* * file=tests/*`
 would also leave out the N+1 findings of a test that reads data in a loop
 itself.

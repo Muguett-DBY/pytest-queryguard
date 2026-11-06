@@ -320,8 +320,8 @@ def findings(
                     docs_line(KIND_UNUSED_EAGER_LOAD),
                     f"  fix: remove {option} from the query, or load it only where used",
                     "  (experimental: if it is read later, or by code the plugin",
-                    "  cannot see, ignore it with allow_nplusone(kind=KIND) or",
-                    "  queryguard_ignore, KIND being unused-eager-load)",
+                    "  cannot see, ignore it with queryguard_ignore(kind=KIND) or",
+                    "  the queryguard_ignore option, KIND being unused-eager-load)",
                 ]
             )
             result.append(

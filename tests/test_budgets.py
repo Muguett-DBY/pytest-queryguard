@@ -295,15 +295,172 @@ def test_marker_keyword_form(project: pytest.Pytester) -> None:
 STRICT = ("-W", "error::DeprecationWarning", "-W", "error::UserWarning")
 
 
-def test_marker_still_accepts_n_without_a_warning(project: pytest.Pytester) -> None:
-    """``n=`` was the keyword of 0.1 to 0.3; it still works, silently."""
+def test_marker_n_still_works_with_a_deprecation_warning(
+    project: pytest.Pytester,
+) -> None:
+    """``n=`` was the keyword of 0.1 to 0.3; it works, and warns since 0.8."""
     project.makepyfile(test_a=BODY.format(limit="n=2"))
-    result = project.runpytest("test_a.py", *STRICT)
-    result.assert_outcomes(failed=1, warnings=0)
-    result.stdout.fnmatch_lines(["*expected at most 2 queries, got 3*"])
-    result.stdout.no_fnmatch_line("*warnings summary*")
+    result = project.runpytest("test_a.py")
+    result.assert_outcomes(failed=1, warnings=1)
+    result.stdout.fnmatch_lines(
+        [
+            "*expected at most 2 queries, got 3*",
+            (
+                "*QueryGuardDeprecationWarning: max_queries(n=...) is deprecated and "
+                "will be removed in pytest-queryguard 2.0; pass the limit "
+                "positionally, max_queries(2), or as limit=*"
+            ),
+        ]
+    )
     project.makepyfile(test_b=BODY.format(limit="n=3"))
-    project.runpytest("test_b.py", *STRICT).assert_outcomes(passed=1)
+    project.runpytest("test_b.py").assert_outcomes(passed=1, warnings=1)
+    # an error filter for deprecations fails the test on the warning
+    result = project.runpytest("test_b.py", *STRICT)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*QueryGuardDeprecationWarning*n=*"])
+    result.stdout.no_fnmatch_line("*measurement stopped*")
+
+
+def test_n_does_not_warn_when_pytest_querycount_reads_it(
+    project: pytest.Pytester,
+) -> None:
+    """``n=`` is pytest-querycount's keyword; a marker it reads too stays silent."""
+    project.makeconftest(
+        """
+        def pytest_configure(config):
+            config.pluginmanager.register(object(), "querycount")
+        """
+    )
+    project.makepyfile(test_a=BODY.format(limit="n=3"))
+    project.runpytest("test_a.py", *STRICT).assert_outcomes(passed=1, warnings=0)
+
+
+def test_a_closer_marker_wins_over_a_broader_prefixed_one(
+    project: pytest.Pytester,
+) -> None:
+    project.makepyfile(
+        test_a="""
+        import pytest
+        from sqlalchemy import create_engine, text
+
+        pytestmark = [
+            pytest.mark.queryguard_max_queries(50),
+            pytest.mark.queryguard_max_db_time(60),
+        ]
+
+
+        def run(count):
+            engine = create_engine("sqlite://")
+            with engine.connect() as conn:
+                for _ in range(count):
+                    conn.execute(text("select 1"))
+
+
+        @pytest.mark.max_queries(2)
+        def test_function_marker():
+            run(3)
+
+
+        @pytest.mark.max_db_time(0)
+        def test_function_time_marker():
+            run(1)
+
+
+        def test_module_marker():
+            run(3)
+        """
+    )
+    result = project.runpytest()
+    result.assert_outcomes(passed=1, failed=2)
+    result.stdout.fnmatch_lines(["*expected at most 2 queries, got 3*"])
+
+
+@pytest.mark.parametrize("limit", ["2", "limit=2"])
+def test_marker_limit_spellings_do_not_warn(
+    project: pytest.Pytester, limit: str
+) -> None:
+    project.makepyfile(test_a=BODY.format(limit=limit))
+    project.runpytest("test_a.py", *STRICT).assert_outcomes(failed=1, warnings=0)
+
+
+ALIASES = """
+import pytest
+from sqlalchemy import create_engine, text
+
+
+def run(count):
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        for _ in range(count):
+            conn.execute(text("select 1"))
+
+
+@pytest.mark.queryguard_max_queries(2)
+def test_over():
+    run(3)
+
+
+@pytest.mark.queryguard_max_queries(limit=3)
+def test_at():
+    run(3)
+
+
+@pytest.mark.queryguard_max_queries(5)
+@pytest.mark.max_queries(1)
+def test_prefixed_wins():
+    run(3)
+
+
+@pytest.mark.queryguard_max_db_time(0)
+def test_time_over():
+    run(1)
+
+
+@pytest.mark.queryguard_max_db_time(seconds=60)
+@pytest.mark.max_db_time(0)
+def test_time_prefixed_wins():
+    run(1)
+"""
+
+
+def test_prefixed_budget_markers(project: pytest.Pytester) -> None:
+    project.makepyfile(test_a=ALIASES)
+    result = project.runpytest("--strict-markers", *STRICT)
+    result.assert_outcomes(passed=3, failed=2)
+    result.stdout.fnmatch_lines(
+        [
+            "*expected at most 2 queries, got 3*",
+            "FAILED test_a.py::test_over*",
+            "FAILED test_a.py::test_time_over*",
+        ],
+        consecutive=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("marker", "message"),
+    [
+        ("queryguard_max_queries(1, 2)", "queryguard_max_queries on *single argument*"),
+        ("queryguard_max_queries(-1)", "queryguard_max_queries on *non-negative*"),
+        ("queryguard_max_db_time(-1)", "queryguard_max_db_time on *non-negative*"),
+    ],
+)
+def test_prefixed_budget_markers_name_themselves_in_errors(
+    project: pytest.Pytester, marker: str, message: str
+) -> None:
+    project.makepyfile(
+        test_a=f"""
+        import pytest
+
+
+        @pytest.mark.{marker}
+        def test_x():
+            pass
+        """
+    )
+    result = project.runpytest()
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines([f"*{message}*"])
 
 
 def test_marker_counts_writes(project: pytest.Pytester) -> None:

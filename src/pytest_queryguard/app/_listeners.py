@@ -71,7 +71,7 @@ def _on_after_flush(session: Session, flush_context: Any) -> None:
 
 
 def _on_after_begin(session: Session, transaction: Any, connection: Any) -> None:
-    """Tag the connection with its Session, for repeat_scope="session"."""
+    """Tag the connection with its Session, for scope="session"."""
     if _core.live() is None or _core._error is not None or not _watched:
         return
     try:

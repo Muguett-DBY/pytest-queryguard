@@ -98,7 +98,7 @@ class QueryCollector:
         | None
     ) = None
     strict_threshold: int = 2
-    # count each Session on its own, as queryguard_repeat_scope = session does
+    # count each Session on its own, as queryguard_scope = session does
     strict_by_scope: bool = False
     # (relationship, query site of the parents, Session or None) -> group
     strict_groups: dict[tuple[object, ...], StrictGroup] = field(default_factory=dict)

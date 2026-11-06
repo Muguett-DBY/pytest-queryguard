@@ -103,7 +103,7 @@ def test_a_marker_wins_over_the_file_and_the_default(project: pytest.Pytester) -
     result.assert_outcomes(passed=1, failed=2)
     result.stdout.fnmatch_lines(
         [
-            "*(the limit is queryguard_max_queries, the default budget of tests without one)*"
+            "*(the limit is the queryguard_max_queries ini option, the default budget of tests without a marker)*"
         ]
     )
 

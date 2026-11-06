@@ -1,7 +1,8 @@
-"""``queryguard_repeat_scope``: count per test or per Session / connection checkout.
+"""``queryguard_scope``: count per test or per Session / connection checkout.
 
 The unit tests build collectors by hand; the pytester tests run the plugin
 against real SQLAlchemy sessions, connections, async sessions and xdist workers.
+``queryguard_repeat_scope`` / ``repeat_scope=`` are the deprecated names.
 """
 
 from __future__ import annotations
@@ -13,7 +14,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from pytest_queryguard import NPlusOneDetected, record_queries
+from pytest_queryguard import (
+    NPlusOneDetected,
+    QueryGuardDeprecationWarning,
+    record_queries,
+)
 from pytest_queryguard.collector import QueryCollector
 from pytest_queryguard.detectors import (
     ColumnLoadFinding,
@@ -189,19 +194,20 @@ def _message(c: QueryCollector, scope: str) -> str:
 def test_message_names_the_scopes_and_the_option_per_test() -> None:
     message = _message(_collect(statements=[(BY_ID, n) for n in range(9)]), "test")
     assert "ran 9 times across 9 different Sessions or connection checkouts" in message
-    assert "queryguard_repeat_scope = session" in message
+    assert "queryguard_scope = session" in message
+    assert "scope='session'" in message
 
 
 def test_message_has_no_hint_for_one_scope() -> None:
     message = _message(_collect(statements=[(BY_ID, 1)] * 6), "test")
-    assert "queryguard_repeat_scope" not in message
+    assert "queryguard_scope" not in message
     assert "across" not in message
 
 
 def test_message_says_one_session_when_scoped() -> None:
     message = _message(_collect(statements=[(BY_ID, 1)] * 6), "session")
     assert "ran 6 times in one Session or connection checkout" in message
-    assert "queryguard_repeat_scope" not in message
+    assert "queryguard_scope" not in message
 
 
 # ------------------------------------------------------ real SQLAlchemy objects
@@ -257,9 +263,34 @@ def test_assert_no_nplusone_takes_the_scope() -> None:
                 session.execute(text("SELECT 1 WHERE :i = :i"), {"i": i})
     with pytest.raises(NPlusOneDetected, match="across 5 different Sessions"):
         log.assert_no_nplusone()
-    log.assert_no_nplusone(repeat_scope="session")
-    with pytest.raises(ValueError, match="repeat_scope"):
-        log.assert_no_nplusone(repeat_scope="request")
+    log.assert_no_nplusone(scope="session")
+    with pytest.raises(ValueError, match="scope must be one of"):
+        log.assert_no_nplusone(scope="request")
+
+
+def test_assert_no_nplusone_repeat_scope_is_deprecated() -> None:
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    with record_queries() as log:
+        for i in range(5):
+            with Session(engine) as session:
+                session.execute(text("SELECT 1 WHERE :i = :i"), {"i": i})
+    with pytest.warns(QueryGuardDeprecationWarning) as record:
+        log.assert_no_nplusone(repeat_scope="session")
+    (warning,) = record
+    assert str(warning.message) == (
+        "repeat_scope= is deprecated and will be removed in pytest-queryguard "
+        "2.0; use scope= instead"
+    )
+    assert warning.filename == __file__  # the caller's line, not the package's
+    with pytest.warns(QueryGuardDeprecationWarning):
+        log.assert_no_nplusone(scope="session", repeat_scope="session")
+    with (
+        pytest.warns(QueryGuardDeprecationWarning),
+        pytest.raises(ValueError, match="scope='test' and its deprecated name"),
+    ):
+        log.assert_no_nplusone(scope="test", repeat_scope="session")
+    with pytest.warns(QueryGuardDeprecationWarning), pytest.raises(NPlusOneDetected):
+        log.assert_no_nplusone(repeat_scope="test")
 
 
 # ------------------------------------------------------------------- pytester
@@ -400,7 +431,7 @@ def _outcomes(
     pytester: pytest.Pytester, *args: str, scope: str | None = None
 ) -> tuple[set[str], pytest.RunResult]:
     if scope is not None:
-        pytester.makeini(f"[pytest]\nqueryguard_repeat_scope = {scope}\n")
+        pytester.makeini(f"[pytest]\nqueryguard_scope = {scope}\n")
     result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-rf", *args)
     failed = {
         line.split("::")[-1].split(" ")[0]
@@ -416,7 +447,7 @@ def test_default_scope_is_the_whole_test(project: pytest.Pytester) -> None:
     assert failed == FAILING_BY_DEFAULT
     output = result.stdout.str()
     assert "different Sessions or connection checkouts" in output
-    assert "queryguard_repeat_scope = session" in output
+    assert "queryguard_scope = session" in output
 
 
 def test_session_scope_keeps_only_the_real_loops(project: pytest.Pytester) -> None:
@@ -433,11 +464,67 @@ def test_the_scope_is_case_insensitive_and_validated(project: pytest.Pytester) -
     project.makepyfile(test_cases=CASES)
     failed, _ = _outcomes(project, scope="Session")
     assert failed == REAL_LOOPS
-    project.makeini("[pytest]\nqueryguard_repeat_scope = request\n")
+    project.makeini("[pytest]\nqueryguard_scope = request\n")
     result = project.runpytest_subprocess("-p", "no:cacheprovider")
     assert result.ret != 0
+    result.stderr.fnmatch_lines(["*queryguard_scope must be one of test, session*"])
+
+
+DEPRECATED_INI = (
+    "*QueryGuardDeprecationWarning: queryguard_repeat_scope is deprecated and "
+    "will be removed in pytest-queryguard 2.0; rename it to queryguard_scope*"
+)
+
+
+def test_the_old_option_name_still_works_and_warns_once(
+    project: pytest.Pytester,
+) -> None:
+    project.makepyfile(test_cases=CASES)
+    project.makeini("[pytest]\nqueryguard_repeat_scope = session\n")
+    failed, result = _outcomes(project)
+    assert failed == REAL_LOOPS
+    output = result.stdout.str()
+    assert output.count("QueryGuardDeprecationWarning") == 1
+    result.stdout.fnmatch_lines([DEPRECATED_INI])
+    # the old name is validated like the new one
+    project.makeini("[pytest]\nqueryguard_repeat_scope = request\n")
+    result = project.runpytest_subprocess("-p", "no:cacheprovider")
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
     result.stderr.fnmatch_lines(
         ["*queryguard_repeat_scope must be one of test, session*"]
+    )
+
+
+def test_the_old_option_name_warns_once_with_xdist(project: pytest.Pytester) -> None:
+    pytest.importorskip("xdist")
+    project.makepyfile(test_cases=CASES)
+    project.makeini("[pytest]\nqueryguard_repeat_scope = session\n")
+    failed, result = _outcomes(project, "-n", "2")
+    assert failed == REAL_LOOPS
+    assert result.stdout.str().count("QueryGuardDeprecationWarning") == 1
+
+
+def test_both_option_names(project: pytest.Pytester) -> None:
+    project.makepyfile(test_cases=CASES)
+    project.makeini(
+        "[pytest]\nqueryguard_scope = session\nqueryguard_repeat_scope = Session\n"
+    )
+    failed, result = _outcomes(project)
+    assert failed == REAL_LOOPS
+    result.stdout.fnmatch_lines([DEPRECATED_INI])
+    project.makeini(
+        "[pytest]\nqueryguard_scope = test\nqueryguard_repeat_scope = session\n"
+    )
+    result = project.runpytest_subprocess("-p", "no:cacheprovider")
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(
+        [
+            (
+                "*queryguard_scope = test and its deprecated name "
+                "queryguard_repeat_scope = session disagree; keep only "
+                "queryguard_scope*"
+            )
+        ]
     )
 
 

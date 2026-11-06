@@ -97,7 +97,7 @@ and the location has not been verified here.
 
 ## What is left out
 
-- Findings ignored with `queryguard_ignore` or `allow_nplusone`.
+- Findings ignored with the `queryguard_ignore` option or marker.
 - Findings accepted by the [baseline](baseline.md). They are left out instead
   of being marked with SARIF `suppressions`: GitHub's SARIF documentation does
   not say what it does with suppressed results, and leaving them out cannot

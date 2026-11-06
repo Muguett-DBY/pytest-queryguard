@@ -11,7 +11,7 @@
   Django see the [comparison](comparison.md).
 - The repeat rules count per test by default, so a test that makes several
   independent requests can report a repeat that is no loop. Set
-  `queryguard_repeat_scope = session` to count per `Session`; that has limits
+  `queryguard_scope = session` to count per `Session`; that has limits
   of its own, listed in [Tests with several sessions or
   requests](several-sessions.md).
 - Everything in `site-packages` counts as library code. If your application
@@ -36,7 +36,7 @@
   `queryguard report: not available with pytest-xdist`.
 - Tests that use `pytester` to run pytest in-process are also measured by the
   outer test, which sees the inner run's queries. Mark such tests with
-  `allow_nplusone` or use `pytester.runpytest_subprocess()`.
+  `queryguard_ignore` or use `pytester.runpytest_subprocess()`.
 - unittest `setUp` and `tearDown` run inside the test call, so their queries
   are counted, unlike pytest fixtures.
 - A non-strict `xfail` test that has an N+1 is reported as xfailed rather
@@ -60,7 +60,7 @@
   rule can tell a polling loop that repeats a statement on purpose from a
   loop-invariant query inside a loop: both repeat one statement with the same
   parameters, so both are reported. Raise `queryguard_repeat_threshold` or mark
-  the test with `allow_nplusone` for such code. The
+  the test with `queryguard_ignore` for such code. The
   [accuracy page](accuracy.md) lists the scenarios.
 - A few statements below the thresholds are not reported by default: fewer than
   five runs of one statement (`queryguard_small_repeat_threshold` reports them)
@@ -152,7 +152,7 @@
   that retries the statement) counts once per `SELECT`.
 - With several `Session`s on one connection (a second `Session` joined to
   the external connection of a "test in a transaction" fixture) and
-  `queryguard_repeat_scope = session`, the query of a top-level
+  `queryguard_scope = session`, the query of a top-level
   `subqueryload` belongs to the `Session` that began on the connection last:
   SQLAlchemy does not say which `Session` runs it. Lazy loads, column loads
   and `selectinload` queries belong to their own `Session`.

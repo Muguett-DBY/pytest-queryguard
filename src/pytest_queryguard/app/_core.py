@@ -34,7 +34,7 @@ from ..collector import QueryCollector
 from ..detectors import SCOPE_SESSION, SCOPE_TEST, detect
 from ..findings import Finding
 from ..messages import display_root, format_budget, format_findings, make_findings
-from ..warnings import QueryGuardWarning
+from ..warnings import QueryGuardWarning, default, renamed
 
 logger = logging.getLogger("pytest_queryguard.app")
 
@@ -78,9 +78,11 @@ class Settings:
     """What the in-app mode checks for each request and how it reports.
 
     The thresholds and their defaults are the pytest plugin's (see
-    docs/how-detection-works.md). ``repeat_scope`` is ``"request"`` (all
+    docs/how-detection-works.md). ``scope`` is ``"request"`` (all
     statements of a request count together) or ``"session"`` (each
-    SQLAlchemy Session counts on its own).
+    SQLAlchemy Session counts on its own). ``repeat_scope`` is its deprecated
+    name (removed in 2.0): passing it warns and sets ``scope``, and the field
+    itself then reads None.
 
     ``budgets`` maps ``"METHOD path"`` or ``"path"`` to the most statements a
     request may run; the path is an ``fnmatch`` pattern matched against the
@@ -112,7 +114,7 @@ class Settings:
     column_load_threshold: int = 5
     small_repeat_threshold: int | None = None
     write_loop_threshold: int | None = None
-    repeat_scope: str = SCOPE_REQUEST
+    scope: str = default(SCOPE_REQUEST)
     budgets: Mapping[str, int] = field(default_factory=dict)
     default_budget: int | None = None
     report: ReportTarget | Sequence[ReportTarget] = "log"
@@ -120,8 +122,12 @@ class Settings:
     sample_rate: float = 1.0
     min_db_time: float = 0.0
     page_report: str = "off"
+    repeat_scope: str | None = None
 
     def __post_init__(self) -> None:
+        scope = renamed("scope", self.scope, "repeat_scope", self.repeat_scope)
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "repeat_scope", None)
         _check_threshold("relationship_threshold", self.relationship_threshold)
         _check_threshold("repeat_threshold", self.repeat_threshold)
         _check_threshold("column_load_threshold", self.column_load_threshold)
@@ -135,10 +141,9 @@ class Settings:
                 )
         if self.write_loop_threshold is not None:
             _check_threshold("write_loop_threshold", self.write_loop_threshold)
-        if self.repeat_scope not in REPEAT_SCOPES:
+        if self.scope not in REPEAT_SCOPES:
             raise ValueError(
-                f"repeat_scope must be one of {', '.join(REPEAT_SCOPES)}, "
-                f"got {self.repeat_scope!r}"
+                f"scope must be one of {', '.join(REPEAT_SCOPES)}, got {self.scope!r}"
             )
         for key, limit in dict(self.budgets).items():
             if not isinstance(key, str) or not key.strip():
@@ -511,7 +516,7 @@ def _check(
         return
     report.budget = settings.budget_for(report.method, report.route, report.path)
     root = display_root()
-    scope = SCOPE_SESSION if settings.repeat_scope == SCOPE_SESSION else SCOPE_TEST
+    scope = SCOPE_SESSION if settings.scope == SCOPE_SESSION else SCOPE_TEST
     if report.db_time >= settings.min_db_time:
         report.findings = tuple(
             make_findings(

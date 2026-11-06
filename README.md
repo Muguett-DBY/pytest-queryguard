@@ -180,7 +180,7 @@ check is off by default. See [PostgreSQL](https://maciejziel.github.io/pytest-qu
   for GitHub code scanning, and the action in [action](https://github.com/MaciejZiel/pytest-queryguard/tree/main/action) runs pytest and
   uploads it. See [CI and GitHub Action](https://maciejziel.github.io/pytest-queryguard/ci.html) and
   [SARIF](https://maciejziel.github.io/pytest-queryguard/sarif.html).
-- Leave out single findings with `@pytest.mark.allow_nplusone("Order.customer")`
+- Leave out single findings with `@pytest.mark.queryguard_ignore("Order.customer")`
   or `queryguard_ignore`; make kinds warn with `queryguard_fail_on` or
   `queryguard_mode = warn`. See [Ignoring findings](https://maciejziel.github.io/pytest-queryguard/ignoring.html).
 - Read the statements of a block in a test with `record_queries()`. See

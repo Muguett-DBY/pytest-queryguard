@@ -257,7 +257,7 @@ arguments, or one `queryguard.Settings(...)` object as `settings=`.
 | `column_load_threshold` | 5 | Instances loading deferred or expired columns on their own |
 | `small_repeat_threshold` | None | Optional; as in the plugin |
 | `write_loop_threshold` | None | Optional; as in the plugin |
-| `repeat_scope` | `"request"` | `"request"`: everything in a request counts together; `"session"`: each Session on its own |
+| `scope` | `"request"` | `"request"`: everything in a request counts together; `"session"`: each Session on its own. Before 0.8.0 `repeat_scope`, which still works with a `QueryGuardDeprecationWarning` until 2.0 |
 | `budgets` | `{}` | `"METHOD path"` or `"path"` to the most statements a request may run |
 | `default_budget` | None | The budget of a request no key matches |
 | `report` | `"log"` | `"log"`, `"warn"`, a callable, or a list of them |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import gc
 import logging
 import subprocess
@@ -17,7 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.horizontal_shard import ShardedSession
 from sqlalchemy.orm import Session, joinedload
 
-from pytest_queryguard import QueryGuardWarning, record_queries
+from pytest_queryguard import (
+    QueryGuardDeprecationWarning,
+    QueryGuardWarning,
+    record_queries,
+)
 from pytest_queryguard import app as queryguard
 from pytest_queryguard import listeners as pytest_listeners
 from pytest_queryguard.app import RequestReport, Settings, _listeners
@@ -196,7 +201,7 @@ def test_max_events_caps_what_is_stored(watched: Engine) -> None:
     assert report.truncated
 
 
-def test_repeat_scope_session_counts_each_session_alone(watched: Engine) -> None:
+def test_scope_session_counts_each_session_alone(watched: Engine) -> None:
     def work() -> None:
         for _ in range(2):
             with Session(watched) as session:
@@ -205,10 +210,39 @@ def test_repeat_scope_session_counts_each_session_alone(watched: Engine) -> None
 
     with queryguard.track(report=[]) as per_request:
         work()
-    with queryguard.track(repeat_scope="session", report=[]) as per_session:
+    with queryguard.track(scope="session", report=[]) as per_session:
         work()
     assert [f.kind for f in per_request.findings] == ["repeated-statement"]
     assert per_session.findings == ()
+    # the deprecated name still works, and warns at the caller's line
+    with pytest.warns(QueryGuardDeprecationWarning, match="use scope= instead") as rec:
+        old = queryguard.track(repeat_scope="session", report=[])
+    assert rec[0].filename == __file__
+    with old as per_session:
+        work()
+    assert per_session.findings == ()
+
+
+def test_settings_repeat_scope_is_a_deprecated_alias() -> None:
+    with pytest.warns(QueryGuardDeprecationWarning) as record:
+        settings = Settings(repeat_scope="session")
+    assert str(record[0].message) == (
+        "repeat_scope= is deprecated and will be removed in pytest-queryguard "
+        "2.0; use scope= instead"
+    )
+    assert record[0].filename == __file__
+    assert (settings.scope, settings.repeat_scope) == ("session", None)
+    assert Settings().scope == "request"
+    assert type(Settings().scope) is str
+    # a copy does not warn again or see a conflict
+    assert dataclasses.replace(settings, scope="request").scope == "request"
+    with pytest.warns(QueryGuardDeprecationWarning):
+        assert Settings(scope="session", repeat_scope="session").scope == "session"
+    with (
+        pytest.warns(QueryGuardDeprecationWarning),
+        pytest.raises(ValueError, match="disagree"),
+    ):
+        Settings(scope="request", repeat_scope="session")
 
 
 def test_the_report_targets(watched: Engine, caplog: pytest.LogCaptureFixture) -> None:
@@ -241,8 +275,8 @@ def test_settings_are_validated() -> None:
         Settings(repeat_threshold=1)
     with pytest.raises(ValueError, match="small_repeat_threshold"):
         Settings(small_repeat_threshold=5)
-    with pytest.raises(ValueError, match="repeat_scope"):
-        Settings(repeat_scope="test")
+    with pytest.raises(ValueError, match="scope must be one of"):
+        Settings(scope="test")
     with pytest.raises(ValueError, match="budget"):
         Settings(budgets={"/x": -1})
     with pytest.raises(ValueError, match="report"):
