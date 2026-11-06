@@ -490,6 +490,9 @@ class OrmSelect(NamedTuple):
     execution_options: Any
 
 
+_new_tuple = tuple.__new__
+
+
 def orm_select(context: Any) -> OrmSelect | None:
     """The options of the ORM query a cursor execution runs.
 
@@ -509,10 +512,14 @@ def orm_select(context: Any) -> OrmSelect | None:
     if not _is_orm(statement):
         return None
     options = getattr(context, "execution_options", None) or {}
-    return OrmSelect(
-        options.get("_sa_orm_load_options"),
-        getattr(statement, "_compile_options", None),
-        options,
+    # tuple.__new__ directly: half the cost of OrmSelect(...), per ORM SELECT
+    return _new_tuple(
+        OrmSelect,
+        (
+            options.get("_sa_orm_load_options"),
+            getattr(statement, "_compile_options", None),
+            options,
+        ),
     )
 
 
