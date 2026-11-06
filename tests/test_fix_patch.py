@@ -13,6 +13,7 @@ import os
 import posixpath
 import shutil
 import subprocess
+import sys
 import textwrap
 import time
 import warnings
@@ -510,6 +511,10 @@ def test_options_over_several_lines_with_a_comment(tmp_path: Path) -> None:
     ) in after
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" and sys.version_info < (3, 12),
+    reason="the parser of Python < 3.12 on Windows overflows the C stack (crash)",
+)
 def test_code_too_deep_for_ast_gives_no_patch(tmp_path: Path) -> None:
     file = _write(
         tmp_path,

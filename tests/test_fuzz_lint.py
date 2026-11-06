@@ -609,6 +609,10 @@ PATHOLOGICAL = {
 }
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" and sys.version_info < (3, 12),
+    reason="the parser of Python < 3.12 on Windows overflows the C stack (crash)",
+)
 @pytest.mark.parametrize("name", PATHOLOGICAL)
 def test_pathological_modules(models: lint.Models, name: str) -> None:
     source = HEADER + PATHOLOGICAL[name]
@@ -619,6 +623,10 @@ def test_pathological_modules(models: lint.Models, name: str) -> None:
     check(models, source, name)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" and sys.version_info < (3, 12),
+    reason="the parser of Python < 3.12 on Windows overflows the C stack (crash)",
+)
 def test_code_nested_deeper_than_ast_parses_is_skipped_with_an_error(
     models: lint.Models, tmp_path: Path
 ) -> None:
