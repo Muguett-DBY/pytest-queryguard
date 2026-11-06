@@ -63,28 +63,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `QUERYGUARD_REQUIRE_BACKENDS`, which turns the skip of the live tests (no
   URL, no server, no driver) into a failure, so it cannot pass without having
   run them. The check was tested by hand before (#277).
-- A lazy load no longer walks the call stack to tell a refresh of a mapped
-  eager relationship: the walk stops at the lazy loader. The begin-listener
-  check that walked the whole stack for each lazy-load and column-load
-  `SELECT` is gone (see the next entry). The cost of a lazy load no longer
-  grows with the depth of the test's stack (#252).
-- The plugin no longer registers a `do_orm_execute` listener. Lazy loads,
-  column loads and loader statements are recognised in
+- A lazy load no longer walks the call stack. A refresh of a mapped eager
+  relationship is told by the context SQLAlchemy hands the loader's
+  statement, and the begin-listener check that walked the whole stack for
+  each lazy-load and column-load `SELECT` is gone (see the next entry). The
+  cost of a lazy load no longer grows with the depth of the test's stack
+  (#252).
+- The plugin no longer registers a `do_orm_execute` listener by default. Lazy
+  loads, column loads and loader statements are recognised in
   `before_cursor_execute`, from the ORM's options on the `SELECT` itself, and
-  the cartesian-load check reads the loader options there too. With any
+  the cartesian-load check runs in the same listener. With any
   `do_orm_execute` listener SQLAlchemy prepares each ORM statement twice;
   without one the added cost of an ORM statement falls by about a third (the
-  overhead check's ORM ratio from 0.40 to 0.27 on one laptop). The
-  attribution no longer has to be parked on the `Session` until its `SELECT`
-  runs, so statements in between (autoflush, begin listeners, other Sessions
-  or tasks on the connection) cannot take it by design, and the stack walk
-  that told a begin listener's statement apart is gone. A lazy load answered
-  without a `SELECT` (a `do_orm_execute` listener of your own returning a
-  cached result) is no longer counted. In strict mode the exception is raised
-  as the `SELECT` is about to be sent, after the autoflush, so an engine
-  `handle_error` listener sees it. Only the opt-in unused eager-load check
-  still has a `do_orm_execute` listener, and the workaround for SQLAlchemy
-  issue 13301 (2.0.20 to 2.0.49) now comes with it (#250).
+  overhead check's ORM ratio from 0.38 to 0.26 on one laptop). The attribution
+  no longer has to be parked on the `Session` until its `SELECT` runs, so
+  statements in between (autoflush, begin listeners, other Sessions or tasks
+  on the connection) cannot take it by design, and the stack walk that told a
+  begin listener's statement apart is gone. Loads are counted per `SELECT`
+  sent: one answered without a `SELECT` (a `do_orm_execute` listener of your
+  own returning a cached result) is no longer counted, and one sent several
+  times (horizontal sharding, a `handle_error` retry) counts each time. The
+  query of a top-level `subqueryload` takes its scope from the connection; see
+  [limitations](docs/limitations.md). The cartesian-load check now also sees
+  ORM-enabled selects run through `Connection.execute()`. Strict mode keeps a
+  `do_orm_execute` listener, installed only when it is on, so it still raises
+  before the autoflush and the engine; a strict run pays the cost of the
+  double preparation. The workaround for SQLAlchemy issue 13301 (2.0.20 to
+  2.0.49) now comes with that listener and the unused eager-load check's
+  (#250).
 
 ### Documentation
 

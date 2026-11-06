@@ -4,9 +4,10 @@ On SQLAlchemy 2.0.20 to 2.0.49 (and 2.1.0b1, 2.1.0b2) any ``do_orm_execute``
 listener makes the outer statement's ``yield_per``, ``autoflush`` and similar
 options become load options of its ``selectinload`` statement (SQLAlchemy issue
 13301, fixed in 2.0.50). The plugin's listeners read the ORM's options from the
-SELECT, with no such listener; the unused eager-load check still installs one,
-so it removes the leaked options again when no other listener takes part; see
-issue 169. Each test runs with the default listeners and with that check on.
+SELECT, with no such listener; the unused eager-load check and strict mode
+still install one, so they remove the leaked options again when no other
+listener takes part; see issue 169. Each test runs with the default listeners,
+with that check on and in strict mode.
 
 The expected values below are what SQLAlchemy 2.0.50 returns, with or without
 the plugin; the CI job pinned to 2.0.49 checks that the plugin gets the same.
@@ -69,11 +70,24 @@ def eager_check() -> Iterator[None]:
         eager.disable()
 
 
-@pytest.fixture(params=["default", "eager-check"])
+@pytest.fixture
+def strict_mode() -> Iterator[None]:
+    """Strict mode on: the plugin's other do_orm_execute listener."""
+    listeners.install()
+    listeners.enable_strict()
+    try:
+        yield
+    finally:
+        listeners.disable_strict()
+
+
+@pytest.fixture(params=["default", "eager-check", "strict"])
 def session(request: pytest.FixtureRequest) -> Iterator[Session]:
     listeners.install()
     if request.param == "eager-check":
         request.getfixturevalue("eager_check")
+    elif request.param == "strict":
+        request.getfixturevalue("strict_mode")
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     with Session(engine) as s:
@@ -170,6 +184,7 @@ def test_autoflush_false_of_the_outer_statement_stays_there(session: Session) ->
 def _own_orm_listeners() -> list[Callable[[ORMExecuteState], Any]]:
     candidates = [
         listeners._on_orm_execute_heal,
+        listeners._on_orm_execute_strict,
         eager._on_orm_execute,
     ]
     return [fn for fn in candidates if event.contains(Session, "do_orm_execute", fn)]

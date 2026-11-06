@@ -148,6 +148,64 @@ def test_an_exception_caught_by_the_code_still_fails_the_test(
     result.stdout.fnmatch_lines(["*queryguard: N+1 detected*"])
 
 
+ENGINE_SIDE = """
+from sqlalchemy import event, inspect
+from qgmodels import Customer, Order, make_sync_session
+
+
+def test_handle_error():
+    session = make_sync_session()
+    engine = session.get_bind()
+    seen = []
+
+    def replace(context):
+        seen.append(type(context.original_exception).__name__)
+        raise RuntimeError("replaced by handle_error")
+
+    event.listen(engine, "handle_error", replace)
+    try:
+        for order in session.query(Order).all():
+            _ = order.customer.name
+    finally:
+        print("HANDLE_ERROR SAW", seen)
+
+
+def test_no_flush():
+    session = make_sync_session()
+    orders = session.query(Order).order_by(Order.id).all()
+    _ = orders[0].customer.name
+    new = Customer(id=99, name="pending")
+    session.add(new)
+    try:
+        _ = orders[2].customer.name  # the second parent: raises
+    finally:
+        print("STILL PENDING", inspect(new).pending)
+"""
+
+
+def test_the_engine_never_sees_the_strict_error(pytester: pytest.Pytester) -> None:
+    # Raised before the ORM takes a connection: a handle_error listener (which
+    # could replace it or invalidate the connection) never gets it.
+    pytester.makepyfile(qgmodels=MODELS, test_engine_side=ENGINE_SIDE)
+    result = _run(pytester, "--queryguard-strict", "-k", "handle_error")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*NPlusOneDetected: queryguard strict*"])
+    result.stdout.fnmatch_lines(["HANDLE_ERROR SAW []"])
+    assert "RuntimeError: replaced by handle_error" not in result.stdout.str()
+
+
+def test_the_strict_error_comes_before_the_autoflush(
+    pytester: pytest.Pytester,
+) -> None:
+    # Pending objects stay pending: nothing is flushed for a SELECT that is
+    # never sent (and a flush error cannot hide the N+1).
+    pytester.makepyfile(qgmodels=MODELS, test_engine_side=ENGINE_SIDE)
+    result = _run(pytester, "--queryguard-strict", "-k", "no_flush")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*NPlusOneDetected: queryguard strict*"])
+    result.stdout.fnmatch_lines(["STILL PENDING True"])
+
+
 ASYNC = """
 import asyncio
 from sqlalchemy import ForeignKey, select

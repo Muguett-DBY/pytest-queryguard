@@ -143,9 +143,12 @@ It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
   findings.
 - Code that catches `AssertionError` around the loop does not hide the N+1:
   the report at the end still fails the test.
-- It raises when the lazy load's `SELECT` is about to be sent, after the
-  `Session` autoflushed; the `SELECT` is not sent. An engine `handle_error`
-  listener sees the exception, as it sees any error of a statement.
+- It raises before the lazy load's `SELECT` is prepared: nothing is
+  flushed, no connection is used, and engine listeners such as
+  `handle_error` never see the exception. For that, strict mode adds a
+  `do_orm_execute` listener, which makes SQLAlchemy prepare each ORM
+  statement twice: a strict run costs more per ORM statement than a
+  default one.
 
 ## 2. Is it real?
 

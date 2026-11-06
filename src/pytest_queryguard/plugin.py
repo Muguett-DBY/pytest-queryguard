@@ -44,6 +44,8 @@ from .findings import (
 from .ignores import IgnoreRule, apply_rules, check_kind, parse_rules
 from .indexes import scan_key, select_findings
 from .listeners import (
+    disable_strict,
+    enable_strict,
     install,
     install_index_check,
     internal_error,
@@ -74,6 +76,7 @@ _MODES = ("fail", "warn", "off")
 _EAGER_MODES = ("off", "warn", "fail")
 _eager_enabled = pytest.StashKey[bool]()
 _cartesian_enabled = pytest.StashKey[bool]()
+_strict_enabled = pytest.StashKey[bool]()
 _internal_reported = pytest.StashKey[bool]()
 # Set on a test item once its function starts: a queryguard fixture requested
 # later (request.getfixturevalue in the test) starts counting at once.
@@ -927,6 +930,10 @@ def _configure(config: pytest.Config) -> None:
         if settings.cartesian != "off":
             config.stash[_cartesian_enabled] = True
             cartesian.enable()
+        if settings.strict:
+            # a do_orm_execute listener, so it raises before the engine runs
+            config.stash[_strict_enabled] = True
+            enable_strict()
 
 
 class _CollectionErrors:
@@ -958,6 +965,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     steps: tuple[Callable[[], object], ...] = (
         lambda: _disable_eager(config),
         lambda: _disable_cartesian(config),
+        lambda: _disable_strict(config),
         lambda: swap_error(stash.get(_outer_error, None)),
         lambda: indexes.swap_stopped(stash.get(_outer_stopped, None)),
         lambda: indexes.swap_catalog_error(stash.get(_outer_catalog_error, None)),
@@ -990,6 +998,12 @@ def _disable_cartesian(config: pytest.Config) -> None:
     if config.stash.get(_cartesian_enabled, False):
         config.stash[_cartesian_enabled] = False
         cartesian.disable()
+
+
+def _disable_strict(config: pytest.Config) -> None:
+    if config.stash.get(_strict_enabled, False):
+        config.stash[_strict_enabled] = False
+        disable_strict()
 
 
 def _disable_eager(config: pytest.Config) -> None:

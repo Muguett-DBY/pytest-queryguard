@@ -89,7 +89,7 @@ def _on_orm_execute(state: ORMExecuteState) -> None:
         prop = state.loader_strategy_path[-1]  # type: ignore[index]
         parent = state.lazy_loaded_from
         # A mapped eager loader run by a refresh: label, do not count.
-        counted = parent is None or not _is_refresh_eager_load(parent, prop)
+        counted = parent is None or not _is_refresh_eager_load(state.execution_options)
         key: object = None
         if parent is not None:
             key = parent.identity_key

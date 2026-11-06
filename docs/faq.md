@@ -241,8 +241,8 @@ On SQLAlchemy 2.0.20 to 2.0.49, every `do_orm_execute` listener makes the
 outer statement's `yield_per` and `autoflush` options reach its
 `selectinload` statement (SQLAlchemy issue 13301): `yield_per` then fails
 with "Can't use the ORM yield_per feature in conjunction with unique()". The
-plugin has such a listener only for the unused eager-load check (off by
-default) and undoes the effect for it, so a test does not fail only because
+plugin has such a listener only for strict mode and the unused eager-load
+check (both off by default) and undoes the effect for them, so a test does not fail only because
 the plugin is installed. A listener of your own triggers the issue
 with or without the plugin; upgrading to SQLAlchemy 2.0.50 or later fixes the
 cause.

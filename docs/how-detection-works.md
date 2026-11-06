@@ -66,11 +66,12 @@ runs are never a repeated-statement finding. A refresh that reads back the
 object the flush before it wrote is not counted at all (see "Refresh after a
 write" under column-load).
 
-The plugin finds the immediate loader by looking a few frames up the stack
-from the statement's listener to the lazy loader that runs the load (at most
-40 frames), and only for a load that has a parent object. If a SQLAlchemy release renames that loader or moves it out
-of reach, these loads count as lazy loads again, as before this rule: a
-possible false positive, never a missed lazy load and never an error.
+The plugin tells the immediate loader's statement by the outer query's
+context, which SQLAlchemy hands to it (the private execution option
+`sa_top_level_orm_context`, the same from 2.0.13 to 2.1): for a refresh it
+names the object refreshed. If a SQLAlchemy release stops passing it, these
+loads count as lazy loads again, as before this rule: a possible false
+positive, never a missed lazy load and never an error.
 
 #### Where the parents were loaded
 

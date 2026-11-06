@@ -68,9 +68,10 @@ Where the plugin's own part goes, per statement, measured by timing the
 listeners in place: about 4 us in the `before_cursor_execute` listener (call
 site, event, bookkeeping), 2 us in `do_orm_execute` and under 1 us in the timer
 listener. Those figures are from the 0.4.0 work. After 0.6.0 the plugin dropped
-its `do_orm_execute` listener (the unused eager-load check, off by default,
-still adds one): with any listener of that event SQLAlchemy prepares each ORM
-statement twice, which cost more than the listener itself.
+its `do_orm_execute` listener: with any listener of that event SQLAlchemy
+prepares each ORM statement twice, which cost more than the listener itself.
+Strict mode and the unused eager-load check, both off by default, still add
+one, so a run with either pays that cost again.
 
 ## A realistic case: a suite of 300 tests
 

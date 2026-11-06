@@ -195,8 +195,7 @@ def enable() -> None:
     _original = InstrumentedAttribute.__get__
     InstrumentedAttribute.__get__ = _tracked_get  # type: ignore[method-assign]
     event.listen(Session, "do_orm_execute", _on_orm_execute)
-    if listeners._leaks_load_options():
-        event.listen(Session, "do_orm_execute", listeners._on_orm_execute_heal)
+    listeners.use_heal()
     event.listen(Session, "before_flush", _on_before_flush)
 
 
@@ -211,8 +210,7 @@ def disable() -> None:
     _current = None
     InstrumentedAttribute.__get__ = _original  # type: ignore[method-assign]
     event.remove(Session, "do_orm_execute", _on_orm_execute)
-    if event.contains(Session, "do_orm_execute", listeners._on_orm_execute_heal):
-        event.remove(Session, "do_orm_execute", listeners._on_orm_execute_heal)
+    listeners.drop_heal()
     event.remove(Session, "before_flush", _on_before_flush)
 
 

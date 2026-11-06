@@ -356,15 +356,18 @@ def test_async_refresh_next_to_a_real_lazy_load_is_still_reported() -> None:
 # ---------------------------------------------------------------- fallback
 
 
-@pytest.mark.parametrize(
-    "name, value", [("_IMMEDIATE_CODE", None), ("_MAX_LOADER_DEPTH", 0)]
-)
-def test_without_the_immediate_loader_refreshes_count_as_before(
-    engine: Any, monkeypatch: pytest.MonkeyPatch, name: str, value: Any
+def test_without_the_refresh_context_refreshes_count_as_before(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A SQLAlchemy that renames the loader (or moves it out of reach) gets the
-    # old behaviour: the refresh loads count as lazy loads, nothing breaks.
-    monkeypatch.setattr(listeners, name, value)
+    # A SQLAlchemy that stops passing the outer query's context to the loader
+    # statement gets the old behaviour: the refresh loads count as lazy loads,
+    # nothing breaks.
+    real = listeners._is_refresh_eager_load
+    monkeypatch.setattr(
+        listeners,
+        "_is_refresh_eager_load",
+        lambda options: real({**options, "sa_top_level_orm_context": None}),
+    )
     with Session(engine) as session, record_queries() as log:
         _create(session, 100)
         _create(session, 101)
@@ -372,8 +375,31 @@ def test_without_the_immediate_loader_refreshes_count_as_before(
     assert listeners._error is None
 
 
-def test_the_immediate_loader_is_found_on_this_sqlalchemy() -> None:
-    assert listeners._IMMEDIATE_CODE is not None
+def test_the_loader_statement_of_a_refresh_carries_the_refresh(engine: Any) -> None:
+    # The private execution option the check reads is there on this
+    # SQLAlchemy: the immediate loader's SELECT names the refreshing query.
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    seen: list[bool] = []
+
+    def spy(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        orm = listeners.orm_select(args[-2])
+        lazy = getattr(getattr(orm, "load_options", None), "_lazy_loaded_from", None)
+        if orm is not None and lazy is not None and "FROM book" in statement:
+            seen.append(listeners._is_refresh_eager_load(orm.execution_options))
+
+    event.listen(Engine, "before_cursor_execute", spy)
+    try:
+        with Session(engine) as session:
+            author = session.get(Author, 1)
+            assert author is not None
+            session.refresh(author)
+            session.expire(author, ["books"])
+            _ = author.books  # a plain lazy load of the same relationship
+    finally:
+        event.remove(Engine, "before_cursor_execute", spy)
+    assert seen == [True, False]
 
 
 # ------------------------------------------- loads run by user code in a refresh
