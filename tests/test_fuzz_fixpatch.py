@@ -539,13 +539,13 @@ def _git_apply(root: Path, fix: SourceFix, index: int) -> str:
     Applied to a copy, in another directory: the file itself stays as it is.
     """
     assert _GIT is not None
-    copy = root.parent / f"{root.name}-git"
+    copy = root / ".git-copy"
     target = copy / fix.file
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes((root / fix.file).read_bytes())
     patch = copy / f"fix{index}.patch"
     patch.write_bytes(fix.diff.encode("utf-8"))
-    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(root.parent)}
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(root)}
     for args in (["apply", "--check", str(patch)], ["apply", str(patch)]):
         done = subprocess.run(
             [_GIT, *args], cwd=copy, env=env, capture_output=True, check=False
@@ -603,7 +603,8 @@ def verify(
     entity = finding.parent_root
     assert entity is not None
     receivers = _option_receiver(patched, option_dump, entity)
-    assert receivers == [query_line + added], f"{fix.diff}\n{context}"
+    # the module may have the same option on another query already
+    assert query_line + added in receivers, f"{fix.diff}\n{context}"
     missing = loaders - _imported(original)
     before, options_before, imports_before = _undo(original, option_dump, loaders)
     after, options_after, imports_after = _undo(patched, option_dump, loaders)

@@ -761,15 +761,25 @@ def _target(loop: _Loop) -> tuple[str | None, ast.expr | None]:
 
 
 def _reassigned(body: Iterable[ast.AST], var: str) -> bool:
-    """Whether the loop body binds ``var`` again, in any way."""
-    for node in body:
-        for child in [node, *_children(node)]:
-            if _binds(child, var):
+    """Whether the loop body binds ``var`` again, in any way.
+
+    A nested def or class binds its own name here, and rebinds ``var`` from
+    its body only through ``nonlocal``; other bindings in its body are its
+    own. A comprehension's target still counts (conservative).
+    """
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _SCOPES):
+            if _binds(node, var) or any(
+                isinstance(inner, ast.Nonlocal) and var in inner.names
+                for inner in ast.walk(node)
+            ):
                 return True
-            # a def or class binds its name here; _children leaves it out
-            for inner in ast.iter_child_nodes(child):
-                if isinstance(inner, _SCOPES) and _binds(inner, var):
-                    return True
+            continue
+        if _binds(node, var):
+            return True
+        stack.extend(ast.iter_child_nodes(node))
     return False
 
 

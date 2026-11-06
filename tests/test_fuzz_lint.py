@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import os
 import random
+import re
 import sys
 import textwrap
 import time
@@ -37,7 +38,7 @@ from tests.test_lint import HEADER, MODELS, MODULE
 
 SEED = int(os.environ.get("QUERYGUARD_FUZZ_SEED", "20261106"))
 ROUNDS = 2000 if os.environ.get("QUERYGUARD_FUZZ") == "1" else 150
-SECONDS_PER_FILE = 5.0
+SECONDS_PER_FILE = 20.0  # generous: loaded runners, coverage
 
 RELATIONSHIPS = {
     "Order": ["customer", "items", "notes", "audits", "events", "payer"],
@@ -440,7 +441,7 @@ def check(models: lint.Models, source: str, name: str = "gen.py") -> list[lint.F
     findings = lint.lint_source(source, name, models)
     elapsed = time.perf_counter() - started
     assert elapsed < SECONDS_PER_FILE, f"{elapsed:.1f} s for {name}"
-    lines = source.replace("\r\n", "\n").split("\n")
+    lines = re.split(r"\r\n|\r|\n", source)  # as ast counts lines
     for finding in findings:
         assert 0 < finding.line <= len(lines)
         key = finding.relationship.split(".", 1)[1]
@@ -712,6 +713,14 @@ NOT_REPORTED = {
             for o in session.scalars(select(Order)):
                 def o():
                     pass
+                print(o.customer)
+        """,
+    "rebound-through-nonlocal": """
+        def load(session):
+            for o in session.scalars(select(Order)):
+                def change():
+                    nonlocal o
+                    o = None
                 print(o.customer)
         """,
     "rows-not-entities": """

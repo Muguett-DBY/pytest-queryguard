@@ -6,6 +6,7 @@ it is not gives none.
 
 from __future__ import annotations
 
+import ast
 import json
 import ntpath
 import os
@@ -512,7 +513,12 @@ def test_code_too_deep_for_ast_gives_no_patch(tmp_path: Path) -> None:
         """,
         header=HEADER + "X = " + " + ".join(["1"] * 100_000) + "\n",
     )
-    assert _make(tmp_path, _finding(file)) is None
+    try:
+        ast.parse(file.read_text())
+    except (RecursionError, MemoryError):
+        assert _make(tmp_path, _finding(file)) is None
+    else:  # pragma: no cover - a parser that takes it
+        pytest.skip("this Python parses it")
 
 
 def test_warnings_of_the_parsed_code_are_not_shown(tmp_path: Path) -> None:

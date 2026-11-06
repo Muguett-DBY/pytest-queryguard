@@ -825,6 +825,23 @@ def test_the_column_counts_characters(models: lint.Models) -> None:
     assert finding.column == len('    print("Zamówienie żółć", o.') + 1
 
 
+def test_bindings_in_a_nested_scope_do_not_rebind_the_loop_variable(
+    models: lint.Models,
+) -> None:
+    assert found(
+        models,
+        """\
+        for o in session.scalars(select(Order)):
+            print(o.customer)
+            def helper():
+                import o
+                o = 1
+            class Inner:
+                o = None
+        """,
+    ) == ["Order.customer"]
+
+
 def test_the_line_of_a_finding_is_the_line_ast_counts(models: lint.Models) -> None:
     # str.splitlines would also split at the form feed and the line separator
     source = HEADER + (
