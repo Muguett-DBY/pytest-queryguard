@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental: `python -m pytest_queryguard.trend RUN1.json RUN2.json ...`
+  shows how the query counts moved over several `--queryguard-json` files,
+  oldest first: the statements of each run, the tests whose count changed
+  most with a sparkline per test, and the findings new or gone in the window. Runs that
 - An experimental MCP server for coding agents such as Claude Code and
   Cursor: `python -m pytest_queryguard.mcp` speaks the Model Context Protocol
   over stdio with the standard library only, no new dependency. Its tools
@@ -38,18 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mappers and only parses the code it checks. It is conservative and stays
   inside one function. Output as text, JSON or SARIF (rule
   `queryguard/static-relationship-load`), exit status 1 on findings,
-  `# queryguard: ignore` on the line to suppress. See docs/static-check.md.
+  `# queryguard: ignore` on the line to suppress. See docs/static-check.md
+  (#297).
 - In-application mode: `page_report="footer"` or `"console"` adds a
   request's findings to its own HTML page, as an `<aside>` before
   `</body>` or as a `console.warn()` script, like Bullet in Rails. Only
   for complete, uncompressed `text/html` responses with a `Content-Length`;
   `Content-Length` is updated, and a page with a Content-Security-Policy
   gets the footer instead of the script. Off by default (#280).
-- A patch for a `relationship-load` finding whose parent query line is
-  certain: the loader option of the `fix:` hint added to the `select(...)` or
-  `session.query(...)` call of that line, or to its `.options(...)`, with
-  the import of the loader. `--queryguard-patch` (or `queryguard_patch =
-  true`) prints it as a unified diff under the finding,
+- Experimental: a patch for a `relationship-load` finding whose parent query
+  line is certain: the loader option of the `fix:` hint added to the
+  `select(...)` or `session.query(...)` call of that line, or to its
+  `.options(...)`, with the import of the loader. `--queryguard-show-patch`
+  (or `queryguard_show_patch = true`) prints it as a unified diff under the
+  finding,
   `--queryguard-write-patch=PATH` writes those of the whole run to one file
   for `git apply`, and the SARIF file carries it as a `fixes` entry. Without
   one select call of the parent class on that line, a file inside the rootdir
@@ -67,21 +73,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   statement is prepared once instead of twice: inside a request the ORM
   `select()` of `scripts/bench_overhead.py --app` costs about a third less
   to measure (+21 instead of +32 microseconds per statement on one laptop),
-  and outside one about half. On SQLAlchemy 2.0.20 to 2.0.49 an
-  application's `yield_per` or `autoflush=False` query with `selectinload()`
-  now works while the engine is watched (SQLAlchemy issue 13301), and the
-  in-app mode labels a load as the plugin does: the sample SQL of a
-  relationship-load finding is the lazy load, not an eager loader's query
-  (#289).
+  and outside one about half. The in-app mode labels a load as the plugin
+  does: the sample SQL of a relationship-load finding is the lazy load, not
+  an eager loader's query (#289).
 
 ### Fixed
 
+- In-application mode: on SQLAlchemy 2.0.20 to 2.0.49 an application's
+  `yield_per` or `autoflush=False` query with `selectinload()` now works
+  while the engine is watched (SQLAlchemy issue 13301) (#289).
+- The GitHub Action's comparison on a pull request no longer takes a
+  pull-request run as the base: a fork's pull request from its own branch
+  named like the base branch (`main`) had that head branch too, so its query
+  counts could be compared against instead of the base branch's. Like the
+  trend step, it now takes only runs that were not triggered by a pull
+  request (#299).
 - An `ignore()` block that left out a finding only in
   `log.assert_no_nplusone()` (or in an in-app report made in the test) is no
   longer listed as stale (#284).
 - A statement run outside an `ignore("missing-index")` block, then again
   inside it after DDL made the check explain it again, is reported: the block
   no longer leaves the missing-index finding out (#284).
+
+### Documentation
+
+- docs/stability.md now lists the baseline, budget and `--queryguard-json`
+  file formats, the SARIF rule ids, fingerprint key and result properties,
+  `python -m pytest_queryguard.compare`, and the GitHub Action's inputs,
+  outputs and artifact name as public, and says what a change of their format
+  number means. The fix patch, the query-count trend and the static check are
+  listed as experimental.
 
 ### Internal
 
@@ -92,6 +113,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release that renames one fails that test first, with the name in the
   message. The per-statement code reads them inline; the overhead gate's ORM
   ratio is unchanged (#245).
+- `tests/test_conflict_markers.py` fails when a file the repository tracks
+  still has a merge conflict marker (#301).
+- `scripts/release_gate.py consistency` also checks that `docs/index.md`,
+  `docs/getting-started.md` and `llms.txt` name `__version__` as the release
+  they describe.
 
 ## [0.7.0] - 2026-11-06
 
