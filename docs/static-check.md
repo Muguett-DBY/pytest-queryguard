@@ -1,5 +1,7 @@
 # Static check (experimental)
 
+Since 0.8.0.
+
 The pytest plugin finds an N+1 query when a test runs it. The static check
 reads your source code instead, without a database and without running your
 tests, and reports the most common shape of an N+1: a loop over the objects of

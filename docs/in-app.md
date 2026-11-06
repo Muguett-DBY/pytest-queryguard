@@ -264,7 +264,7 @@ arguments, or one `queryguard.Settings(...)` object as `settings=`.
 | `max_events` | 1000 | Statements stored per request; more are counted, not stored |
 | `sample_rate` | 1.0 | Fraction of requests measured, from 0 to 1 |
 | `min_db_time` | 0.0 | Seconds of database time below which a request's N+1 rules do not run |
-| `page_report` | `"off"` | `"footer"` or `"console"`: add a request's findings to its own HTML page (see [Findings in the page](#findings-in-the-page)) |
+| `page_report` | `"off"` | Since 0.8.0. `"footer"` or `"console"`: add a request's findings to its own HTML page (see [Findings in the page](#findings-in-the-page)) |
 
 The rules are the plugin's; see [How detection works](how-detection-works.md).
 The missing-index check does not run in the application.
@@ -389,6 +389,8 @@ Both report only what the `report` targets get: requests with findings or
 over their budget.
 
 ## Findings in the page
+
+Since 0.8.0.
 
 Like Bullet in Rails, the middleware can put a request's findings into the
 HTML page it answers with, so they show up where you are already looking:

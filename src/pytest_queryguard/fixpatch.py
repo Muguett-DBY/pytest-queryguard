@@ -604,8 +604,44 @@ def combine(
         if module is None:
             changed.append(file)
             continue
-        parts.append(_diff(file, module, by_file[file]))
+        parts.append(_diff(file, module, _without_prefixes(by_file[file])))
     return "".join(parts), len(parts), changed
+
+
+def _option_text(text: str) -> str | None:
+    """The loader option an insertion adds to a query, or None for an import."""
+    if text.startswith(".options(") and text.endswith(")"):
+        return text[len(".options(") : -1]
+    if text.startswith(", ") and text.endswith(")"):
+        return text[2:]
+    return None
+
+
+def _without_prefixes(insertions: set[Insertion]) -> set[Insertion]:
+    """The insertions minus an option that another one at its place extends.
+
+    Two findings of one query, ``Playlist.entries`` and, through it,
+    ``PlaylistEntry.track``, each add their option at the same place:
+    ``selectinload(Playlist.entries)`` is then a prefix of
+    ``selectinload(Playlist.entries).joinedload(PlaylistEntry.track)``, which
+    loads it the same way, so only the longer chain is kept.
+    """
+    options = {
+        edit: option
+        for edit in insertions
+        if (option := _option_text(edit.text)) is not None
+    }
+    return {
+        edit
+        for edit in insertions
+        if edit not in options
+        or not any(
+            other.line == edit.line
+            and other.column == edit.column
+            and longer.startswith(options[edit] + ".")
+            for other, longer in options.items()
+        )
+    }
 
 
 # --- for pytest-xdist and the SARIF store ---
