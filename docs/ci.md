@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[test]"        # your project and its test dependencies
-      - uses: MaciejZiel/pytest-queryguard/action@v0.7.0   # a release tag, or a commit SHA
+      - uses: MaciejZiel/pytest-queryguard/action@v0.7.0   # the latest release tag, or a commit SHA
         with:
           pytest-args: tests/   # no -x: see below
           # baseline: queryguard-baseline.json   # add once the file exists, see below
@@ -247,7 +247,7 @@ tests started running more queries before anything fails.
 ```json
 {
   "format": 1,
-  "tool": {"name": "pytest-queryguard", "version": "0.7.0"},
+  "tool": {"name": "pytest-queryguard", "version": "0.8.0"},
   "complete": true,
   "tests": {
     "tests/test_orders.py::test_list_orders": {
@@ -279,7 +279,8 @@ tests started running more queries before anything fails.
   lines of your code that called `file:line`, innermost first, as the
   terminal report's `called from` lines (`queryguard_stack_depth`). Findings in the
   baseline are listed too, with `"baselined": true`, so the file is the same
-  whether or not the baseline is being updated. `message` is the finding's
+  whether or not the baseline is being updated. `message` (since 0.8.0; the
+  sample above is from `main`) is the finding's
   text as the terminal report shows it, without the indent; like every
   message, its wording is not stable. `db_time` is null when no
   statement was timed.

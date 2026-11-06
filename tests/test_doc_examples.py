@@ -130,6 +130,37 @@ def test_every_python_block_parses(page: Path) -> None:
             pytest.fail(f"{page.name}:{line}: {error}")
 
 
+def test_every_other_setup_names_a_report_of_its_page() -> None:
+    for name, lines in OTHER_SETUPS.items():
+        reports = _reports((ROOT / "docs" / name).read_text(encoding="utf-8"))
+        for line in lines:
+            assert any(line in report for _, report in reports), (
+                f"{name}: no report has {line!r}; drop it from OTHER_SETUPS"
+            )
+
+
+# page -> the example project whose files the page shows in full; the copies
+# must not drift apart
+SAME_FILES = {"recipes-fastapi.md": "fastapi-dependency-override"}
+
+
+@pytest.mark.parametrize("name", sorted(SAME_FILES))
+def test_a_page_shows_the_files_of_its_example(name: str) -> None:
+    example = ROOT / "examples" / SAME_FILES[name]
+    if not example.is_dir():
+        pytest.skip("examples/ is not available")
+    shown = {label: code for _, label, code in _blocks(ROOT / "docs" / name) if label}
+    compared = [label for label in shown if (example / label).is_file()]
+    assert len(compared) >= 6, compared
+    for label in compared:
+        if label == "pytest.ini":
+            # the example also turns off the cache provider
+            continue
+        assert shown[label] == (example / label).read_text(encoding="utf-8"), (
+            f"{name} shows {label} differently from examples/{SAME_FILES[name]}"
+        )
+
+
 def test_the_pages_with_projects_are_found() -> None:
     names = {p.name for p in WITH_PROJECT}
     assert {
@@ -248,6 +279,15 @@ def test_the_project_of_a_page_runs(page: Path, tmp_path: Path) -> None:
     )
 
 
+# Lines that end a report: pytest separators and summaries, captured-output
+# headers, a traceback's location line, and a budget report's timings, which
+# differ from run to run.
+_END = re.compile(
+    r"===|___|---|(FAILED|PASSED|ERROR) |\d+ (failed|passed|error)|\S+:\d+: |"
+    r"  database time:"
+)
+
+
 def _reports(text: str) -> list[tuple[int, list[str]]]:
     """(line number, lines) of each queryguard report in the page's output
     blocks (fences without a language): from a `queryguard: ...` line to the
@@ -265,7 +305,7 @@ def _reports(text: str) -> list[tuple[int, list[str]]]:
         elif line.startswith("queryguard: "):
             report = [line.rstrip()]
             found.append((number, report))
-        elif line.startswith(("===", "___", "FAILED ", "PASSED ", "  database time:")):
+        elif _END.match(line):
             report = None
         elif report is not None and line.strip():
             report.append(line.rstrip())

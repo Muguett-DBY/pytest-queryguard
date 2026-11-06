@@ -224,7 +224,8 @@ thread or the asyncio task that entered it, and the tasks created inside it
   free-threaded build of Python 3.14);
 - a task or a thread that already existed, such as the server thread of a
   live-server test: the block of the test does not reach the requests it
-  serves. Put the block in the code that handles the request instead, or use
+  serves. A FastAPI or Starlette `TestClient` request is covered: it runs
+  in a copy of the test's context. Put the block in the code that handles the request instead, or use
   the marker or `queryguard_ignore`.
 
 For the missing-index check, every run of the statement in the test counts,
