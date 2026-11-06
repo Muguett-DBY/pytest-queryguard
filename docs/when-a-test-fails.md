@@ -69,6 +69,9 @@ write a pattern with a wildcard.
 | `Customer had its columns reloaded 50 times for 50 instances, after commit(), ...` | `column-load` | `Customer (expired)` | `expire_on_commit=False`, or load the objects again with one query |
 | `Customer.name was loaded on its own 50 times for 50 instances (deferred column)` | `column-load` | `Customer.name` | `undefer(Customer.name)`, or drop `defer()` / `load_only()` |
 | `the same INSERT ran 6 times, one row at a time` (opt-in) | `write-loop` | the normalized `INSERT`, `UPDATE` or `DELETE` | `session.add_all()` and one flush, or `session.execute(insert(Model), rows)` |
+| `Customer.notes and Customer.orders were joined into one query side by side, once` (warns by default) | `cartesian-load` | `Customer.notes + Customer.orders` | `selectinload` for all collections but one, see [How detection works](how-detection-works.md#cartesian-load) |
+| `Customer.orders was loaded with selectinload and never read` (experimental, off by default) | `unused-eager-load` | `Customer.orders` | drop the loader option, see [Unused eager loads](unused-eager-load.md) |
+| `Account: 12 columns loaded, 9 never read` (experimental, off by default) | `unused-columns` | `Account` | `load_only()` the columns the code reads, or `defer()` the large ones; see [Unused columns](unused-columns.md) |
 | `queryguard: missing index` (opt-in) | `missing-index` | the table | the `CREATE INDEX` on the `fix:` line; see the [index advisor](index-advisor.md) |
 | `queryguard: expected at most 2 queries, got 4` | a budget, not a finding | none | fix the code, or raise the budget; ignore patterns and the baseline do not apply |
 

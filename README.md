@@ -44,10 +44,12 @@ Python 3.10+, pytest 8+, SQLAlchemy 2.0.13+.
 | N+1 on a relationship | on | one relationship is lazy-loaded for 2 or more parent objects |
 | Repeated statement | on | one `SELECT` runs 5 or more times: ORM, Core or `text()` |
 | Column reloads | on | 5 or more objects reload a deferred or expired column one by one |
+| Cartesian joins | on, warns | one query `joinedload`s two collections side by side, so its rows grow as their product (`fail` makes it fail) |
 | Query and time budgets | per test | `@pytest.mark.max_queries(n)` or `max_db_time(seconds)` is exceeded |
 | Row-by-row writes | opt-in | one `INSERT`, `UPDATE` or `DELETE` runs once per row from one line |
 | Missing index, with the `CREATE INDEX` | opt-in | no index can serve a filter (PostgreSQL 16+, SQLite, MySQL, MariaDB) |
 | Unused eager loads | experimental, off | a relationship is eager-loaded and never read |
+| Unused columns | experimental, off | a query loads a wide row and the test reads few of its columns |
 
 Why not just `raiseload`? It blocks lazy loads where you add it to a model or
 query; this plugin needs no code change and also reports what `raiseload` does
@@ -107,6 +109,9 @@ Every test is checked automatically, inside the test function:
 - **column-load**: 5 or more instances of one class each go back to the
   database for a deferred column (hint: `undefer`) or for attributes expired by
   `commit()` (hint: `expire_on_commit=False`);
+- **cartesian-load** (warns by default): one query loads two collections
+  with `joinedload` side by side, so each row repeats per pair of their items
+  (hint: `selectinload` for all but one);
 - **write-loop** (opt-in): the same `INSERT`, `UPDATE` or `DELETE`, one row per
   statement, runs many times from one source line;
 - **unused-eager-load** (experimental, off by default): a relationship is
