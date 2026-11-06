@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `python -m pytest_queryguard.trend RUN1.json RUN2.json ...` shows how the
-  query counts moved over several `--queryguard-json` files, oldest first:
-  the statements of each run, the tests whose count changed most with a
-  sparkline per test, and the findings new or gone in the window. Runs that
+- Experimental: `python -m pytest_queryguard.trend RUN1.json RUN2.json ...`
+  shows how the query counts moved over several `--queryguard-json` files,
+  oldest first: the statements of each run, the tests whose count changed
+  most with a sparkline per test, and the findings new or gone in the window. Runs that
   stopped early are marked. `--top`, `--test`, `--format markdown|text|json`
   and `--ascii` (also chosen by itself for a console that cannot print the
   blocks). The GitHub Action's new input `trend: N` adds the trend of the
@@ -81,6 +81,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A statement run outside an `ignore("missing-index")` block, then again
   inside it after DDL made the check explain it again, is reported: the block
   no longer leaves the missing-index finding out (#284).
+
+### Documentation
+
+- docs/stability.md now lists the baseline, budget and `--queryguard-json`
+  file formats, the SARIF rule ids, fingerprint key and result properties,
+  `python -m pytest_queryguard.compare`, and the GitHub Action's inputs,
+  outputs and artifact name as public, and says what a change of their format
+  number means. The fix patch, the query-count trend and the static check are
+  listed as experimental.
 
 ### Internal
 

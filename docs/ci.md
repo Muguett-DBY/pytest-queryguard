@@ -80,7 +80,7 @@ failed. Install your own project first: the action does not know how.
 | `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. Empty: none. |
 | `compare` | `true` | On a pull request, compare the counts with the base branch and write the result to the job summary. |
 | `comment` | `true` | Also post the comparison as a pull-request comment, updated in place on later pushes. |
-| `trend` | `false` | Since 0.8.0. A number of runs N (2 to 100; `true` means 10): on pushes to the default branch and on pull requests, show how the counts moved over the last N runs, see [below](#query-counts-over-the-last-runs). |
+| `trend` | `false` | Since 0.8.0, experimental. A number of runs N (2 to 100; `true` means 10): on pushes to the default branch and on pull requests, show how the counts moved over the last N runs, see [below](#query-counts-over-the-last-runs). |
 | `github-token` | `github.token` | Token for the comparison, the trend and the comment. |
 
 Outputs: `exit-code` (pytest's), `sarif-file`, `json-file` and `trend-report`
@@ -131,7 +131,7 @@ never fails the job.
 
 ### Query counts over the last runs
 
-Since 0.8.0.
+Since 0.8.0; experimental (see [Stability](stability.md#experimental)).
 
 The comparison shows one step; `trend: "10"` shows the last ten runs, as an
 APM shows a query count over time in production. On a push to the default
