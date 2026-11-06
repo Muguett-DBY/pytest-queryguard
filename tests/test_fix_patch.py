@@ -590,6 +590,59 @@ def test_fixes_of_one_file_combine_into_one_patch(tmp_path: Path) -> None:
     compile(after, "views.py", "exec")
 
 
+def test_an_option_that_a_chain_of_the_same_query_extends_is_left_out(
+    tmp_path: Path,
+) -> None:
+    # Order.customer, and Customer.country of the customers reached through
+    # it: the chain loads Order.customer too, so one .options() is enough
+    file = _write(
+        tmp_path,
+        """\
+        def load(session: Session) -> list[Order]:
+            return session.scalars(select(Order)).all()  # parents
+        """,
+    )
+    customer = _make(tmp_path, _finding(file))
+    country = _make(
+        tmp_path,
+        _finding(
+            file,
+            relationship="Customer.country",
+            path=(("Order.customer", True),),
+        ),
+    )
+    assert customer is not None and country is not None
+    text, files, _ = fixpatch.combine([customer, country], tmp_path, time.time() + 1)
+    assert files == 1
+    patch = tmp_path / "all.patch"
+    patch.write_bytes(text.encode("utf-8"))
+    after = _git_apply(tmp_path, patch, "app/views.py")
+    assert (
+        "select(Order).options(joinedload(Order.customer)"
+        ".joinedload(Customer.country))).all()"
+    ) in after
+    assert after.count(".options(") == 1
+    compile(after, "views.py", "exec")
+
+
+def test_options_of_different_relationships_are_all_kept(tmp_path: Path) -> None:
+    # joinedload(Order.customer) is no prefix of joinedload(Order.customer_items)
+    file = _write(
+        tmp_path,
+        """\
+        def load(session: Session) -> list[Order]:
+            return session.scalars(select(Order).options(raiseload(Order.notes))).all()  # parents
+        """,
+        header=HEADER.replace("import Session", "import Session, raiseload"),
+    )
+    customer = _make(tmp_path, _finding(file))
+    items = _make(tmp_path, _finding(file, relationship="Order.customer_items"))
+    assert customer is not None and items is not None
+    text, _, _ = fixpatch.combine([customer, items], tmp_path, time.time() + 1)
+    assert "joinedload(Order.customer)" in text
+    assert "joinedload(Order.customer_items)" in text
+
+
 def test_the_wire_form_round_trips(tmp_path: Path) -> None:
     file = _write(
         tmp_path,
