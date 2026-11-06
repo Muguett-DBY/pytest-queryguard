@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from pytest_queryguard import app as queryguard
 from pytest_queryguard import blocks, ignore
+from pytest_queryguard.collector import QueryCollector
 
 from .conftest import Order
 
@@ -38,14 +39,13 @@ def test_without_the_block_it_is_reported(watched: Engine) -> None:
 def test_a_block_used_by_the_report_is_noted_for_the_test(watched: Engine) -> None:
     # In a measured test, the plugin's stale-block report counts a block that
     # left out an in-app finding (#284).
-    entered: blocks.Entered = {}
-    used: blocks.Used = {}
-    token = blocks.record_entered(entered, used)
+    target = QueryCollector()
+    token = blocks.record_entered(target)
     try:
         block = ignore("relationship-load")
         with Session(watched) as session, queryguard.track(report=[]), block:
             _loop(session)
     finally:
         blocks.stop_recording(token)
-    assert list(entered.values()) == [block]
-    assert list(used) == [block]
+    assert list(target.blocks_entered.values()) == [block]
+    assert list(target.blocks_used or ()) == [block]

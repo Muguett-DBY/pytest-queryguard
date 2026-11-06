@@ -1499,7 +1499,7 @@ def _note_blocks(
         return
     root = item.config.rootpath
     with blocks.lock:
-        used = (*sieve.used, *collector.blocks_used)
+        used = (*sieve.used, *(collector.blocks_used or ()))
     for block in used:
         where = _block_site(block, root)
         if where is not None:
@@ -2466,7 +2466,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         collector.strict_threshold = settings.relationship
         collector.strict_by_scope = settings.repeat_scope == SCOPE_SESSION
     strict_error: NPlusOneDetected | None = None
-    recording = blocks.record_entered(collector.blocks_entered, collector.blocks_used)
+    recording = blocks.record_entered(collector)
     try:
         result = yield
     except NPlusOneDetected as exc:

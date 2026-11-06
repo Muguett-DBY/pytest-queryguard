@@ -61,7 +61,7 @@ class IgnoreBlock:
         if recording is not None and self.site is not None:
             # for the stale-block report: only in the context of a test the
             # plugin measures (see record_entered)
-            entered = recording[0]
+            entered = recording.blocks_entered
             key = (self.site.filename, self.site.lineno)
             if key not in entered:
                 with lock:
@@ -153,28 +153,35 @@ _blocks: ContextVar[tuple[IgnoreBlock, ...]] = ContextVar(
 # What the listeners store on each event; bound once, called per event.
 current = _blocks.get
 
-# Set by the plugin around a measured test: (entered, used). ``entered`` maps
-# (filename, line) to a block entered there, in the test's context (its
-# thread, its tasks, and threads that run in a copy of it); ``used`` holds the
-# blocks that left out a finding in a check run in that context
-# (``QueryLog.assert_no_nplusone``, an in-app report), whose own Sieve the
-# plugin never sees. Threads left over from other tests and code outside a
-# measured test do not see it.
+# Set by the plugin around a measured test: its collector. Its
+# ``blocks_entered`` maps (filename, line) to a block entered there, in the
+# test's context (its thread, its tasks, and threads that run in a copy of
+# it); its ``blocks_used`` holds the blocks that left out a finding in a check
+# run in that context (``QueryLog.assert_no_nplusone``, an in-app report),
+# whose own Sieve the plugin never sees. Threads left over from other tests
+# and code outside a measured test do not see it.
 Entered = dict[tuple[str, int], IgnoreBlock]
 Used = dict[IgnoreBlock, None]  # ordered set
-_recording: ContextVar[tuple[Entered, Used] | None] = ContextVar(
+
+
+class Recording(Protocol):
+    blocks_entered: Entered
+    blocks_used: Used | None  # None until a check uses a block: nothing per test
+
+
+_recording: ContextVar[Recording | None] = ContextVar(
     "pytest_queryguard_ignore_recording", default=None
 )
 # threads given the context may enter or use blocks at once
 lock = threading.Lock()
 
 
-def record_entered(entered: Entered, used: Used) -> Token[tuple[Entered, Used] | None]:
+def record_entered(target: Recording) -> Token[Recording | None]:
     """Note the blocks entered, and those used, from now on in this context."""
-    return _recording.set((entered, used))
+    return _recording.set(target)
 
 
-def stop_recording(token: Token[tuple[Entered, Used] | None]) -> None:
+def stop_recording(token: Token[Recording | None]) -> None:
     try:
         _recording.reset(token)
     except ValueError:  # reset in another context than the one that set it
@@ -235,7 +242,10 @@ class Sieve:
             # a check run inside a measured test: the test's stale-block
             # report counts the blocks too (see record_entered)
             with lock:
-                recording[1].update(new)
+                if recording.blocks_used is None:
+                    recording.blocks_used = new
+                else:
+                    recording.blocks_used.update(new)
 
     def drops(self, events: Iterable[_Tagged], kind: str) -> bool:
         """True when the finding made of ``events`` is left out (see ``covering``)."""
