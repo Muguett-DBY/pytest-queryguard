@@ -24,12 +24,18 @@ one.
 
 ## Two parents each lazy-load one relationship. Is that really a finding?
 
-Yes, by default. The relationship rule counts distinct parent objects, and the
-default threshold is 2, so `order_a.customer` and `order_b.customer` loaded
-separately is reported as `Order.customer was lazy-loaded 2 times`. That is the
-smallest N+1, and test databases hold a few rows, so a higher default would
-miss loops in tests that only create a couple of objects. If two is too strict
-for your code, raise it:
+When one query loaded both, yes. The relationship rule counts distinct parent
+objects per query line that loaded them, and the default threshold is 2, so
+`order.customer` read for two orders of one `select(Order)` is reported as
+`Order.customer was lazy-loaded 2 times`. That is the smallest N+1, and test
+databases hold a few rows, so a higher default would miss loops in tests that
+only create a couple of objects. Two orders loaded separately, at two
+different lines (`session.get(Order, 1)` and `session.get(Order, 2)`), each
+reading its customer, are not an N+1 and are not reported. When the plugin
+cannot tell which query loaded a parent (an object the test created, or one
+loaded before the test body), all the parents of the relationship count
+together, so two such objects are reported. If two is too strict for your
+code, raise it:
 
 ```toml
 [tool.pytest.ini_options]

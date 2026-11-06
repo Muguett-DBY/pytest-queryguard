@@ -247,6 +247,33 @@ def _parents(
     return first, max(len(sites) - 1, 0), root, path
 
 
+def _n_plus_one_loads(
+    loads: Sequence[RelationshipLoadEvent], threshold: int
+) -> list[RelationshipLoadEvent]:
+    """The loads of one relationship that make an N+1, in their order.
+
+    As in strict mode, the parents are grouped by the query line that loaded
+    them: the loads of a group with ``threshold`` distinct parents or more
+    count, so two single-object lookups at two lines are no N+1 (#307). When
+    the query of any parent is unknown (made by the test, loaded before the
+    measurement, read by two queries) it may belong to any group, so all the
+    loads form one group: an unknown origin never hides a loop.
+    """
+    groups: dict[CallSite, list[RelationshipLoadEvent]] = {}
+    for load in loads:
+        parent = load.parent
+        if parent is None or parent.callsite is None:
+            return list(loads)
+        groups.setdefault(parent.callsite, []).append(load)
+    if len(groups) == 1:
+        return list(loads)
+    keep: set[int] = set()
+    for group in groups.values():
+        if len({load.parent_key for load in group}) >= threshold:
+            keep.update(id(load) for load in group)
+    return [load for load in loads if id(load) in keep]
+
+
 def _relationship_findings(
     collector: QueryCollector,
     threshold: int,
@@ -262,7 +289,8 @@ def _relationship_findings(
         best: list[RelationshipLoadEvent] | None = None
         best_parents = 0
         held: list[IgnoreBlock] = []
-        for group in _split(loads, lambda load: load.scope, scoped):
+        for scope_loads in _split(loads, lambda load: load.scope, scoped):
+            group = _n_plus_one_loads(scope_loads, threshold)
             parents = len({load.parent_key for load in group})
             if parents >= threshold and parents > best_parents:
                 if _hidden(sieve, group, KIND_RELATIONSHIP, held):

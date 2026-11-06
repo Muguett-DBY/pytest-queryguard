@@ -37,11 +37,26 @@ Every rule produces a finding with a kind, a label, a call site and a hint.
 ### relationship-load
 
 One relationship (for example `Order.customer`) is lazy-loaded for at least
-`queryguard_relationship_threshold` (default 2) different parent objects.
+`queryguard_relationship_threshold` (default 2) different parent objects
+that one query line loaded (see "Where the parents were loaded" below).
 The label is the relationship. The hint is `joinedload` for a many-to-one or
 one-to-one relationship and `selectinload` for a collection. The rule counts
 distinct parent objects, not statements, so it is independent of how
 SQLAlchemy batches the loads.
+
+The parents are grouped by the line of the query that loaded them, as strict
+mode groups them: a loop over the rows of one query is an N+1, two
+single-object lookups that each read the relationship
+(`session.get(Order, 1).customer`, then `session.get(Order, 2).customer`) are
+not. Lookups made one by one at the same line (`for id in ids:
+get_order(id).customer`) count together. The finding counts the lazy loads of
+the groups that reach the threshold; when several do, it names the first
+query line and how many others. When the query of a parent is unknown
+(objects the test created that a query or `session.get()` handed back without
+reading their row, objects loaded before the test body, objects that two
+queries read), the plugin cannot tell which query it belongs to, so every
+parent of that relationship counts together, as one group: an unknown origin
+never hides a loop.
 
 #### Refreshing an object with an eager relationship
 
@@ -84,8 +99,9 @@ object's load path (`Order -> Order.customer -> Customer`) on the object's
 state. The call site is looked up once per query, not per row. Objects of a
 `selectinload` or `subqueryload` query and of a lazy load inherit the site of
 the query they were loaded for. A lazy load later reads them from its parent,
-and the finding uses them only when all its loads agree: a single site (or the
-first one and how many others), and a single load path that can be written as
+and the finding uses them only when all its loads agree: a single site (or,
+when the parents of several query lines each reach the threshold, the first
+one and how many others), and a single load path that can be written as
 `select(Root).options(loader(A.b).loader(B.c))` (no aliased class or
 `of_type()`). Otherwise the line is left out and the hint names the
 relationship's own class, as without the information. An object whose row

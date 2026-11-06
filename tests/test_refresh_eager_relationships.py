@@ -461,8 +461,10 @@ def test_a_lazy_load_run_by_a_load_hook_inside_a_refresh_is_counted(
                     session.expunge(obj)
             monkeypatch.setattr(Item, "read_keeper", True)
             with record_queries() as log:
-                session.refresh(shelves[0])
-                session.refresh(shelves[1])
+                # one line: the items of the two refreshes count together (two
+                # refreshes at two lines are two single-object reads, #307)
+                for shelf in shelves[:2]:
+                    session.refresh(shelf)
     finally:
         engine.dispose()
     report = _report(log)

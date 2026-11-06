@@ -186,7 +186,8 @@ under xdist the controller prints
 
 - Relationship N+1: the same relationship (`Order.customer`) lazy-loaded
   for at least `queryguard_relationship_threshold` distinct parent
-  objects within one measurement.
+  objects that one query line loaded, within one measurement. When the
+  query of any parent is unknown, all its parents count together.
 - Repeated SQL: the same normalized statement executed at least
   `queryguard_repeat_threshold` times within one measurement, excluding statements already
   reported as relationship N+1 and excluding every `INSERT`, `UPDATE` and
