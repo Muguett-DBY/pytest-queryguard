@@ -111,6 +111,8 @@ Every test is checked automatically, inside the test function:
   statement, runs many times from one source line;
 - **unused-eager-load** (experimental, off by default): a relationship is
   eager-loaded and never read;
+- **unused-columns** (experimental, off by default): a query loads a wide row
+  and the test reads few of its columns (hint: `load_only()`);
 - **missing-index** (opt-in): see below.
 
 All thresholds are options. A budget fails a test that runs too many
@@ -205,7 +207,7 @@ Every option, flag and marker is in the
 | [Baseline](https://maciejziel.github.io/pytest-queryguard/baseline.html), [CI and Action](https://maciejziel.github.io/pytest-queryguard/ci.html), [SARIF](https://maciejziel.github.io/pytest-queryguard/sarif.html) | Adoption and code scanning |
 | [Recipes](https://maciejziel.github.io/pytest-queryguard/recipes.html) | FastAPI, Flask-SQLAlchemy, SQLModel, Litestar, pytest-asyncio, budgets, legacy projects, CI |
 | [Index check](https://maciejziel.github.io/pytest-queryguard/index-check.html), [SQLite](https://maciejziel.github.io/pytest-queryguard/index-check-sqlite.html), [MySQL and MariaDB](https://maciejziel.github.io/pytest-queryguard/index-check-mysql.html), [advisor](https://maciejziel.github.io/pytest-queryguard/index-advisor.html) | Missing indexes |
-| [Unused eager loads](https://maciejziel.github.io/pytest-queryguard/unused-eager-load.html) | The experimental check |
+| [Unused eager loads](https://maciejziel.github.io/pytest-queryguard/unused-eager-load.html), [unused columns](https://maciejziel.github.io/pytest-queryguard/unused-columns.html) | The experimental checks |
 | [FAQ](https://maciejziel.github.io/pytest-queryguard/faq.html), [Limitations](https://maciejziel.github.io/pytest-queryguard/limitations.html) | `raiseload`, false positives, xdist, drivers |
 | [Comparison](https://maciejziel.github.io/pytest-queryguard/comparison.html), [Migrating from nplusone](https://maciejziel.github.io/pytest-queryguard/migrating-from-nplusone.html) | Other tools |
 | [Stability and versioning](https://maciejziel.github.io/pytest-queryguard/stability.html) | What is public API, deprecations |

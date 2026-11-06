@@ -217,6 +217,10 @@ The options that are off by default cost nothing until you turn them on:
   171 ns per attribute read with the option off, 207 ns with it on but idle
   (outside a test body), 306 ns while a test body is tracked
   (`scripts/bench_eager_overhead.py`).
+- Unused-column tracking (`queryguard_unused_columns`) wraps the same reads
+  and listens to each loaded row: about 170 ns per attribute read and 1.3 us
+  per loaded row while a test body is tracked
+  (`scripts/bench_columns_overhead.py`, see [Unused columns](unused-columns.md)).
 
 The numbers depend on your machine and database.
 

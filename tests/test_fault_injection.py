@@ -38,6 +38,7 @@ from pytest_queryguard import (
     listeners,
     messages,
     plugin,
+    unused_columns,
 )
 
 MODELS = (Path(__file__).parent / "models.py").read_text()
@@ -45,7 +46,7 @@ MODELS = (Path(__file__).parent / "models.py").read_text()
 SUITE = """
 import pytest
 from sqlalchemy import create_engine, select, text
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, selectinload
 
 from pytest_queryguard import record_queries
 from qgmodels import Customer, Order, make_sync_session
@@ -80,6 +81,33 @@ def test_unused_eager_load():
     rows = session.scalars(select(Order).options(selectinload(Order.customer))).all()
     assert [order.id for order in rows]  # Order.customer is never read
     session.close()
+
+
+class WideBase(DeclarativeBase):
+    pass
+
+
+class Wide(WideBase):
+    __tablename__ = "wide"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    c1: Mapped[str] = mapped_column(default="v")
+    c2: Mapped[str] = mapped_column(default="v")
+    c3: Mapped[str] = mapped_column(default="v")
+    c4: Mapped[str] = mapped_column(default="v")
+    c5: Mapped[str] = mapped_column(default="v")
+    c6: Mapped[str] = mapped_column(default="v")
+    c7: Mapped[str] = mapped_column(default="v")
+
+
+def test_unused_columns():
+    engine = create_engine("sqlite://")
+    WideBase.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Wide(id=1))
+        session.commit()
+        session.expunge_all()
+        assert [w.c1 for w in session.scalars(select(Wide)).all()]
 
 
 # --- tests whose outcome only the user's code decides
@@ -129,6 +157,7 @@ JUDGED = {
     "test_missing_index",
     "test_budgets",
     "test_unused_eager_load",
+    "test_unused_columns",
 }
 USER = {
     "test_plain": "passed",
@@ -148,6 +177,8 @@ COMMON = (
     "--queryguard-baseline=qg.json",
     "-o",
     "queryguard_unused_eager_load=fail",
+    "-o",
+    "queryguard_unused_columns=fail",
     "-o",
     "queryguard_write_loop_threshold=2",
     "-o",
@@ -171,6 +202,8 @@ def _outer_measurement_off(request: pytest.FixtureRequest) -> Iterator[None]:
     stash[plugin._settings] = saved
     eager._broken = False
     eager._warned = False
+    unused_columns._broken = False
+    unused_columns._warned = False
 
 
 @pytest.fixture
@@ -324,6 +357,10 @@ DETECTORS = [
     "eager:findings",
     "eager:start",
     "eager:stop",
+    "unused_columns:_group",
+    "unused_columns:findings",
+    "unused_columns:start",
+    "unused_columns:stop",
 ]
 REPORTS = [
     "plugin:_write_report",
@@ -340,6 +377,7 @@ HOOKS = [
     "plugin:install_index_check",
     "plugin:swap_root",
     "eager:enable",
+    "unused_columns:enable",
     "plugin:_record",
     "plugin:_note_index_check",
     "plugin:_results",
@@ -376,6 +414,7 @@ def test_an_exception_never_changes_a_user_test(
         collector._reset_for_tests()
     assert collector.active() == ()
     assert eager._current is None
+    assert unused_columns._current is None
 
 
 @pytest.mark.parametrize(
@@ -475,6 +514,7 @@ SIGNAL_TARGETS = [
     "plugin:detect",
     "plugin:_record",
     "eager:stop",
+    "unused_columns:stop",
     "plugin:_budget",
     "plugin:_time_budget",
     "plugin:_index_exemption",
@@ -485,6 +525,7 @@ SIGNAL_TARGETS = [
 def _clean_state() -> None:
     assert collector.active() == ()
     assert eager._current is None
+    assert unused_columns._current is None
     assert listeners.internal_error() is None
 
 
@@ -581,7 +622,7 @@ def test_an_exception_in_the_xdist_hand_over_never_changes_a_user_test(
     assert "INTERNALERROR" not in output, output[-3000:]
     assert result.ret == pytest.ExitCode.TESTS_FAILED, output[-3000:]
     # an update run reports no findings; the budgets and the user still fail
-    result.assert_outcomes(passed=6, failed=2)
+    result.assert_outcomes(passed=7, failed=2)
     # The run is known to be incomplete: no baseline with missing entries,
     # and the SARIF file says so.
     result.stdout.fnmatch_lines(

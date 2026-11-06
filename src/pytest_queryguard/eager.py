@@ -14,7 +14,8 @@ How it works, and why this way (see docs/unused-eager-load.md):
   and are not tracked.
 * Which relationships were read: a plain read of a loaded attribute is a
   dictionary lookup that fires no event, so while the feature is on,
-  ``InstrumentedAttribute.__get__`` is wrapped to record ``(class, name)``
+  ``InstrumentedAttribute.__get__`` is wrapped (``readhook``, shared with
+  the unused-columns check) to record ``(class, name)``
   of every read made inside the measured test body. Reads made by the unit of
   work (flush, cascades, backrefs) go through the attribute implementation
   and do not pass here; deleting an instance exempts the relationships that
@@ -35,9 +36,9 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import event
-from sqlalchemy.orm import InstrumentedAttribute, RelationshipProperty, Session
+from sqlalchemy.orm import RelationshipProperty, Session
 
-from . import blocks, listeners
+from . import blocks, listeners, readhook
 from .blocks import IgnoreBlock
 from .callsite import find_callsite
 from .events import CallSite
@@ -86,25 +87,16 @@ class Tracker:
 
 _current: Tracker | None = None
 _enabled = 0
-_original: Any = None
 _broken = False
 _warned = False
-
-
-def _tracked_get(self: Any, instance: Any, owner: Any) -> Any:
-    tracker = _current
-    if tracker is not None and instance is not None and not _broken:
-        try:
-            tracker.reads.add((type(instance), self.key))
-        except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
-            _broke(exc, "the attribute read hook")
-    return _original(self, instance, owner)
 
 
 def _broke(exc: Exception, where: str) -> None:
     """Turn the feature off for the rest of the process and say so, once."""
     global _broken, _warned
     _broken = True
+    readhook.reads = None
+    readhook.reads_failed = None
     if not _warned:
         _warned = True
         warn_internal(
@@ -113,6 +105,10 @@ def _broke(exc: Exception, where: str) -> None:
                 f"internal error in {where}: {exc!r}"
             )
         )
+
+
+def _read_failed(exc: Exception) -> None:
+    _broke(exc, "the attribute read hook")
 
 
 def loader_paths(options: Any) -> Iterator[tuple[tuple[Any, ...], str | None]]:
@@ -188,12 +184,12 @@ def _on_before_flush(session: Any, flush_context: Any, instances: Any) -> None:
 
 def enable() -> None:
     """Install the listeners and the read hook; calls nest, see ``disable()``."""
-    global _enabled, _original
+    global _enabled
     _enabled += 1
     if _enabled > 1:
         return
-    _original = InstrumentedAttribute.__get__
-    InstrumentedAttribute.__get__ = _tracked_get  # type: ignore[method-assign]
+    readhook.install()
+    readhook.reads_failed = _read_failed
     event.listen(Session, "do_orm_execute", _on_orm_execute)
     listeners.use_heal()
     event.listen(Session, "before_flush", _on_before_flush)
@@ -208,7 +204,9 @@ def disable() -> None:
     if _enabled > 0:
         return
     _current = None
-    InstrumentedAttribute.__get__ = _original  # type: ignore[method-assign]
+    readhook.reads = None
+    readhook.reads_failed = None
+    readhook.uninstall()
     event.remove(Session, "do_orm_execute", _on_orm_execute)
     listeners.drop_heal()
     event.remove(Session, "before_flush", _on_before_flush)
@@ -223,12 +221,23 @@ def start() -> Tracker:
     global _current
     tracker = Tracker(previous=_current)
     _current = tracker
+    _watch_reads()
     return tracker
 
 
 def stop(tracker: Tracker) -> None:
     global _current
     _current = tracker.previous
+    _watch_reads()
+
+
+def _watch_reads() -> None:
+    """Point the read hook at the reads of the test body measured now, if any."""
+    tracker = _current
+    if tracker is not None and _enabled > 0 and not _broken:
+        readhook.reads = tracker.reads
+    else:
+        readhook.reads = None
 
 
 def _related(a: type, b: type) -> bool:

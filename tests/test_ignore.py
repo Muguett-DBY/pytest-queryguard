@@ -82,7 +82,8 @@ def test_the_unknown_kind_error_lists_every_kind_comma_separated() -> None:
         parse_rule("relationshipload Order.customer")
     assert str(caught.value).endswith(
         "(kinds: relationship-load, repeated-statement, column-load, "
-        "write-loop, unused-eager-load, cartesian-load, missing-index)"
+        "write-loop, unused-eager-load, unused-columns, cartesian-load, "
+        "missing-index)"
     )
 
 
