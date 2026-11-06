@@ -58,6 +58,7 @@ class QueryCollector:
     # A statement is explained at its first run only. For one first explained
     # inside an ignore() block: explain key -> the blocks of every run of it
     # (blocks.current() of each), so a run outside the block is not missed.
+    # Kept when DDL clears explained (see catalog.clear).
     index_runs: dict[object, dict[tuple[IgnoreBlock, ...], None]] = field(
         default_factory=dict
     )
@@ -241,9 +242,16 @@ def note_index_reruns(
 def note_index_first_run(
     fresh: Sequence[QueryCollector], key: object, tags: tuple[IgnoreBlock, ...]
 ) -> None:
-    """The statement under ``key`` was explained, with scans, inside ``tags``."""
-    if tags:
-        for target in fresh:
+    """The statement under ``key`` was explained, with scans, inside ``tags``.
+
+    Explained again after a catalog change (see ``catalog.clear``), it adds
+    to the runs noted before.
+    """
+    for target in fresh:
+        runs = target.index_runs.get(key)
+        if runs is not None:
+            runs[tags] = None
+        elif tags:
             target.index_runs[key] = {tags: None}
 
 

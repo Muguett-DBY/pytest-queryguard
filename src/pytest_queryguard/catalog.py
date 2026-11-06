@@ -98,7 +98,9 @@ def clear() -> None:
     """Drop every cached entry, for every engine.
 
     The statements already explained in a test are forgotten too: the same
-    statement is explained again against the new state of the catalog.
+    statement is explained again against the new state of the catalog. Their
+    ``index_runs`` are kept: a run before the change still counts for the
+    ignore() blocks.
     """
     for entry in list(_cache.values()):
         # Rebound, not cleared: a lookup that is reading the old dicts, in
@@ -109,7 +111,6 @@ def clear() -> None:
         entry.roots = {}
     for target in collector.active():
         target.explained.clear()
-        target.index_runs.clear()
 
 
 def reset() -> None:

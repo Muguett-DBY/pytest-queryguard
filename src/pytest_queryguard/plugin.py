@@ -1373,7 +1373,9 @@ def _blocked_scans(
     """The ids of the selected scans whose every run was inside ignore() blocks.
 
     A statement is explained at its first run only; ``index_runs`` holds the
-    blocks of its later runs.
+    blocks of its later runs. A scan's own run counts too: a statement
+    explained again after DDL has a scan per explain, and one made outside
+    any block before ``index_runs`` followed the statement is not in it.
     """
     if not any(scan.ignores for scan in collector.scans):
         return set()
@@ -1381,7 +1383,7 @@ def _blocked_scans(
     for scan in collector.scans:
         later = collector.index_runs.get(scan.key)
         runs.setdefault(scan_key(scan.issue), []).extend(
-            [scan.ignores] if later is None else later
+            [scan.ignores] if later is None else [scan.ignores, *later]
         )
     found: set[int] = set()
     for scan in selected:

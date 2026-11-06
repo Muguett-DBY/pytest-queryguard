@@ -649,6 +649,63 @@ def test_scan_twice_inside():
     result.stdout.fnmatch_lines(["FAILED*test_scan_again*"])
 
 
+def test_a_run_outside_the_block_before_ddl_still_counts(
+    pytester: pytest.Pytester,
+) -> None:
+    # DDL makes the index check explain a statement again; the runs made
+    # before it outside the block must still count (#284).
+    _project(
+        pytester,
+        """
+from sqlalchemy import text
+
+
+def scan(session):
+    session.query(Order).filter(Order.customer_id == 1).count()
+
+
+def ddl(session):
+    session.execute(text("CREATE TABLE IF NOT EXISTS qg_extra (id INTEGER)"))
+
+
+def test_outside_then_ddl_then_inside():
+    session = make_sync_session()
+    scan(session)
+    ddl(session)
+    with ignore("missing-index"):
+        scan(session)
+
+
+def test_inside_outside_then_ddl_then_inside():
+    session = make_sync_session()
+    with ignore("missing-index"):
+        scan(session)
+    scan(session)
+    ddl(session)
+    with ignore("missing-index"):
+        scan(session)
+
+
+def test_inside_then_ddl_then_inside():
+    session = make_sync_session()
+    with ignore("missing-index"):
+        scan(session)
+    ddl(session)
+    with ignore("missing-index"):
+        scan(session)
+""",
+    )
+    result = _run(pytester, "--queryguard-index-check")
+    result.assert_outcomes(passed=1, failed=2)
+    result.stdout.fnmatch_lines(
+        [
+            "FAILED*test_outside_then_ddl_then_inside*",
+            "FAILED*test_inside_outside_then_ddl_then_inside*",
+        ],
+        consecutive=False,
+    )
+
+
 def test_missing_index(pytester: pytest.Pytester) -> None:
     _project(
         pytester,
