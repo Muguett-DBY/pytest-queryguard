@@ -278,6 +278,10 @@ requests](several-sessions.md).
 
 Off by default. See [Unused eager loads](unused-eager-load.md).
 
+### unused-columns (experimental)
+
+Off by default. See [Unused columns](unused-columns.md).
+
 ### cartesian-load
 
 One query, so no count rule and no budget sees it:

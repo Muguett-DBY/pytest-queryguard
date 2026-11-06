@@ -227,6 +227,10 @@ class Sieve:
 
     def drops(self, events: Iterable[_Tagged], kind: str) -> bool:
         """True when the finding made of ``events`` is left out (see ``covering``)."""
-        found = covering(events, kind)
+        return self.drops_tags((event.ignores for event in events), kind)
+
+    def drops_tags(self, runs: Iterable[tuple[IgnoreBlock, ...]], kind: str) -> bool:
+        """``drops`` for the tags of each event (or run) instead of the events."""
+        found = covering_tags(runs, kind)
         self.note(found)
         return bool(found)

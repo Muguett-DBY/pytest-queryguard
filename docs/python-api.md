@@ -163,7 +163,8 @@ def warm_cache(session): ...
 
 - `kinds`: one or more finding kinds (`"relationship-load"`,
   `"repeated-statement"`, `"column-load"`, `"write-loop"`,
-  `"unused-eager-load"`, `"cartesian-load"`, `"missing-index"`) or `fnmatch`
+  `"unused-eager-load"`, `"unused-columns"`, `"cartesian-load"`,
+  `"missing-index"`) or `fnmatch`
   patterns for them, such as `"*"`. None, or a pattern that matches no kind,
   raises `TypeError` or `ValueError`.
 - `reason`: a string for the reader; not used.
