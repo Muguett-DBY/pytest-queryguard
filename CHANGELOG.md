@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mappers and only parses the code it checks. It is conservative and stays
   inside one function. Output as text, JSON or SARIF (rule
   `queryguard/static-relationship-load`), exit status 1 on findings,
-  `# queryguard: ignore` on the line to suppress. See docs/static-check.md.
+  `# queryguard: ignore` on the line to suppress. See docs/static-check.md
+  (#297).
 - In-application mode: `page_report="footer"` or `"console"` adds a
   request's findings to its own HTML page, as an `<aside>` before
   `</body>` or as a `console.warn()` script, like Bullet in Rails. Only
@@ -59,15 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   statement is prepared once instead of twice: inside a request the ORM
   `select()` of `scripts/bench_overhead.py --app` costs about a third less
   to measure (+21 instead of +32 microseconds per statement on one laptop),
-  and outside one about half. On SQLAlchemy 2.0.20 to 2.0.49 an
-  application's `yield_per` or `autoflush=False` query with `selectinload()`
-  now works while the engine is watched (SQLAlchemy issue 13301), and the
-  in-app mode labels a load as the plugin does: the sample SQL of a
-  relationship-load finding is the lazy load, not an eager loader's query
-  (#289).
+  and outside one about half. The in-app mode labels a load as the plugin
+  does: the sample SQL of a relationship-load finding is the lazy load, not
+  an eager loader's query (#289).
 
 ### Fixed
 
+- In-application mode: on SQLAlchemy 2.0.20 to 2.0.49 an application's
+  `yield_per` or `autoflush=False` query with `selectinload()` now works
+  while the engine is watched (SQLAlchemy issue 13301) (#289).
 - The GitHub Action's comparison on a pull request no longer takes a
   pull-request run as the base: a fork's pull request from its own branch
   named like the base branch (`main`) had that head branch too, so its query
@@ -90,6 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release that renames one fails that test first, with the name in the
   message. The per-statement code reads them inline; the overhead gate's ORM
   ratio is unchanged (#245).
+- `tests/test_conflict_markers.py` fails when a file the repository tracks
+  still has a merge conflict marker (#301).
+- `scripts/release_gate.py consistency` also checks that `docs/index.md`,
+  `docs/getting-started.md` and `llms.txt` name `__version__` as the release
+  they describe.
 
 ## [0.7.0] - 2026-11-06
 
