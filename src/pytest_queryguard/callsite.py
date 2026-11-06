@@ -126,6 +126,26 @@ def _hook_caller() -> str:
     return _hook_prefix
 
 
+# Before 3.12 a list, dict or set comprehension runs in a frame of its own,
+# called by the function it is written in, at the same place (PEP 709 inlined
+# them). Reports name that function, as they do on 3.12 and later.
+_INLINED = (
+    frozenset({"<listcomp>", "<dictcomp>", "<setcomp>"})
+    if sys.version_info < (3, 12)
+    else frozenset()
+)
+
+
+def _outer(frame: FrameType) -> FrameType:
+    """The frame of the function a comprehension is written in, or ``frame``."""
+    while frame.f_code.co_name in _INLINED:
+        back = frame.f_back
+        if back is None or back.f_code.co_filename != frame.f_code.co_filename:
+            break
+        frame = back
+    return frame
+
+
 def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
     """Up to ``depth`` application frames from ``frame`` outwards.
 
@@ -139,6 +159,9 @@ def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
         if stop and os.path.normcase(code.co_filename).startswith(stop):
             break
         if not _is_internal(code.co_filename):
+            if code.co_name in _INLINED:
+                frame = _outer(frame)
+                code = frame.f_code
             found.append(
                 CallSite(
                     filename=code.co_filename,
@@ -165,11 +188,12 @@ def _first_external(frame: FrameType | None, sites: Sites) -> CallSite | None:
             if site is None:
                 if len(sites) >= _MAX_SITES:
                     sites.clear()
+                outer = _outer(frame) if key[2] in _INLINED else frame
                 site = sites[key] = CallSite(
                     filename=filename,
                     lineno=key[1],
-                    function=key[2],
-                    callers=_callers(frame.f_back, _stack_depth),
+                    function=outer.f_code.co_name,
+                    callers=_callers(outer.f_back, _stack_depth),
                 )
             return site
         frame = frame.f_back
