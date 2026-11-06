@@ -82,20 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is no patch, only the hint. Made with the stdlib `ast` when the findings
   are reported (#247).
 
-### Deprecated
-
-These keep working and emit a `QueryGuardDeprecationWarning` naming the
-replacement (an ini option once per run, a keyword at each call site); they
-will be removed in 2.0 (#303).
-
-- The ini option `queryguard_repeat_scope`: use `queryguard_scope`.
-- `repeat_scope=` of `QueryLog.assert_no_nplusone()` and
-  `pytest_queryguard.app.Settings`: use `scope=`. A `Settings` built with
-  `repeat_scope=` has it in `scope`, and its `repeat_scope` reads None.
-- The `n=` keyword of the `max_queries` marker (the spelling of 0.1 to 0.3):
-  pass the limit positionally, `max_queries(3)`, or as `limit=3`. Not while
-  pytest-querycount is installed, whose own keyword it is.
-
 ### Changed
 
 - relationship-load reports fewer findings: the lazy loads of a relationship
@@ -127,8 +113,41 @@ will be removed in 2.0 (#303).
   does: the sample SQL of a relationship-load finding is the lazy load, not
   an eager loader's query (#289).
 
+### Deprecated
+
+These keep working and emit a `QueryGuardDeprecationWarning` naming the
+replacement (an ini option once per run, a keyword at each call site); they
+will be removed in 2.0 (#303).
+
+- The ini option `queryguard_repeat_scope`: use `queryguard_scope`.
+- `repeat_scope=` of `QueryLog.assert_no_nplusone()` and
+  `pytest_queryguard.app.Settings`: use `scope=`. A `Settings` built with
+  `repeat_scope=` has it in `scope`, and its `repeat_scope` reads None.
+- The `n=` keyword of the `max_queries` marker (the spelling of 0.1 to 0.3):
+  pass the limit positionally, `max_queries(3)`, or as `limit=3`. Not while
+  pytest-querycount is installed, whose own keyword it is.
+
 ### Fixed
 
+- Strict mode no longer raises for a relationship lazy-loaded for the
+  parents of two query lines when an ignore pattern with `file=` or
+  `function=`, or a baseline entry, accepts the report's finding: the report
+  makes one finding, at the first lazy load of the query lines that make the
+  N+1, and strict mode
+  matched the first lazy load of the later line instead, so it failed a test
+  the report passed. Its error now names the other parent lines, as the
+  report does, and has no patch then.
+- Strict mode no longer lists an `allow_nplusone` pattern of a test it
+  stopped at the access under "stale ignores": the pattern may be for a
+  finding after the access, which the test never reached. A test that fails
+  on its own was already left out the same way.
+- With `--queryguard-show-patch`, the error strict mode raises at the access
+  has the patch under the finding: it replaces the report, which was the only
+  place the patch was shown.
+- Strict mode no longer reports an `unused-eager-load` or `unused-columns`
+  finding for a test it stopped at the access: the relationship or the
+  columns the test would have read after the N+1 loop were reported as never
+  read in the JSON and SARIF files and the summary.
 - On Python 3.10 and 3.11 a query in a list, dict or set comprehension was
   reported "first at … in <listcomp>" with an extra "called from" line for
   the same place. Reports now name the function the comprehension is
