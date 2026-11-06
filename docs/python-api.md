@@ -72,7 +72,7 @@ keyword-only arguments, with the same defaults as the ini options:
 
 | Argument | Default | Ini option | Rule |
 |---|---|---|---|
-| `relationship_threshold` | `2` | `queryguard_relationship_threshold` | One relationship lazy-loaded for this many different parent objects. |
+| `relationship_threshold` | `2` | `queryguard_relationship_threshold` | One relationship lazy-loaded for this many different parent objects that one query line loaded. |
 | `repeat_threshold` | `5` | `queryguard_repeat_threshold` | One `SELECT` that ran this many times. |
 | `column_load_threshold` | `5` | `queryguard_column_load_threshold` | This many instances of one class each loading deferred or expired columns on their own (kind `column-load`). |
 | `small_repeat_threshold` | `None` (off) | `queryguard_small_repeat_threshold` | An integer of at least 2 and below `repeat_threshold`: a statement that ran this many times from one line, each time with other parameters, counts too. |
