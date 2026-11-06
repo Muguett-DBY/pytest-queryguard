@@ -544,9 +544,11 @@ from the pytest plugin's own error state, so neither switches the other off.
 
 Importing `pytest_queryguard.app` or creating the middleware registers
 nothing; only `watch()` adds listeners: to that engine, and, while any engine
-is watched, to `Session` for the ORM events and to the `Engine` class, where
-one checks that a lazy load's SELECT runs on a watched engine. Outside a
-request those shared listeners return after one `ContextVar.get()`.
+is watched, to `Session` for `after_begin` and `after_flush`. Load labels come
+from each cursor execution's ORM options, without a `do_orm_execute` listener
+or a shared `Engine` listener. This also avoids the `yield_per`/`autoflush`
+option leak that such a listener causes on SQLAlchemy 2.0.20 to 2.0.49.
+Outside a request the shared listeners return after one `ContextVar.get()`.
 `unwatch()` of the last watched engine removes them.
 `python scripts/bench_overhead.py --app` times a statement with the engine not
 watched, watched but outside a request, and inside one. On an in-memory SQLite

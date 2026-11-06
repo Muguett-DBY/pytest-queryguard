@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- In-app load attribution uses each cursor execution's ORM options, like the
+  pytest plugin. SQL run by a begin hook no longer takes a later load's label,
+  and watching an engine no longer adds a `do_orm_execute` listener or causes
+  its `yield_per`/`autoflush` option leak on affected SQLAlchemy versions.
+
 ## [0.7.0] - 2026-11-06
 
 ORM statements cost about a third less to measure: the plugin reads the

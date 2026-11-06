@@ -13,7 +13,6 @@ from typing import Any, NamedTuple
 
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Mapper, ORMExecuteState, Session, loading
 from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.orm.context import QueryContext
@@ -534,50 +533,6 @@ def _loader_session(execution_options: Any) -> Any:
     return getattr(top, "session", None)
 
 
-def _load_options(state: ORMExecuteState) -> Any:
-    """The load options of an ORM execution, also for ``from_statement()``.
-
-    Before SQLAlchemy 2.0.30 ``ORMExecuteState.is_select`` is False for
-    ``select(Entity).from_statement(...)`` and ``load_options`` then raises.
-    The loader of a joined-inheritance subclass column runs exactly such a
-    statement, so read the options from the execution options directly.
-    """
-    try:
-        return state.load_options
-    except InvalidRequestError:
-        return state.execution_options.get("_sa_orm_load_options")
-
-
-def _is_column_load(state: ORMExecuteState) -> bool:
-    """True for a refresh, an expired or a deferred column load of an instance.
-
-    ``ORMExecuteState.is_column_load`` is False for a ``from_statement()``
-    execution before SQLAlchemy 2.0.30 (see ``_load_options``), so the compile
-    options of the statement are asked as well.
-    """
-    if state.is_column_load:
-        return True
-    statement = getattr(state, "statement", None)
-    options = getattr(statement, "_compile_options", None)
-    return bool(getattr(options, "_for_refresh_state", False))
-
-
-def classify_column_load(state: ORMExecuteState) -> tuple[Any, ColumnLoadEvent] | None:
-    """The instance state a column load reloads, and its event; None without one.
-
-    For the in-app mode's ``do_orm_execute`` listener, which keeps its own
-    state; the plugin classifies the load from its SELECT
-    (``column_load_of``), so both label a load the same way. The caller has
-    checked ``_is_column_load(state)``.
-    """
-    return column_load_of(
-        _load_options(state),
-        getattr(state.statement, "_compile_options", None),
-        state.session,
-        blocks.current(),
-    )
-
-
 def column_load_of(
     load_options: Any,
     options: Any,
@@ -1021,10 +976,8 @@ def _on_orm_execute_heal(state: Any) -> None:
     Registered with the plugin's ``do_orm_execute`` listeners, those of the
     unused eager-load check (``eager.py``) and of strict mode
     (``enable_strict``), through ``use_heal()``, and only where
-    ``_leaks_load_options()`` is true. The in-app mode has a
-    ``do_orm_execute`` listener of its own and does not register it. With a
-    listener,
-    SQLAlchemy prepares the statement twice and hands the first result to the
+    ``_leaks_load_options()`` is true. With a listener, SQLAlchemy prepares
+    the statement twice and hands the first result to the
     second pass. For a loader statement (``sa_top_level_orm_context``) that
     result holds the outer statement's options next to the loader's own load
     options from the first pass; an option whose value differs from those

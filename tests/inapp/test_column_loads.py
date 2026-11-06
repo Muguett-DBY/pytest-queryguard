@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
-from sqlalchemy import ForeignKey, create_engine, inspect, select
+from sqlalchemy import ForeignKey, create_engine, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 from sqlalchemy.pool import StaticPool
@@ -321,51 +319,6 @@ def test_a_joined_inheritance_subclass_column_is_a_column_load(
             _ = employee.budget
     assert [f.kind for f in report.findings] == ["column-load"]
     assert _column_loads(report)[0].count == ROWS
-
-
-class _OldFromStatementState(SimpleNamespace):
-    """A ``from_statement()`` execution as SQLAlchemy before 2.0.30 shows it."""
-
-    @property
-    def load_options(self) -> None:
-        raise InvalidRequestError("not against a SELECT statement")
-
-
-def test_a_from_statement_column_load_is_recognised_before_sqlalchemy_2_0_30(
-    db: Engine,
-) -> None:
-    """The column load of a joined-inheritance subclass, before 2.0.30.
-
-    Such an execution reports ``is_column_load`` as False and its
-    ``load_options`` raise; the refresh state is in the execution options and
-    the compile options (issue #161).
-    """
-    with Session(db) as session:
-        session.add(Team(name="t"))
-        session.commit()
-        team = session.scalars(select(Team)).one()
-        state = _OldFromStatementState(
-            session=session,
-            is_column_load=False,
-            is_relationship_load=False,
-            is_select=False,
-            execution_options={
-                "_sa_orm_load_options": SimpleNamespace(_refresh_state=inspect(team))
-            },
-            statement=SimpleNamespace(
-                _compile_options=SimpleNamespace(
-                    _for_refresh_state=True, _only_load_props=frozenset({"name"})
-                )
-            ),
-        )
-        with queryguard.track(report=[]):
-            _listeners._on_orm_execute(state)  # type: ignore[arg-type]
-            pending = _listeners._pending.get()
-    assert _core.internal_error() is None
-    assert pending is not None
-    load = pending[2]
-    assert load is not None
-    assert load.owner == "Team"
 
 
 def test_the_eager_loader_a_refresh_runs_is_not_a_lazy_load(db: Engine) -> None:

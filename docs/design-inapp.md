@@ -91,19 +91,21 @@ with queryguard.track("nightly-job") as report:  # any unit of work
 
 - **Separate listeners, per engine.** The in-app handlers live in
   `app/_listeners.py` and are registered with `event.listen(engine, ...)` on
-  the watched engine (the `sync_engine` of an `AsyncEngine`). The ORM events
-  (`do_orm_execute`, `after_begin`) exist only on `Session`; they are
-  registered on the `Session` class while at least one engine is watched, and
-  return after one `ContextVar.get()` outside a request. A relationship or
-  column load is only kept when its statement reaches a watched engine: a
-  `before_cursor_execute` listener on the `Engine` class, registered with
-  them, drops a pending load whose SELECT runs on an unwatched engine, so
-  sessions on other engines add nothing. The engine is never guessed with
-  `Session.get_bind()`, which may be application code (`ShardedSession`'s
-  `shard_chooser`, Flask-SQLAlchemy's binds, replica routers). The pytest listeners in
-  `listeners.py` are not changed; the in-app handlers reuse its pure helpers
-  (`_is_write`, the scope numbers) and the shared `QueryCollector`,
-  `detect()` and `make_findings()`.
+  the watched engine (the `sync_engine` of an `AsyncEngine`). The flush and
+  transaction events (`after_flush`, `after_begin`) exist only on `Session`;
+  they are registered on the `Session` class while at least one engine is watched, and
+  return after one `ContextVar.get()` outside a request. The shared
+  `orm_select()` helper reads each SELECT's ORM load options in
+  `before_cursor_execute`, so only loads that reach a watched engine count.
+  There is no `do_orm_execute` listener, pending attribution or listener on
+  the `Engine` class. A SELECT run by a begin hook cannot take a later
+  load's label, and a cached load that runs no SQL adds nothing.
+  The engine is never guessed with `Session.get_bind()`, which may be
+  application code (`ShardedSession`'s `shard_chooser`, Flask-SQLAlchemy's binds,
+  replica routers). The in-app handlers keep their own collectors and reuse
+  the pure helpers in `listeners.py` (`orm_select`, `column_load_of`,
+  `_is_write`, the scope numbers) and the shared `QueryCollector`, `detect()`
+  and `make_findings()`.
 
 - **Own error state.** The pytest listeners stop on their first error through
   a module global. The in-app mode has its own, so an in-app bug never turns
