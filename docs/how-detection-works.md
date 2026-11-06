@@ -8,10 +8,12 @@ it saw.
 
 1. When pytest starts (unless `queryguard_mode = off`; budgets still install
    the listeners when a test needs them), the plugin adds class-level
-   SQLAlchemy listeners: `do_orm_execute` on `Session` sees relationship lazy
-   loads, `before_cursor_execute` and `after_cursor_execute` on `Engine`
-   see every SQL statement and time it, and the `load` and `refresh` instance
-   events note which query loaded each object (see below).
+   SQLAlchemy listeners: `before_cursor_execute` and `after_cursor_execute`
+   on `Engine` see every SQL statement and time it, and tell a relationship
+   lazy load or a column load from the ORM's options on its `SELECT`;
+   `after_begin` and `after_flush` on `Session` note which `Session` a
+   connection serves and what a flush wrote; the `load` and `refresh`
+   instance events note which query loaded each object (see below).
 2. Measurement covers only the test function body, so queries in fixture
    setup and teardown are not counted. unittest `setUp` and `tearDown` run
    inside the test call and are counted.
@@ -64,11 +66,12 @@ runs are never a repeated-statement finding. A refresh that reads back the
 object the flush before it wrote is not counted at all (see "Refresh after a
 write" under column-load).
 
-The plugin finds the immediate loader by looking a few frames up the stack
-(at most 40) from its `do_orm_execute` listener, and only for a load that has
-a parent object. If a SQLAlchemy release renames that loader or moves it out
-of reach, these loads count as lazy loads again, as before this rule: a
-possible false positive, never a missed lazy load and never an error.
+The plugin tells the immediate loader's statement by the outer query's
+context, which SQLAlchemy hands to it (the private execution option
+`sa_top_level_orm_context`, the same from 2.0.13 to 2.1): for a refresh it
+names the object refreshed. If a SQLAlchemy release stops passing it, these
+loads count as lazy loads again, as before this rule: a possible false
+positive, never a missed lazy load and never an error.
 
 #### Where the parents were loaded
 
@@ -94,21 +97,19 @@ there. The in-app mode does not record origins and prints the earlier hint.
 
 #### How a lazy load's statement is attributed
 
-SQLAlchemy announces an ORM execution (`do_orm_execute`) before it autoflushes
-and before it takes a connection, so the `SELECT` of a lazy load comes later,
-with other statements possibly in between. The relationship is parked on the
-`Session` that issued the load, not on the thread, and the `SELECT` takes it
-only if it runs on a connection that `Session` opened (`after_begin` links the
-two), is a `SELECT` or `WITH`, and does not run inside the `Session`'s own
-begin step (the engine's `begin` event and `after_begin` listeners, such as
-SQLAlchemy's pysqlite `BEGIN` recipe). Statements of another `Session`
-(asyncio tasks share a thread), autoflush writes and transaction control
-statements therefore neither take the attribution nor clear it. When several
-`Session`s share one connection (a second `Session` joined to the external
-connection of a "test in a transaction" fixture), the `SELECT` belongs to the
-one whose ORM execution came last. A
-`contextvars` slot would not be enough: the autoflush and the pool checkout
-await inside one task, and a second task's statements run in that gap.
+The ORM keeps what a `SELECT` is for in the options of that execution: the
+parent object of a lazy load, the object of a column load and the
+relationship path of a loader. The plugin reads them in
+`before_cursor_execute`, from the statement itself, so nothing else that runs
+in between can take or clear them: the autoflush before a lazy load, the
+`Session`'s begin step (the engine's `begin` event and `after_begin`
+listeners, such as SQLAlchemy's pysqlite `BEGIN` recipe), statements of
+another `Session` on the same connection (a second `Session` joined to the
+external connection of a "test in a transaction" fixture), and other asyncio
+tasks or threads. A lazy load that never reaches the database (a
+`do_orm_execute` listener of yours answers it from a cache) is not counted.
+These options are private to SQLAlchemy; the plugin reads them in one place
+and is tested from SQLAlchemy 2.0.13 to 2.1.
 
 ### repeated-statement
 

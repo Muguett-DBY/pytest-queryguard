@@ -135,11 +135,24 @@
   `selectinload` and `immediateload` statements (SQLAlchemy issue 13301, fixed
   in 2.0.50). With `yield_per` the loader statement fails with "Can't use the
   ORM yield_per feature in conjunction with unique()"; with `autoflush=False`
-  it no longer flushes. The plugin installs such a listener, so on those
-  versions it removes the inherited options from the loader statement before
-  SQLAlchemy reads them, and the statement runs as it does without the
-  plugin; the cursor still gets the outer statement's options. This happens
-  only when the plugin's listeners are the only ones: with a
+  it no longer flushes. The plugin installs such a listener only for strict
+  mode (`queryguard_strict`) and the unused eager-load check
+  (`queryguard_unused_eager_load`), both off by default;
+  then, on those versions, it removes the inherited options from the loader
+  statement before SQLAlchemy reads them, and the statement runs as it does
+  without the plugin; the cursor still gets the outer statement's options.
+  This happens only when the plugin's listeners are the only ones: with a
   `do_orm_execute` listener of your own the plugin changes nothing, because
   your listener triggers the same issue without the plugin. Upgrade to
   SQLAlchemy 2.0.50 or later to remove the cause.
+- Relationship and column loads are counted per `SELECT` sent to the
+  database. A load that a `do_orm_execute` listener answers without one
+  (a result cache) is not counted; one that runs several (horizontal
+  sharding runs the lazy load once per shard, a `handle_error` listener
+  that retries the statement) counts once per `SELECT`.
+- With several `Session`s on one connection (a second `Session` joined to
+  the external connection of a "test in a transaction" fixture) and
+  `queryguard_repeat_scope = session`, the query of a top-level
+  `subqueryload` belongs to the `Session` that began on the connection last:
+  SQLAlchemy does not say which `Session` runs it. Lazy loads, column loads
+  and `selectinload` queries belong to their own `Session`.

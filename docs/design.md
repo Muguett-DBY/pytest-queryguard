@@ -149,13 +149,18 @@ without a database or pytest.
 
 Two global listeners are installed when the plugin is configured:
 
-- `do_orm_execute` on the `Session` class. When
-  `ORMExecuteState.is_relationship_load` is true, the relationship is read
-  from `loader_strategy_path` (for example `Order.customer`) and recorded
-  with the identity of the parent object (`lazy_loaded_from`).
 - `before_cursor_execute` on the `Engine` class. Every SQL statement is
   recorded with its text, a normalized form (literals and parameters
-  removed) and the call site.
+  removed) and the call site. For an ORM `SELECT` the listener reads the
+  ORM's options of that execution (what `ORMExecuteState` reads in a
+  `do_orm_execute` listener): a relationship load's path gives the
+  relationship (for example `Order.customer`), recorded with the identity of
+  the parent object (`_lazy_loaded_from`); a column load's object comes from
+  `_refresh_state`.
+- `after_cursor_execute` on the `Engine` class times the statement.
+
+A `do_orm_execute` listener would see the same, but any listener of that
+event makes SQLAlchemy prepare each ORM statement twice.
 
 Class-level listeners cover every session and engine, including the sync
 engine behind `AsyncEngine`, so users do not register anything.

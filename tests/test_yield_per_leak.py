@@ -3,8 +3,11 @@
 On SQLAlchemy 2.0.20 to 2.0.49 (and 2.1.0b1, 2.1.0b2) any ``do_orm_execute``
 listener makes the outer statement's ``yield_per``, ``autoflush`` and similar
 options become load options of its ``selectinload`` statement (SQLAlchemy issue
-13301, fixed in 2.0.50). The plugin installs such a listener, so it removes the
-leaked options again when no other listener takes part; see issue 169.
+13301, fixed in 2.0.50). The plugin's listeners read the ORM's options from the
+SELECT, with no such listener; the unused eager-load check and strict mode
+still install one, so they remove the leaked options again when no other
+listener takes part; see issue 169. Each test runs with the default listeners,
+with that check on and in strict mode.
 
 The expected values below are what SQLAlchemy 2.0.50 returns, with or without
 the plugin; the CI job pinned to 2.0.49 checks that the plugin gets the same.
@@ -57,8 +60,34 @@ class Line(Base):
 
 
 @pytest.fixture
-def session() -> Iterator[Session]:
+def eager_check() -> Iterator[None]:
+    """The unused eager-load check on: the plugin's do_orm_execute listener."""
     listeners.install()
+    eager.enable()
+    try:
+        yield
+    finally:
+        eager.disable()
+
+
+@pytest.fixture
+def strict_mode() -> Iterator[None]:
+    """Strict mode on: the plugin's other do_orm_execute listener."""
+    listeners.install()
+    listeners.enable_strict()
+    try:
+        yield
+    finally:
+        listeners.disable_strict()
+
+
+@pytest.fixture(params=["default", "eager-check", "strict"])
+def session(request: pytest.FixtureRequest) -> Iterator[Session]:
+    listeners.install()
+    if request.param == "eager-check":
+        request.getfixturevalue("eager_check")
+    elif request.param == "strict":
+        request.getfixturevalue("strict_mode")
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     with Session(engine) as s:
@@ -154,8 +183,8 @@ def test_autoflush_false_of_the_outer_statement_stays_there(session: Session) ->
 
 def _own_orm_listeners() -> list[Callable[[ORMExecuteState], Any]]:
     candidates = [
-        listeners._on_orm_execute,
         listeners._on_orm_execute_heal,
+        listeners._on_orm_execute_strict,
         eager._on_orm_execute,
     ]
     return [fn for fn in candidates if event.contains(Session, "do_orm_execute", fn)]
@@ -271,12 +300,23 @@ def test_a_bug_in_the_heal_is_reported_not_raised() -> None:
         listeners.swap_error(saved)
 
 
-def test_the_heal_listener_is_registered_only_where_needed() -> None:
+def test_the_default_listeners_have_no_do_orm_execute_listener() -> None:
     listeners.install()
+    assert not _own_orm_listeners()
+
+
+def test_the_heal_listener_is_registered_only_where_needed(eager_check: None) -> None:
     registered = event.contains(
         Session, "do_orm_execute", listeners._on_orm_execute_heal
     )
     assert registered == LEAKS
+
+
+def test_the_heal_listener_goes_with_the_eager_check() -> None:
+    listeners.install()
+    eager.enable()
+    eager.disable()
+    assert not event.contains(Session, "do_orm_execute", listeners._on_orm_execute_heal)
 
 
 @pytest.mark.parametrize(
@@ -305,7 +345,9 @@ def test_affected_versions(
 
 
 @pytest.mark.skipif(not LEAKS, reason="SQLAlchemy does not leak load options")
-def test_without_the_heal_listener_sqlalchemy_still_raises(session: Session) -> None:
+def test_without_the_heal_listener_sqlalchemy_still_raises(
+    session: Session, eager_check: None
+) -> None:
     # Proves the tests above exercise the bug: remove the heal listener and the
     # leak is back.
     event.remove(Session, "do_orm_execute", listeners._on_orm_execute_heal)

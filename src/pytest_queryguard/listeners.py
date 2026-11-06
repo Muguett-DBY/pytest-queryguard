@@ -7,21 +7,20 @@ import re
 import sys
 import time
 import traceback
-import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import InvalidRequestError
-from sqlalchemy.orm import Mapper, ORMExecuteState, Session, loading, strategies
+from sqlalchemy.orm import Mapper, ORMExecuteState, Session, loading
 from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.orm.context import QueryContext
-from sqlalchemy.orm.session import SessionTransaction
 from sqlalchemy.pool import Pool
 
 from . import blocks, catalog, collector, indexes, mysql_index, sqlite_index, sqltext
+from .blocks import IgnoreBlock
 from .callsite import find_callsite, find_flush
 from .events import (
     CAUSE_DEFERRED,
@@ -43,13 +42,6 @@ _failure: Failure | None = None
 # Session or Connection object, so it cannot be mixed up by a recycled id().
 _scopes = itertools.count(1)
 _SCOPE_ATTR = "_queryguard_scope"
-# The attribution of an ORM execution waits on its own Session, and a
-# connection finds that Session through the weak reference that after_begin
-# stores on it. Nothing here is per thread: asyncio tasks share a thread, and
-# statements of other sessions or of begin listeners run between an ORM
-# execution and its SELECT.
-_PENDING_ATTR = "_queryguard_pending"
-_SESSION_ATTR = "_queryguard_session"
 # The objects the latest flush of a Session wrote, for the refresh that a
 # repository runs after each create or update (see _on_after_flush).
 _WRITTEN_ATTR = "_queryguard_written"
@@ -126,176 +118,34 @@ def _on_after_begin(session: Session, transaction: Any, connection: Any) -> None
     if _error is not None:
         return
     try:
-        # Without the tags the connection counts as a scope of its own and no
-        # attribution is handed to its statements.
+        # Without the tag the connection counts as a scope of its own.
         with contextlib.suppress(AttributeError, TypeError):
             setattr(connection, _SCOPE_ATTR, scope_of_session(session))
-            # Every live Session that began on this connection: an external
-            # connection can serve several (the "test in a transaction" fixture
-            # with a second Session joined to it).
-            refs = connection.__dict__.get(_SESSION_ATTR, ())
-            if not any(ref() is session for ref in refs):
-                live = tuple(ref for ref in refs if ref() is not None)
-                setattr(connection, _SESSION_ATTR, (*live, weakref.ref(session)))
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         _fail(exc, "after_begin listener (session scopes)")
 
 
-# Orders the ORM executions of all Sessions: of the Sessions that share a
-# connection, the one that executed last owns the connection's next SELECT.
-_executions = itertools.count(1)
-# The collector generation of the latest parked attribution that names
-# something. While it differs from the current generation no
-# connection can have a pending attribution that _take_pending would hand out,
-# so the cursor listener skips the lookup.
-_pending_generation = -1
-
-
-def _set_pending(
-    session: Any,
-    name: str | None,
-    column_load: ColumnLoadEvent | None = None,
-    lazy: bool = False,
-    site: CallSite | None = None,
-) -> None:
-    """Park the attribution of the ORM execution of ``session``.
-
-    An execution with nothing to attribute is recorded too, so that it
-    supersedes an older attribution parked by another Session of the same
-    connection whose SELECT never ran.
-    """
-    global _pending_generation
-    generation = collector.generation()
-    # Never lowered: a thread still in an older measurement must not hide the
-    # attribution another thread parked in the current one.
-    if (name is not None or column_load is not None) and (
-        generation > _pending_generation
-    ):
-        _pending_generation = generation
-    try:
-        session.__dict__[_PENDING_ATTR] = (
-            next(_executions),
-            generation,
-            name,
-            column_load,
-            lazy,
-            site,
-        )
-    except (AttributeError, TypeError):
-        pass
-
-
-def _latest(conn: Any) -> tuple[Any, Any]:
-    """(Session, parked entry) of the latest ORM execution on ``conn``."""
-    best: Any = None
-    owner: Any = None
-    for ref in conn.__dict__.get(_SESSION_ATTR, ()):
-        session = ref()
-        if session is None:
-            continue
-        entry = session.__dict__.get(_PENDING_ATTR)
-        if entry is not None and (best is None or entry[0] > best[0]):
-            best, owner = entry, session
-    return owner, best
-
-
-def _take_pending(
-    conn: Any,
-) -> tuple[str | None, ColumnLoadEvent | None, bool, CallSite | None]:
-    """(relationship, column load, lazy, call site) of the ORM execution that
-    ``conn`` serves.
-
-    ``lazy`` is True for a lazy load, False for the query of an eager loader such
-    as selectinload, which carries the same relationship label.
-
-    Only the Sessions that began on the connection are asked; a statement on
-    any other connection leaves every parked attribution alone.
-    """
-    try:
-        session, entry = _latest(conn)
-        if entry is None or (entry[2] is None and entry[3] is None):
-            return None, None, False, None
-        session.__dict__[_PENDING_ATTR] = (entry[0], entry[1], None, None, False, None)
-    except (AttributeError, TypeError):
-        return None, None, False, None
-    if entry[1] == collector.generation():
-        return entry[2], entry[3], entry[4], entry[5]
-    return None, None, False, None
-
-
-# Code of the method that opens a Session's connection: it runs the engine's
-# begin event and the after_begin listeners. Statements issued while it is on
-# the stack belong to those listeners, never to the ORM execution waiting for
-# its SELECT. None when this SQLAlchemy has no such method (then nothing is
-# skipped, as without the check).
-_BEGIN_CODE = getattr(
-    getattr(SessionTransaction, "_connection_for_bind", None), "__code__", None
-)
-
-
-def _inside_begin() -> bool:
-    if _BEGIN_CODE is None:
-        return False
-    frame = sys._getframe(1)
-    while frame is not None:
-        if frame.f_code is _BEGIN_CODE:
-            return True
-        frame = frame.f_back  # type: ignore[assignment]
-    return False
-
-
-# Code of the post-load step that runs an "immediate" load. SQLAlchemy swaps a
-# selectin or subquery relationship for it when it refreshes an object (the
-# mapped eager loader needs a result of several parents, a refresh has one), and
-# an explicit immediateload() or lazy="immediate" runs it too. None when this
-# SQLAlchemy has no such method (then every load with a parent counts as lazy).
-# The class is named ImmediateLoader in older releases and _ImmediateLoader later.
-_IMMEDIATE_LOADER = getattr(
-    strategies, "_ImmediateLoader", getattr(strategies, "ImmediateLoader", None)
-)
-_IMMEDIATE_CODE = getattr(
-    getattr(_IMMEDIATE_LOADER, "_load_for_path", None), "__code__", None
-)
-
-
-# How many frames up from the listener the immediate loader may be. It is five
-# or six frames away (listener, event dispatch, Session.execute, the lazy
-# loader); the bound keeps a lazy load outside a refresh from walking the
-# whole pytest stack.
-_MAX_LOADER_DEPTH = 40
-
-
-def _is_refresh_eager_load(parent: Any, prop: Any) -> bool:
-    """Whether the load running now is a mapped eager loader run by a refresh.
+def _is_refresh_eager_load(execution_options: Any) -> bool:
+    """Whether a load with a parent is a mapped eager loader run by a refresh.
 
     ``session.refresh(obj)`` (and the reload of expired attributes) of an
     object with a ``lazy="selectin"`` or ``lazy="subquery"`` relationship loads
     the collection through the immediate loader, one parent per statement: the
     statement carries a parent state, like a lazy load, but it is the mapped
-    eager strategy at work and ``selectinload`` would change nothing. The
-    outer query of that step is a refresh (``refresh_state`` is set); an
-    ``immediateload()`` of a plain query has none and stays a lazy load.
+    eager strategy at work and ``selectinload`` would change nothing.
 
-    Only the loader's own query counts: ``parent`` must be one of the states it
-    loads and ``prop`` its relationship. A lazy load that user code (a
-    reconstructor, a ``load`` event) runs while the loader builds the children
-    is a lazy load like anywhere else.
+    The immediate loader hands its statement the outer query's context as the
+    private execution option ``sa_top_level_orm_context`` (read here and in
+    ``orm_select`` only; the same from SQLAlchemy 2.0.13 to 2.1); for a
+    refresh its ``refresh_state`` is set. An ``immediateload()`` of a plain
+    query has none and stays a lazy load, and a lazy load that user code (a
+    reconstructor, a ``load`` event) runs while the loader builds the
+    children has no such option at all. Without the option, on a SQLAlchemy
+    that dropped it, such loads count as lazy loads: a possible false
+    positive, never a missed lazy load.
     """
-    if _IMMEDIATE_CODE is None:
-        return False
-    frame: Any = sys._getframe(1)
-    for _ in range(_MAX_LOADER_DEPTH):
-        if frame is None:
-            return False
-        if frame.f_code is _IMMEDIATE_CODE:
-            local = frame.f_locals
-            if getattr(local.get("context"), "refresh_state", None) is None:
-                return False
-            if getattr(local.get("self"), "parent_property", None) is not prop:
-                return False
-            return any(state is parent for state, _ in local.get("states") or ())
-        frame = frame.f_back
-    return False
+    top = execution_options.get("sa_top_level_orm_context")
+    return getattr(top, "refresh_state", None) is not None
 
 
 @dataclass(slots=True)
@@ -623,18 +473,65 @@ def _parent_load(parent: Any, prop: Any) -> ParentLoad | None:
     return ParentLoad(site, root, chain)
 
 
-def _has_pending(conn: Any) -> bool:
-    try:
-        entry = _latest(conn)[1]
-        return entry is not None and (entry[2] is not None or entry[3] is not None)
-    except (AttributeError, TypeError):
-        return False
-
-
 def _reset_for_tests() -> None:
     global _error, _failure
     _error = None
     _failure = None
+
+
+class OrmSelect(NamedTuple):
+    """What the ORM keeps on one SELECT it runs; see ``orm_select``."""
+
+    # ``_sa_orm_load_options``; None for a query that sets none of them
+    load_options: Any
+    # the statement's ``_compile_options``
+    compile_options: Any
+    # the execution options of the cursor execution
+    execution_options: Any
+
+
+_new_tuple = tuple.__new__
+
+
+def orm_select(context: Any) -> OrmSelect | None:
+    """The options of the ORM query a cursor execution runs.
+
+    None for any other statement: Core, text, DDL. The ORM keeps the load
+    options of a SELECT in the execution options (``_sa_orm_load_options``:
+    ``_lazy_loaded_from``, ``_refresh_state``, ``_is_user_refresh``) and its
+    compile options on the statement (``_current_path``,
+    ``_for_refresh_state``, ``_only_load_props``); ``ORMExecuteState`` reads
+    the same. They are private to SQLAlchemy, so the listeners read them only
+    through this function and the two that read the execution options
+    (``_loader_session``, ``_is_refresh_eager_load``), unchanged from 2.0.13
+    to 2.1. Unlike the state of a ``do_orm_execute`` listener, they belong to
+    this one execution: no other statement (an autoflush, a begin listener,
+    another Session or task on the connection) can take them.
+    """
+    statement = getattr(context, "invoked_statement", None)
+    if not _is_orm(statement):
+        return None
+    options = getattr(context, "execution_options", None) or {}
+    # tuple.__new__ directly: half the cost of OrmSelect(...), per ORM SELECT
+    return _new_tuple(
+        OrmSelect,
+        (
+            options.get("_sa_orm_load_options"),
+            getattr(statement, "_compile_options", None),
+            options,
+        ),
+    )
+
+
+def _loader_session(execution_options: Any) -> Any:
+    """The Session of the query a selectin or immediate loader runs for.
+
+    The loader passes the outer query's context as the private execution
+    option ``sa_top_level_orm_context`` (part of ``orm_select``'s reading);
+    None without it (a subquery loader).
+    """
+    top = execution_options.get("sa_top_level_orm_context")
+    return getattr(top, "session", None)
 
 
 def _load_options(state: ORMExecuteState) -> Any:
@@ -668,15 +565,34 @@ def _is_column_load(state: ORMExecuteState) -> bool:
 def classify_column_load(state: ORMExecuteState) -> tuple[Any, ColumnLoadEvent] | None:
     """The instance state a column load reloads, and its event; None without one.
 
-    It parks no attribution and counts nothing, so the in-app mode, which
-    keeps its own state, labels a load exactly as the plugin does. The caller
-    has checked ``_is_column_load(state)``.
+    For the in-app mode's ``do_orm_execute`` listener, which keeps its own
+    state; the plugin classifies the load from its SELECT
+    (``column_load_of``), so both label a load the same way. The caller has
+    checked ``_is_column_load(state)``.
     """
-    load_options = _load_options(state)
+    return column_load_of(
+        _load_options(state),
+        getattr(state.statement, "_compile_options", None),
+        state.session,
+        blocks.current(),
+    )
+
+
+def column_load_of(
+    load_options: Any,
+    options: Any,
+    session: Any,
+    ignores: tuple[IgnoreBlock, ...] = (),
+) -> tuple[Any, ColumnLoadEvent] | None:
+    """The instance state a column load reloads, and its event; None without one.
+
+    ``load_options`` and ``options`` are the load and compile options of the
+    load's SELECT (``orm_select``); ``session`` is the Session it runs in and
+    ``ignores`` the ``ignore()`` blocks active there. It counts nothing.
+    """
     instance = getattr(load_options, "_refresh_state", None)
     if instance is None:
         return None
-    options: Any = getattr(state.statement, "_compile_options", None)
     if not hasattr(options, "_only_load_props"):
         # Without it every load would look like a plain refresh, with a wrong
         # hint. Stop through the internal-error path instead of mislabeling.
@@ -704,96 +620,105 @@ def classify_column_load(state: ORMExecuteState) -> tuple[Any, ColumnLoadEvent] 
         cause,
         key,
         find_callsite(),
-        scope=scope_of_session(state.session),
-        ignores=blocks.current(),
+        scope=scope_of_session(session),
+        ignores=ignores,
     )
     return instance, load
 
 
-def _record_column_load(
-    state: ORMExecuteState, targets: tuple[collector.QueryCollector, ...]
-) -> None:
-    """Note an instance that loads columns it already has a row for."""
-    found = classify_column_load(state)
-    if found is None:
-        _set_pending(state.session, None)
-        return
-    instance, load = found
-    _set_pending(state.session, None, column_load=load, site=load.callsite)
-    if not column_load_counts(
-        load, instance, state.session.__dict__.get(_WRITTEN_ATTR)
-    ):
-        return
+class _Labels(NamedTuple):
+    """What a statement is for, from ``_orm_load``."""
+
+    relationship: str | None
+    column_load: ColumnLoadEvent | None
+    lazy: bool
+    # the call site found for the load, reused for the statement
+    site: CallSite | None
+
+
+# A statement that is no load (or one that cannot be classified).
+_NO_LABELS = _Labels(None, None, False, None)
+
+
+def _relationship_load(
+    prop: Any,
+    parent: Any,
+    session: Any,
+    conn: Any,
+    ignores: tuple[IgnoreBlock, ...],
+) -> RelationshipLoadEvent:
+    """The event of a relationship load; ``parent`` is None for a loader."""
+    key: object = None
+    if parent is not None:
+        key = parent.identity_key
+        if key is None:
+            key = id(parent)
+    # Without a Session (a subquery loader) the connection carries the scope
+    # of the Session that began on it last.
+    scope = scope_of_connection(conn) if session is None else scope_of_session(session)
+    return RelationshipLoadEvent(
+        str(prop),
+        key,
+        find_callsite(),
+        getattr(prop, "uselist", None) is False,
+        scope,
+        None if parent is None else _parent_load(parent, prop),
+        ignores,
+    )
+
+
+def _orm_load(
+    conn: Any,
+    orm: OrmSelect,
+    targets: tuple[collector.QueryCollector, ...],
+    ignores: tuple[IgnoreBlock, ...],
+) -> _Labels | None:
+    """Record the relationship or column load an ORM SELECT runs for.
+
+    ``targets`` are the collectors that want loads (not the statements-only
+    ones of the queryguard fixture), ``ignores`` the active ``ignore()``
+    blocks, which every event carries. Returns the statement's labels, or
+    None for a top-level query (no relationship or column load). Strict mode
+    decides in ``_on_orm_execute_strict``, before the SELECT; never here.
+    """
+    load_options = orm.load_options
+    options = orm.compile_options
+    if getattr(options, "_for_refresh_state", False):
+        instance = getattr(load_options, "_refresh_state", None)
+        session = getattr(instance, "session", None)
+        found = column_load_of(load_options, options, session, ignores)
+        if found is None:
+            return _NO_LABELS
+        instance, column = found
+        written = getattr(session, "__dict__", {}).get(_WRITTEN_ATTR)
+        if column_load_counts(column, instance, written):
+            for target in targets:
+                target.add_column_load(column)
+        return _Labels(None, column, False, column.callsite)
+    path = getattr(options, "_current_path", None)
+    if path is None or path.is_root:
+        return None
+    prop = path[-1]
+    parent = getattr(load_options, "_lazy_loaded_from", None)
+    if parent is not None and _is_refresh_eager_load(orm.execution_options):
+        # An eager loader's query: label the statement, count no lazy load.
+        return _Labels(str(prop), None, False, None)
+    if parent is not None:
+        session = parent.session
+    else:
+        session = _loader_session(orm.execution_options)
+    load = _relationship_load(prop, parent, session, conn, ignores)
     for target in targets:
-        target.add_column_load(load)
+        target.add_relationship_load(load)
+    return _Labels(load.relationship, None, parent is not None, load.callsite)
 
 
-def _on_orm_execute(state: ORMExecuteState) -> None:
-    if _error is not None:
-        return
-    strict: BaseException | None = None
-    try:
-        # statements-only collectors (the queryguard fixture's) need no loads
-        targets = collector.full_active()
-        if not targets:
-            return
-        if _is_column_load(state):
-            _record_column_load(state, targets)
-            return
-        if not state.is_relationship_load:
-            _set_pending(state.session, None)
-            return
-        prop = state.loader_strategy_path[-1]  # type: ignore[index]
-        name = str(prop)
-        scalar = getattr(prop, "uselist", None) is False
-        parent = state.lazy_loaded_from
-        if parent is not None and _is_refresh_eager_load(parent, prop):
-            # An eager loader's query: label the statement, count no lazy load.
-            _set_pending(state.session, name, lazy=False)
-            return
-        key: object = None
-        if parent is not None:
-            key = parent.identity_key
-            if key is None:
-                key = id(parent)
-        site = find_callsite()
-        _set_pending(state.session, name, lazy=parent is not None, site=site)
-        load = RelationshipLoadEvent(
-            name,
-            key,
-            site,
-            scalar,
-            scope_of_session(state.session),
-            None if parent is None else _parent_load(parent, prop),
-            blocks.current(),
-        )
-        for target in targets:
-            target.add_relationship_load(load)
-            if target.strict is not None:
-                # every strict collector counts the load; the first error wins
-                error = target.strict_check(load)
-                if strict is None:
-                    strict = error
-    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
-        _fail(exc, "do_orm_execute listener (relationship loads)")
-        return
-    if strict is not None:
-        # queryguard_strict: the N+1 fails here, at the attribute access, with
-        # the test's own traceback (outside the try: this is meant to raise)
-        raise strict
-
+# The cartesian-load check (cartesian.py) while it is enabled: called with the
+# invoked statement, its call site, the ignore() blocks and the collectors
+# that want loads, for each top-level ORM SELECT. Set by cartesian.enable().
+cartesian_check: Callable[..., None] | None = None
 
 _is_write = sqltext.is_write
-_READ_VERBS = frozenset(("SELECT", "WITH"))
-
-
-def _is_read(sql: str) -> bool:
-    """Whether the statement is a SELECT or a WITH (after comments and parentheses)."""
-    start = sqltext.skip_prefix(sql)
-    if start is None:
-        return False
-    word = sql[start : start + 6].upper()
-    return word == "SELECT" or word.startswith("WITH")
 
 
 def _on_cursor_execute(
@@ -810,50 +735,139 @@ def _on_cursor_execute(
         targets = collector.targets()
         if not targets:
             return
-        # The ORM runs do_orm_execute before it autoflushes, so the first
-        # statement after a lazy load may be the flush's write, not the load's
-        # SELECT. Loads are reads: leave the pending attribution for the SELECT.
-        # So is a BEGIN, SAVEPOINT or SET that a begin listener runs, and so is
-        # a statement on the connection of another Session.
         write = _is_write(statement)
-        relationship, column_load, lazy, site = None, None, False, None
-        if (
-            not write
-            and _pending_generation == collector.generation()
-            and _has_pending(conn)
-            and _is_read(statement)
-            and not _inside_begin()
-        ):
-            relationship, column_load, lazy, site = _take_pending(conn)
-        if column_load is not None:
-            column_load.sql = statement
-        stmt = StatementEvent(
+        ignores = blocks.current()
+        # Loads only for the collectors that want them: with only the
+        # statements-only ones of the queryguard fixture, no load work.
+        full = collector.full_active()
+        orm = None if write or not full else orm_select(context)
+        labels = None if orm is None else _orm_load(conn, orm, full, ignores)
+        stmt = _record_statement(
+            conn,
             statement,
-            site if site is not None else find_callsite(),
-            relationship,
-            column_load=column_load is not None,
-            lazy_load=lazy,
-            parameters=None if executemany else parameters,
-            executemany=bool(executemany),
-            flush=find_flush() if write else None,
-            scope=scope_of_connection(conn),
-            ignores=blocks.current(),
+            parameters,
+            context,
+            executemany,
+            write,
+            orm,
+            targets,
+            ignores,
+            _NO_LABELS if labels is None else labels,
         )
-        for target in targets:
-            target.add_statement(stmt)
-        if context is not None:
-            invoked = None if write else getattr(context, "invoked_statement", None)
-            if _collectors and _is_orm(invoked):  # only loads need the site
-                # Read back when the ORM turns the rows into instances.
-                setattr(context, _SITE_ATTR, stmt.callsite)
-                if relationship is None:
-                    _note_read(invoked, stmt.callsite)
-            # Read back by the after listener; per execution, so statements
-            # that overlap in time (asyncio tasks) never mix up. Taken last,
-            # so the time spent finding the call site is not counted.
-            context._queryguard_timing = (stmt, targets, time.perf_counter())
+        check = cartesian_check
+        if check is not None and orm is not None and labels is None:
+            check(context.invoked_statement, stmt.callsite, ignores, full)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         _fail(exc, "before_cursor_execute listener (statements)")
+
+
+def _record_statement(
+    conn: Any,
+    statement: str,
+    parameters: Any,
+    context: Any,
+    executemany: bool,
+    write: bool,
+    orm: OrmSelect | None,
+    targets: tuple[collector.QueryCollector, ...],
+    ignores: tuple[IgnoreBlock, ...],
+    labels: _Labels,
+) -> StatementEvent:
+    column_load = labels.column_load
+    if column_load is not None:
+        column_load.sql = statement
+    site = labels.site
+    stmt = StatementEvent(
+        statement,
+        site if site is not None else find_callsite(),
+        labels.relationship,
+        column_load=column_load is not None,
+        lazy_load=labels.lazy,
+        parameters=None if executemany else parameters,
+        executemany=bool(executemany),
+        flush=find_flush() if write else None,
+        scope=scope_of_connection(conn),
+        ignores=ignores,
+    )
+    for target in targets:
+        target.add_statement(stmt)
+    if context is not None:
+        if orm is not None:  # only with collectors that want loads
+            # Read back when the ORM turns the rows into instances.
+            setattr(context, _SITE_ATTR, stmt.callsite)
+            if labels.relationship is None:
+                _note_read(context.invoked_statement, stmt.callsite)
+        # Read back by the after listener; per execution, so statements
+        # that overlap in time (asyncio tasks) never mix up. Taken last,
+        # so the time spent finding the call site is not counted.
+        context._queryguard_timing = (stmt, targets, time.perf_counter())
+    return stmt
+
+
+def _on_orm_execute_strict(state: ORMExecuteState) -> None:
+    """Strict mode: raise at the lazy load that makes the N+1, before its SELECT.
+
+    Registered only while a session runs with ``queryguard_strict``
+    (``enable_strict``), so the default run keeps no ``do_orm_execute``
+    listener. Raising here, before the ORM autoflushes and takes a
+    connection, keeps the error out of the engine: no ``handle_error``
+    listener sees it, no cursor is opened, nothing is flushed. Only the
+    strict decision is made here; the cursor listener records the load when
+    its SELECT runs. A load that raises has no SELECT, so it is recorded here.
+    """
+    if _error is not None:
+        return
+    strict: BaseException | None = None
+    try:
+        full = collector.full_active()
+        if not any(target.strict is not None for target in full):
+            return
+        if not state.is_relationship_load:
+            return
+        parent = state.lazy_loaded_from
+        if parent is None or _is_refresh_eager_load(state.execution_options):
+            return  # only lazy loads raise
+        prop = state.loader_strategy_path[-1]  # type: ignore[index]
+        load = _relationship_load(prop, parent, state.session, None, blocks.current())
+        for target in full:
+            if target.strict is not None:
+                # every strict collector counts the load; the first error wins
+                # (strict_check skips a load its ignore() blocks cover)
+                error = target.strict_check(load)
+                if strict is None:
+                    strict = error
+        if strict is not None:
+            for target in full:
+                target.add_relationship_load(load)
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        _fail(exc, "do_orm_execute listener (strict mode)")
+        return
+    if strict is not None:
+        # queryguard_strict: the N+1 fails here, at the attribute access, with
+        # the test's own traceback (outside the try: this is meant to raise)
+        raise strict
+
+
+_strict_users = 0
+
+
+def enable_strict() -> None:
+    """Install the strict-mode listener; calls nest, see ``disable_strict()``."""
+    global _strict_users
+    _strict_users += 1
+    if _strict_users == 1:
+        event.listen(Session, "do_orm_execute", _on_orm_execute_strict)
+        use_heal()
+
+
+def disable_strict() -> None:
+    global _strict_users
+    if _strict_users == 0:
+        return
+    _strict_users -= 1
+    if _strict_users == 0:
+        event.remove(Session, "do_orm_execute", _on_orm_execute_strict)
+        drop_heal()
 
 
 def _on_timing_after(
@@ -1004,7 +1018,12 @@ def _only_own_listeners(state: Any) -> bool:
 def _on_orm_execute_heal(state: Any) -> None:
     """Undo the load options a loader statement inherited only because of listeners.
 
-    Registered only where ``_leaks_load_options()`` is true. With a listener,
+    Registered with the plugin's ``do_orm_execute`` listeners, those of the
+    unused eager-load check (``eager.py``) and of strict mode
+    (``enable_strict``), through ``use_heal()``, and only where
+    ``_leaks_load_options()`` is true. The in-app mode has a
+    ``do_orm_execute`` listener of its own and does not register it. With a
+    listener,
     SQLAlchemy prepares the statement twice and hands the first result to the
     second pass. For a loader statement (``sa_top_level_orm_context``) that
     result holds the outer statement's options next to the loader's own load
@@ -1038,14 +1057,39 @@ def _on_orm_execute_heal(state: Any) -> None:
         _fail(exc, "do_orm_execute listener (leaked load options)")
 
 
+_heal_users = 0
+
+
+def use_heal() -> None:
+    """Register ``_on_orm_execute_heal`` while a plugin listener of the event
+    is on, where this SQLAlchemy needs it; calls nest, see ``drop_heal()``."""
+    global _heal_users
+    _heal_users += 1
+    if _heal_users == 1 and _leaks_load_options():
+        event.listen(Session, "do_orm_execute", _on_orm_execute_heal)
+
+
+def drop_heal() -> None:
+    global _heal_users
+    if _heal_users == 0:
+        return
+    _heal_users -= 1
+    if _heal_users == 0 and event.contains(
+        Session, "do_orm_execute", _on_orm_execute_heal
+    ):
+        event.remove(Session, "do_orm_execute", _on_orm_execute_heal)
+
+
 def install() -> None:
     """Register the class-level listeners once per process."""
     global _installed
     if _installed:
         return
-    event.listen(Session, "do_orm_execute", _on_orm_execute)
-    if _leaks_load_options():
-        event.listen(Session, "do_orm_execute", _on_orm_execute_heal)
+    # No do_orm_execute listener: the cursor listener reads the ORM's load
+    # options from the SELECT itself (orm_select). Any such listener makes
+    # SQLAlchemy prepare each ORM statement twice, and on some releases leak
+    # load options (see _on_orm_execute_heal). Only strict mode
+    # (enable_strict) and the unused eager-load check add one.
     event.listen(Session, "after_begin", _on_after_begin)
     event.listen(Session, "after_flush", _on_after_flush)
     event.listen(Mapper, "load", _on_instance_load, raw=True)

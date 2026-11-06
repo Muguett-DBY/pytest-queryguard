@@ -38,7 +38,7 @@ from typing import Any
 from sqlalchemy import event
 from sqlalchemy.orm import RelationshipProperty, Session
 
-from . import blocks, readhook
+from . import blocks, listeners, readhook
 from .blocks import IgnoreBlock
 from .callsite import find_callsite
 from .events import CallSite
@@ -191,6 +191,7 @@ def enable() -> None:
     readhook.install()
     readhook.reads_failed = _read_failed
     event.listen(Session, "do_orm_execute", _on_orm_execute)
+    listeners.use_heal()
     event.listen(Session, "before_flush", _on_before_flush)
 
 
@@ -207,6 +208,7 @@ def disable() -> None:
     readhook.reads_failed = None
     readhook.uninstall()
     event.remove(Session, "do_orm_execute", _on_orm_execute)
+    listeners.drop_heal()
     event.remove(Session, "before_flush", _on_before_flush)
 
 
