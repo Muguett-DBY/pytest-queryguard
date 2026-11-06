@@ -7,7 +7,9 @@ it is not gives none.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
+import posixpath
 import shutil
 import subprocess
 import textwrap
@@ -36,10 +38,14 @@ from app.models import Customer, Order
 """
 
 
-def _write(tmp_path: Path, body: str, header: str = HEADER) -> Path:
+def _write(
+    tmp_path: Path, body: str, header: str = HEADER, newline: str = "\n"
+) -> Path:
+    """The module, with the same line ends on every platform."""
     file = tmp_path / "app" / "views.py"
     file.parent.mkdir(exist_ok=True)
-    file.write_text(header + "\n\n" + textwrap.dedent(body), encoding="utf-8")
+    text = header + "\n\n" + textwrap.dedent(body)
+    file.write_bytes(text.replace("\n", newline).encode("utf-8"))
     return file
 
 
@@ -481,7 +487,37 @@ def test_no_patch_outside_the_rootdir(tmp_path: Path) -> None:
     assert fixpatch.make(_finding(file), other, time.time() + 1) is None
 
 
-def test_no_patch_for_windows_line_ends(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "header",
+    [
+        pytest.param(HEADER, id="added-to-the-orm-import"),
+        pytest.param(
+            "from sqlalchemy import select\n\nfrom app.models import Order\n",
+            id="a-new-import-line",
+        ),
+    ],
+)
+def test_windows_line_ends_are_kept(tmp_path: Path, header: str) -> None:
+    file = _write(
+        tmp_path,
+        """\
+        def load(session):
+            return session.scalars(select(Order)).all()  # parents
+        """,
+        header=header,
+        newline="\r\n",
+    )
+    fix = _make(tmp_path, _finding(file))
+    assert fix is not None
+    assert all(e.text.count("\n") == e.text.count("\r\n") for e in fix.insertions)
+    _patched(tmp_path, fix)
+    data = file.read_bytes()
+    assert data.count(b"\n") == data.count(b"\r\n")
+    assert b".options(joinedload(Order.customer))" in data
+    assert b"joinedload\r\n" in data
+
+
+def test_no_patch_for_a_lone_carriage_return(tmp_path: Path) -> None:
     file = _write(
         tmp_path,
         """\
@@ -489,8 +525,30 @@ def test_no_patch_for_windows_line_ends(tmp_path: Path) -> None:
             return session.scalars(select(Order)).all()  # parents
         """,
     )
-    file.write_bytes(file.read_bytes().replace(b"\n", b"\r\n"))
+    file.write_bytes(file.read_bytes().replace(b"\n\n", b"\n\r", 1))
     assert _make(tmp_path, _finding(file)) is None
+
+
+@pytest.mark.parametrize(
+    ("path", "root", "expected"),
+    [
+        (r"C:\Repo\app\views.py", r"c:\repo", "app/views.py"),
+        ("C:/Repo/app/views.py", r"C:\Repo", "app/views.py"),
+        (r"C:\Repo\views.py", r"C:\Repo\app", None),
+        (r"D:\Repo\app\views.py", r"C:\Repo", None),
+        (r"C:\Repository\views.py", r"C:\Repo", None),
+    ],
+)
+def test_windows_paths_compare_as_windows_does(
+    path: str, root: str, expected: str | None
+) -> None:
+    assert fixpatch.inside(path, root, ntpath) == expected
+
+
+def test_posix_paths_compare_exactly() -> None:
+    assert fixpatch.inside("/repo/app/v.py", "/repo", posixpath) == "app/v.py"
+    assert fixpatch.inside("/Repo/app/v.py", "/repo", posixpath) is None
+    assert fixpatch.inside("/repo", "/repo", posixpath) is None
 
 
 def test_fixes_of_one_file_combine_into_one_patch(tmp_path: Path) -> None:
@@ -749,3 +807,17 @@ def test_xdist_workers_send_their_fixes(project: pytest.Pytester) -> None:
     after = _git_apply(project.path, project.path / "fix.patch", "test_loops.py")
     assert "options(joinedload(Order.customer))" in after
     assert "options(selectinload(Customer.orders))" in after
+
+
+def test_a_written_patch_for_windows_line_ends_applies(
+    project: pytest.Pytester,
+) -> None:
+    source = project.path / "test_loops.py"
+    data = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    source.write_bytes(data)
+    project.runpytest("--queryguard-write-patch=fix.patch").assert_outcomes(failed=3)
+    _git_apply(project.path, project.path / "fix.patch", "test_loops.py")
+    after = source.read_bytes()
+    assert after.count(b"\n") == after.count(b"\r\n")
+    assert b"from sqlalchemy.orm import joinedload\r\n" in after
+    project.runpytest().assert_outcomes(passed=2, failed=1)

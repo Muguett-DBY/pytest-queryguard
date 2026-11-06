@@ -8,8 +8,9 @@ loader is imported if the module does not import it yet.
 
 A wrong patch costs more trust than no patch, so every doubt means none:
 
-- the file is inside the rootdir, UTF-8 with ``\\n`` line ends, parses with
-  ``ast``, and was not modified after the session started;
+- the file is inside the rootdir, UTF-8 with ``\\n`` or ``\\r\\n`` line ends
+  (which the patch keeps), parses with ``ast``, and was not modified after
+  the session started;
 - the line belongs to the function the query ran in;
 - the line is one statement with exactly one ``select(...)`` call, or
   ``.query(...)`` on something named like a session, with the parent class as
@@ -30,6 +31,7 @@ from __future__ import annotations
 import ast
 import difflib
 import functools
+import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -139,7 +141,9 @@ def _parse(path: str, mtime_ns: int, size: int) -> _Module | None:
         source = data.decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    if len(data) != size or source.startswith("\ufeff") or "\r" in source:
+    # a lone "\r" ends a line for Python but not for git: no patch
+    lone_cr = "\r" in source.replace("\r\n", "")
+    if len(data) != size or source.startswith("\ufeff") or lone_cr:
         return None
     try:
         tree = ast.parse(source, filename=path)
@@ -166,12 +170,31 @@ def _relative(filename: str, root: Path) -> tuple[Path, str] | None:
         return None
     try:
         resolved = path.resolve()
-        relative = resolved.relative_to(root.resolve())
+        relative = inside(str(resolved), str(root.resolve()))
     except (OSError, ValueError):
         return None
-    if not resolved.is_file():
+    if relative is None or not resolved.is_file():
         return None
-    return resolved, relative.as_posix()
+    return resolved, relative
+
+
+def inside(path: str, root: str, flavour: Any = os.path) -> str | None:
+    """``path`` relative to ``root`` with forward slashes, or None outside it.
+
+    Compared as the platform compares paths (``flavour`` is ``os.path``, or
+    ``ntpath`` in tests): on Windows case-insensitively, with either slash
+    and only on the same drive.
+    """
+    try:
+        relative = flavour.relpath(path, root)
+    except ValueError:  # another drive
+        return None
+    parts = relative.replace(flavour.sep, "/").split("/")
+    if relative == flavour.curdir or parts[0] == flavour.pardir:
+        return None
+    if flavour.isabs(relative):
+        return None
+    return "/".join(parts)
 
 
 # --- names ---
@@ -375,9 +398,12 @@ def _import_edits(
     if anchor is None or anchor.end_lineno is None:
         return None
     line = anchor.end_lineno
-    end = len(module.lines[line - 1].rstrip("\n"))
+    text = module.lines[line - 1]
+    # the new line ends like the line before it: "\n" or "\r\n"
+    newline = "\r\n" if text.endswith("\r\n") else "\n"
+    end = len(text.removesuffix("\n").removesuffix("\r"))
     return [
-        module.insertion(line, end, f"\nfrom {_ORM} import {loader}")
+        module.insertion(line, end, f"{newline}from {_ORM} import {loader}")
         for loader in missing
     ]
 
