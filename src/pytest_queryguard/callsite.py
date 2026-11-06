@@ -91,7 +91,9 @@ def _parent_greenlet_frames() -> Iterator[FrameType]:
 # is shared instead of building a new one for every statement. Bounded, so
 # generated code cannot grow it without limit. Emptied when a measurement
 # starts (new_measurement()), so that the first statement of each line in it
-# builds a new CallSite with that run's callers.
+# builds a new CallSite with that run's callers. The in-app mode passes a cache
+# of each unit's own instead (find_callsite(sites)): its units overlap.
+Sites = dict[tuple[str, int, str], CallSite]
 _sites: dict[tuple[str, int, str], CallSite] = {}
 _MAX_SITES = 4096
 DEFAULT_STACK_DEPTH = 3
@@ -149,7 +151,7 @@ def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
     return tuple(found)
 
 
-def _first_external(frame: FrameType | None) -> CallSite | None:
+def _first_external(frame: FrameType | None, sites: Sites) -> CallSite | None:
     internal = _internal
     while frame is not None:
         code = frame.f_code
@@ -160,11 +162,11 @@ def _first_external(frame: FrameType | None) -> CallSite | None:
             skip = internal[filename] = _classify(filename)
         if not skip:
             key = (filename, frame.f_lineno, code.co_name)
-            site = _sites.get(key)
+            site = sites.get(key)
             if site is None:
-                if len(_sites) >= _MAX_SITES:
-                    _sites.clear()
-                site = _sites[key] = CallSite(
+                if len(sites) >= _MAX_SITES:
+                    sites.clear()
+                site = sites[key] = CallSite(
                     filename=filename,
                     lineno=key[1],
                     function=key[2],
@@ -213,17 +215,20 @@ def find_flush() -> int | None:
     return None
 
 
-def find_callsite() -> CallSite | None:
+def find_callsite(sites: Sites | None = None) -> CallSite | None:
     """First stack frame outside SQLAlchemy, pytest, stdlib, site-packages and us.
 
     When the stack ends inside a greenlet (async sessions), the search goes on
-    in the parent greenlets, where the awaiting user code lives.
+    in the parent greenlets, where the awaiting user code lives. ``sites`` is
+    the cache of call sites to use instead of the process-wide one.
     """
-    site = _first_external(sys._getframe(1))
+    if sites is None:
+        sites = _sites
+    site = _first_external(sys._getframe(1), sites)
     if site is not None:
         return site
     for frame in _parent_greenlet_frames():
-        site = _first_external(frame)
+        site = _first_external(frame, sites)
         if site is not None:
             return site
     return None

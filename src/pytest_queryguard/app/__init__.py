@@ -20,6 +20,7 @@ from ..findings import Finding
 from ._asgi import QueryGuardASGI
 from ._core import RequestReport, Settings, internal_error, set_route, track
 from ._listeners import is_watched, unwatch, watch
+from ._reporters import opentelemetry_reporter, sentry_reporter
 from ._wsgi import QueryGuardWSGI
 
 __all__ = [
@@ -32,6 +33,8 @@ __all__ = [
     "Settings",
     "internal_error",
     "is_watched",
+    "opentelemetry_reporter",
+    "sentry_reporter",
     "set_route",
     "track",
     "unwatch",

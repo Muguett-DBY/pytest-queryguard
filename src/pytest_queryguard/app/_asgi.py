@@ -154,8 +154,8 @@ class QueryGuardASGI:
 
 
 def _start(settings: Settings, scope: Scope) -> Tracker | None:
-    """A started tracker for the request, or None when the mode is off."""
-    if _core._error is not None:
+    """A started tracker for the request; None when the mode is off or not sampled."""
+    if _core._error is not None or not _core.sampled(settings):
         return None
     try:
         method = scope.get("method")
