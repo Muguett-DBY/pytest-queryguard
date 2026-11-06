@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- In-application mode: `page_report="footer"` or `"console"` adds a
+  request's findings to its own HTML page, as an `<aside>` before
+  `</body>` or as a `console.warn()` script, like Bullet in Rails. Only
+  for complete, uncompressed `text/html` responses with a `Content-Length`;
+  `Content-Length` is updated, and a page with a Content-Security-Policy
+  gets the footer instead of the script. Off by default (#280).
+
 ## [0.7.0] - 2026-11-06
 
 ORM statements cost about a third less to measure: the plugin reads the

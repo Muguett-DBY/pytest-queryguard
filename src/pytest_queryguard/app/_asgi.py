@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 from urllib.parse import quote
 
-from . import _core, _panel
+from . import _core, _page, _panel
 from ._core import RequestReport, Settings, Tracker
 
 Scope = MutableMapping[str, Any]
@@ -73,32 +73,33 @@ class QueryGuardASGI:
             await self.app(scope, receive, send)
             return
         report = tracker.report
+        page = _Page(self.settings.page_report, tracker, scope, send)
 
         async def send_status(message: Message) -> None:
             if message.get("type") == "http.response.start":
                 report.status = message.get("status")
+                if page.on and page.hold(message):
+                    return
+            elif page.held is not None and await page.take(message):
+                return
             await send(message)
 
         try:
             await self.app(scope, receive, send_status)
         except BaseException:
-            if report.status is None:
+            if report.status is None or page.held is not None:
                 report.status = 500  # what the server answers for it
             self._finish(tracker, scope)
             raise
+        # An application that ends without the last part of its body.
+        await page.flush()
         self._finish(tracker, scope)
         if tracker.warning is not None:
             # "warn" under an "error" filter, and the app itself succeeded.
             raise tracker.warning
 
     def _finish(self, tracker: Tracker, scope: Scope) -> None:
-        route = None
-        try:
-            route = getattr(scope.get("route"), "path", None)
-            if not isinstance(route, str):
-                route = None
-        except Exception:  # noqa: BLE001  # never break the application
-            route = None
+        route = _route(scope)
         report = tracker.finish(route if tracker.report.route is None else None)
         if self.history is not None:
             self.history.add(report)
@@ -151,6 +152,116 @@ class QueryGuardASGI:
     def reports(self) -> tuple[RequestReport, ...]:
         """The reports the panel holds, oldest first; empty without the panel."""
         return self.history.snapshot() if self.history is not None else ()
+
+
+class _Page:
+    """Holds back an HTML response to add the request's findings to it.
+
+    Only with ``page_report`` on and for a response ``_page.eligible()``
+    accepts: its start message waits until the body is complete, at most its
+    declared ``Content-Length``. Any other response passes through as sent.
+    """
+
+    __slots__ = (
+        "chunks",
+        "held",
+        "limit",
+        "mode",
+        "on",
+        "scope",
+        "send",
+        "size",
+        "tracker",
+    )
+
+    def __init__(self, mode: str, tracker: Tracker, scope: Scope, send: Send) -> None:
+        self.mode = mode
+        self.on = mode != "off"
+        self.tracker = tracker
+        self.scope = scope
+        self.send = send
+        self.held: Message | None = None
+        self.chunks: list[bytes] = []
+        self.size = 0
+        self.limit = 0
+
+    def hold(self, message: Message) -> bool:
+        """Keep the start message back when the response can get a report."""
+        if message.get("trailers"):
+            return False
+        try:
+            limit = _page.eligible(
+                message.get("status"), _headers(message), self.scope.get("method")
+            )
+        except Exception as exc:  # noqa: BLE001  # never break the application
+            _core.fail(exc, "the page report")
+            return False
+        if limit is None:
+            return False
+        self.held, self.limit = message, limit
+        return True
+
+    async def take(self, message: Message) -> bool:
+        """Buffer a body part; True when it was taken (not to be sent as is)."""
+        if message.get("type") != "http.response.body":
+            await self.flush()  # an extension's message: send what we hold first
+            return False
+        self.chunks.append(bytes(message.get("body", b"")))
+        self.size += len(self.chunks[-1])
+        if message.get("more_body", False):
+            if self.size <= self.limit:
+                return True
+            await self.flush()  # longer than its Content-Length: as sent
+            return True
+        held, self.held = self.held, None
+        assert held is not None
+        body, chunks = b"".join(self.chunks), self.chunks
+        self.chunks = []
+        headers = held.get("headers") or []
+        try:
+            report = self.tracker.preview(_route(self.scope))
+            if report is not None:
+                text = _headers(held)
+                body = _page.inject(body, report, self.mode, text)
+                headers = [
+                    (k.encode("latin-1"), v.encode("latin-1"))
+                    for k, v in _page.with_length(text, len(body))
+                ]
+        except Exception as exc:  # noqa: BLE001  # never break the application
+            _core.fail(exc, "the page report")
+            body, headers = b"".join(chunks), held.get("headers") or []
+        await self.send({**held, "headers": headers})
+        await self.send({**message, "body": body})
+        return True
+
+    async def flush(self) -> None:
+        """Send the held start message and body parts unchanged."""
+        held, self.held = self.held, None
+        if held is None:
+            return
+        chunks, self.chunks = self.chunks, []
+        await self.send(held)
+        if chunks:
+            body = b"".join(chunks)
+            await self.send(
+                {"type": "http.response.body", "body": body, "more_body": True}
+            )
+
+
+def _headers(message: Message) -> list[tuple[str, str]]:
+    return [
+        (bytes(k).decode("latin-1"), bytes(v).decode("latin-1"))
+        for k, v in message.get("headers") or ()
+    ]
+
+
+def _route(scope: Scope) -> str | None:
+    """The route template Starlette and FastAPI put in the scope, or None."""
+    try:
+        route = getattr(scope.get("route"), "path", None)
+    except Exception:  # noqa: BLE001  # never break the application
+        return None
+    return route if isinstance(route, str) else None
 
 
 def _start(settings: Settings, scope: Scope) -> Tracker | None:
