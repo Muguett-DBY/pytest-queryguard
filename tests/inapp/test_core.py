@@ -97,13 +97,13 @@ def test_the_session_listeners_after_the_last_watched_engine_is_collected(
     assert not _listeners._watched
     # Still registered, but they do nothing until a watch() or unwatch() call.
     assert event.contains(Session, "after_flush", _listeners._on_after_flush)
-    calls: list[object] = []
-    monkeypatch.setattr(_listeners, "find_callsite", lambda *a: calls.append(1))
     other = create_engine("sqlite://")
     seed(other)
-    with queryguard.track(report=[]):
+    with queryguard.track(report=[]), Session(other) as session:
         _lazy_loop(other)
-    assert calls == []
+        session.add(Customer(name="new"))
+        session.flush()  # the after_flush and after_begin listeners run
+        assert _listeners._WRITTEN_ATTR not in session.__dict__
     queryguard.unwatch(other)
     assert not event.contains(Session, "after_begin", _listeners._on_after_begin)
     assert not event.contains(Session, "after_flush", _listeners._on_after_flush)

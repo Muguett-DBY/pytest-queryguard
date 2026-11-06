@@ -17,9 +17,11 @@ not through an accessor function: a call per statement is measurable in
 ``scripts/bench_gate.py``. The accessors are for the code that runs rarely
 (once per query, per flush or at import) and for the tests.
 
-Each reader degrades when a name is gone (the docstrings of the readers say
-how): a missed label or a fix hint without a parent site, never an error in
-the user's code.
+When a name is gone the readers never raise into the user's code (the
+docstrings of the readers say what they do): most miss a label or a fix
+hint's parent site; a few (``_only_load_props``) stop the measurement through
+the internal-error path rather than mislabel. ``QueryContext`` is imported,
+so a release that moves it fails at import, as SQLAlchemy's own imports do.
 """
 
 from __future__ import annotations

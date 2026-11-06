@@ -8,6 +8,7 @@ name in the message, before the listeners quietly stop labelling loads.
 
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -425,5 +426,6 @@ def test_every_name_is_checked_here() -> None:
         and not isinstance(value, ModuleType)
         and name not in ("annotations", "Any", "nested_code")
     ]
-    missing = [name for name in names if f"{name}," not in source]
-    assert not missing, f"tests/test_compat.py does not import {missing}"
+    # imported once, then used in a check at least once
+    missing = [name for name in names if len(re.findall(rf"\b{name}\b", source)) < 2]
+    assert not missing, f"tests/test_compat.py does not check {missing}"
