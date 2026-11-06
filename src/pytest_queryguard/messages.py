@@ -29,6 +29,7 @@ from .findings import (
     KIND_WRITE_LOOP,
     Finding,
     IndexAdvice,
+    SourceFix,
     Stack,
     docs_url,
 )
@@ -154,17 +155,32 @@ def _loader(scalar: bool) -> str:
     return "joinedload" if scalar else "selectinload"
 
 
+def loader_steps(finding: RelationshipFinding) -> list[tuple[str, str]]:
+    """The loader option as (loader, relationship) steps from the parent query.
+
+    Through the chain that loaded the parents when it is known, else the
+    relationship alone.
+    """
+    steps = [(_loader(scalar), label) for label, scalar in finding.parent_path]
+    if finding.parent_root is None:
+        steps = []
+    return [*steps, (_loader(finding.scalar), finding.relationship)]
+
+
+def loader_option(finding: RelationshipFinding) -> str:
+    """``joinedload(Order.customer).joinedload(Customer.country)`` for a finding."""
+    return ".".join(f"{loader}({label})" for loader, label in loader_steps(finding))
+
+
 def _parent_query(finding: RelationshipFinding) -> str:
     """The parent query with the loader, through the chain that loaded the parents.
 
     Without a known chain, the query of the relationship's own class.
     """
-    loader = f"{_loader(finding.scalar)}({finding.relationship})"
-    if finding.parent_root is None:
-        parent = finding.relationship.split(".", 1)[0]
-        return f"select({parent}).options({loader})"
-    steps = [f"{_loader(scalar)}({label})" for label, scalar in finding.parent_path]
-    return f"select({finding.parent_root}).options({'.'.join([*steps, loader])})"
+    root = finding.parent_root
+    if root is None:
+        root = finding.relationship.split(".", 1)[0]
+    return f"select({root}).options({loader_option(finding)})"
 
 
 def _relationship_block(
@@ -342,9 +358,15 @@ def format_strict(finding: Finding, parents: int) -> str:
 
 
 def format_findings(
-    findings: Sequence[Finding | Detection], *, cwd: Path | None = None
+    findings: Sequence[Finding | Detection],
+    *,
+    cwd: Path | None = None,
+    patches: bool = False,
 ) -> str:
-    """The N+1 report; detector results are turned into findings first."""
+    """The N+1 report; detector results are turned into findings first.
+
+    With ``patches``, each finding that has a fix is followed by its diff.
+    """
     made = [f if isinstance(f, Finding) else make_finding(f, cwd=cwd) for f in findings]
     if made and all(f.kind == KIND_UNUSED_EAGER_LOAD for f in made):
         lines = ["queryguard: unused eager load detected (experimental)"]
@@ -355,7 +377,20 @@ def format_findings(
     for finding in made:
         lines.append("")
         lines.append(finding.message)
+        if patches and finding.fix is not None:
+            lines.extend(patch_lines(finding.fix))
     return "\n".join(lines)
+
+
+def patch_lines(fix: SourceFix) -> list[str]:
+    """The patch of a finding for the report, indented under it."""
+    return [
+        (
+            "  patch (git apply from the rootdir; --queryguard-write-patch=PATH "
+            "writes them all):"
+        ),
+        *(f"    {line}" for line in fix.diff.splitlines()),
+    ]
 
 
 def _truncate(sql: str) -> str:

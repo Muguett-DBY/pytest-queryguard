@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, NamedTuple
 
+from . import fixpatch
 from .fileio import atomic_write_text
 from .findings import (
     KIND_CARTESIAN_LOAD,
@@ -25,6 +26,7 @@ from .findings import (
     KIND_UNUSED_EAGER_LOAD,
     KIND_WRITE_LOOP,
     Finding,
+    SourceFix,
     docs_url,
 )
 
@@ -147,6 +149,7 @@ def add(store: Collected, finding: Finding, level: str) -> None:
         tests=old.tests + finding.tests,
         peak=max(_peak(old), _peak(finding)),
         stack=best.stack,
+        fix=best.fix,
     )
     store[key] = (merged, LEVEL_ERROR if LEVEL_ERROR in (level, old_level) else level)
 
@@ -166,6 +169,7 @@ def to_wire(store: Collected) -> list[dict[str, Any]]:
             "tests": f.tests,
             "peak": f.peak,
             "stack": [list(frame) for frame in f.stack],
+            "fix": fixpatch.to_wire(f.fix),
             "level": level,
         }
         for f, level in store.values()
@@ -189,6 +193,7 @@ def merge_wire(store: Collected, wire: Iterable[Mapping[str, Any]]) -> None:
                 (str(file), int(line), str(function))
                 for file, line, function in entry.get("stack", ())
             ),
+            fix=fixpatch.from_wire(entry.get("fix")),
         )
         add(store, finding, entry["level"])
 
@@ -334,7 +339,44 @@ def _result(finding: Finding, level: str, prefix: str = "") -> dict[str, Any] | 
     flows = _code_flows(finding, location, prefix)
     if flows:
         result["codeFlows"] = flows
+    fixes = _fixes(finding.fix, prefix)
+    if fixes:
+        result["fixes"] = fixes
     return result
+
+
+def _fixes(fix: SourceFix | None, prefix: str) -> list[dict[str, Any]]:
+    """The finding's patch as a SARIF fix: insertions as empty deleted regions.
+
+    GitHub code scanning ignores fixes; other viewers offer to apply them.
+    """
+    if fix is None:
+        return []
+    path = repo_path(fix.file)
+    if path is None:
+        return []
+    if prefix:
+        path = f"{prefix}/{path}"
+    replacements = [
+        {
+            "deletedRegion": {
+                "startLine": edit.line,
+                "startColumn": edit.utf16_column + 1,
+                "endLine": edit.line,
+                "endColumn": edit.utf16_column + 1,
+            },
+            "insertedContent": {"text": edit.text},
+        }
+        for edit in sorted(fix.insertions, key=lambda e: (e.line, e.column, e.text))
+    ]
+    return [
+        {
+            "description": {"text": fix.description},
+            "artifactChanges": [
+                {"artifactLocation": {"uri": path}, "replacements": replacements}
+            ],
+        }
+    ]
 
 
 def build(

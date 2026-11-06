@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A patch for a `relationship-load` finding whose parent query line is
+  certain: the loader option of the `fix:` hint added to the `select(...)` or
+  `session.query(...)` call of that line, or to its `.options(...)`, with
+  the import of the loader. `--queryguard-patch` (or `queryguard_patch =
+  true`) prints it as a unified diff under the finding,
+  `--queryguard-write-patch=PATH` writes those of the whole run to one file
+  for `git apply`, and the SARIF file carries it as a `fixes` entry. Without
+  one select call of the parent class on that line, a file inside the rootdir
+  unchanged since the session started, and names the module imports, there
+  is no patch, only the hint. Made with the stdlib `ast` when the findings
+  are reported (#247).
+
 - Each finding shows a short stack: under `first at`, a `called from` line
   for each line of your code that called it, innermost first, up to the test,
   with SQLAlchemy, pytest and plugin frames left out, so the path through

@@ -112,6 +112,7 @@ EXPECTED_INI = {
     "queryguard_unused_eager_load": "off",
     "queryguard_cartesian_load": "warn",
     "queryguard_strict": "False",
+    "queryguard_patch": "False",
     "queryguard_fail_on": "[]",
     "queryguard_ignore": "[]",
     "queryguard_baseline": "",
@@ -130,11 +131,13 @@ EXPECTED_FLAGS = [
     "--queryguard-index-check",
     "--queryguard-json",
     "--queryguard-mode",
+    "--queryguard-patch",
     "--queryguard-report",
     "--queryguard-sarif",
     "--queryguard-strict",
     "--queryguard-update-baseline",
     "--queryguard-update-budgets",
+    "--queryguard-write-patch",
 ]
 
 EXPECTED_MARKERS = [

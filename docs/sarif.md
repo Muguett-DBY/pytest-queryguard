@@ -30,6 +30,13 @@ was started from.
 - The location is the file and the line of the first occurrence; the function
   is a logical location. See "Paths and the repository root" below for what
   the path is relative to.
+- A `relationship-load` result whose parent query line is certain has a
+  `fixes` entry: the loader option and its import as insertions (an empty
+  `deletedRegion` with `insertedContent`), the same change as
+  `--queryguard-write-patch`, see
+  [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query).
+  Every SARIF file has them, no option is needed. GitHub code scanning ignores
+  fixes; viewers such as the SARIF Viewer for VS Code offer to apply them.
 - `level` is `error` for a kind that fails tests and `warning` otherwise (see
   `queryguard_mode` and `queryguard_fail_on`).
 - `partialFingerprints` are derived from the finding identity only, not from
