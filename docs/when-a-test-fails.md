@@ -79,8 +79,11 @@ To list the kind and label of every finding of a run in one file, write a
 scratch baseline:
 
 ```console
-pytest --queryguard-baseline=/tmp/findings.json --queryguard-update-baseline
+pytest --queryguard-baseline=findings.json --queryguard-update-baseline
 ```
+
+Then read `findings.json` and delete it. A budget test still fails this run,
+since the baseline does not apply to budgets.
 
 The SARIF file (`--queryguard-sarif=PATH`) carries the `kind:` line in each
 message and the kind as the `queryguard/<kind>` rule id.
@@ -115,16 +118,24 @@ lazy load of a relationship for the second parent loaded at the same line
 attribute, the frames of SQLAlchemy and the plugin left out:
 
 ```
-    for order in _helper_query(session):
->       name = order.customer.name
-E       pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents loaded at one line; this access is the N+1
+    def list_orders(session):
+        names = []
+        for order in _helper_query(session):
+>           name = order.customer.name
+                   ^^^^^^^^^^^^^^
+E           pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents loaded at one line; this access is the N+1
 E
-E         Order.customer was lazy-loaded 2 times
-E         first at app/orders.py:13 in list_orders
-E         parents loaded at app/orders.py:7 in _helper_query
-E         kind: relationship-load  label: Order.customer
-E         fix: load it with the parent query, e.g.
-E              select(Order).options(joinedload(Order.customer))
+E             Order.customer was lazy-loaded 2 times
+E             first at app/orders.py:13 in list_orders
+E               called from tests/test_orders.py:5 in test_list_orders
+E             parents loaded at app/orders.py:7 in _helper_query
+E             kind: relationship-load  label: Order.customer
+E             docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
+E             fix: load it with the parent query, e.g.
+E                  select(Order).options(joinedload(Order.customer))
+E
+E             (queryguard_strict raises at the lazy load; allow_nplusone,
+E             queryguard_ignore or an ignore() block lets it pass, as for the report)
 ```
 
 It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
@@ -177,8 +188,10 @@ call site, if you want to look at them in the test itself.
 
 ## 3. Fix it
 
-Apply the hint at the line the report names and run the test again. Two
-patterns cover most cases:
+Apply the hint at the line the report names and run the test again. The
+`fix:` line shows the loader option, not its import: add `joinedload` or
+`selectinload` to the file's `from sqlalchemy.orm import` line, or the hint
+raises `NameError`. Two patterns cover most cases:
 
 ```python
 from sqlalchemy import select

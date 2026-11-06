@@ -143,8 +143,9 @@ def test_order_page(queryguard, client):
 ```
 
 Its blocks count only the statements of the test's own thread, or of its
-asyncio task: statements that a thread already running runs at the same
-time, such as a background worker or a server thread, do not count. That
+asyncio task, and of work run in a copy of their context: statements that a
+thread already running runs at the same time, such as a background worker
+or a server thread, do not count (a `TestClient` request does, see below). That
 makes them the equivalent of pytest-django's `django_assert_max_num_queries`
 and `django_assert_num_queries`:
 
@@ -175,8 +176,13 @@ and `django_assert_num_queries`:
   reading them before the test function starts (in a fixture's setup)
   raises `RuntimeError`.
 
-To count every thread in a block, as a FastAPI `TestClient` or a worker pool
-needs, use the `max_queries()` function or the marker above. Like them, the
+A FastAPI or Starlette `TestClient`, such as the `client` above, runs each
+request in another thread but with a copy of the test's context, so the
+endpoint's statements count in the block, whether the client was opened in a
+fixture or in the test (checked by hand with anyio 3.7 and 4). A thread that was
+already running and does not copy the context, such as a live server or a
+worker pool, does not count: to count every thread in a block, use the
+`max_queries()` function or the marker above. Like them, the
 fixture fails whatever `queryguard_mode` is set to; with `queryguard_strict`
 an N+1 inside a block raises `NPlusOneDetected` at the access first. After
 an internal error of the plugin, a block and the fixture warn with

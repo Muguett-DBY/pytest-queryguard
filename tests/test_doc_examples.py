@@ -9,7 +9,9 @@ Two checks, both generic, so a new example is covered without touching this file
   The project is written to a temporary directory and pytest runs it. Each test
   has to pass or to fail with a queryguard report (the pages show broken code on
   purpose); an import error, a missing fixture or any other error is a failure
-  of the documentation.
+  of the documentation. Each queryguard report the page shows in an output
+  block must be, line for line, in the output of that run (``OTHER_SETUPS``
+  lists the reports of another setup).
 
 A page that does not spell out every file of its project starts from a base
 project in examples/ (``BASES``); its own files are laid on top.
@@ -43,7 +45,6 @@ pytestmark = pytest.mark.skipif(
 # page -> project in examples/ that supplies the files the page does not show
 BASES: dict[str, str] = {
     "getting-started.md": "sync-n-plus-one",
-    "recipes-fastapi.md": "fastapi-dependency-override",
 }
 
 # Pages whose file blocks are excerpts, not a project, and why.
@@ -63,6 +64,22 @@ NOT_PROJECTS = {
 # projects like the others: where a package is missing, the test of the page is
 # skipped.
 OPTIONAL_PACKAGES = {"litestar", "pytest_asyncio", "sqlmodel"}
+
+# Reports a page shows for another setup than the files it spells out, by one
+# of their lines; the other reports of a page with a project must be, line for
+# line, in the output of that project.
+OTHER_SETUPS: dict[str, set[str]] = {
+    # examples/async-fastapi, checked by tests/test_examples.py
+    "getting-started.md": {"  first at app/main.py:37 in list_orders"},
+    # the run on PostgreSQL (asyncpg) is in "Pitfall 2" of the page
+    "recipes-pytest-asyncio.md": {
+        "  sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = $1::INTEGER"
+    },
+    # the run without the ignore pattern that the page then adds
+    "recipes-factory-boy.md": {
+        "  first at tests/test_orders.py:10 in test_seeded_in_the_body"
+    },
+}
 
 # Pages that are history or design notes, not instructions.
 NOT_CHECKED = {"design.md", "design-0.2.md", "design-0.3.md", "design-0.3-api.md"}
@@ -111,6 +128,37 @@ def test_every_python_block_parses(page: Path) -> None:
             ast.parse(code)
         except SyntaxError as error:
             pytest.fail(f"{page.name}:{line}: {error}")
+
+
+def test_every_other_setup_names_a_report_of_its_page() -> None:
+    for name, lines in OTHER_SETUPS.items():
+        reports = _reports((ROOT / "docs" / name).read_text(encoding="utf-8"))
+        for line in lines:
+            assert any(line in report for _, report in reports), (
+                f"{name}: no report has {line!r}; drop it from OTHER_SETUPS"
+            )
+
+
+# page -> the example project whose files the page shows in full; the copies
+# must not drift apart
+SAME_FILES = {"recipes-fastapi.md": "fastapi-dependency-override"}
+
+
+@pytest.mark.parametrize("name", sorted(SAME_FILES))
+def test_a_page_shows_the_files_of_its_example(name: str) -> None:
+    example = ROOT / "examples" / SAME_FILES[name]
+    if not example.is_dir():
+        pytest.skip("examples/ is not available")
+    shown = {label: code for _, label, code in _blocks(ROOT / "docs" / name) if label}
+    compared = [label for label in shown if (example / label).is_file()]
+    assert len(compared) >= 6, compared
+    for label in compared:
+        if label == "pytest.ini":
+            # the example also turns off the cache provider
+            continue
+        assert shown[label] == (example / label).read_text(encoding="utf-8"), (
+            f"{name} shows {label} differently from examples/{SAME_FILES[name]}"
+        )
 
 
 def test_the_pages_with_projects_are_found() -> None:
@@ -212,7 +260,73 @@ def test_the_project_of_a_page_runs(page: Path, tmp_path: Path) -> None:
             problems.append(f"{name}: error\n{case.find('error').get('message')}")  # type: ignore[union-attr]
         failure = case.find("failure")
         if failure is not None:
-            text = (failure.get("message") or "") + (failure.text or "")
-            if "queryguard" not in text and "QueryBudgetExceeded" not in text:
-                problems.append(f"{name}: failed without a queryguard report\n{text}")
+            message = (failure.get("message") or "") + (failure.text or "")
+            if "queryguard" not in message and "QueryBudgetExceeded" not in message:
+                problems.append(
+                    f"{name}: failed without a queryguard report\n{message}"
+                )
     assert not problems, f"{page.name}:\n" + "\n".join(problems) + result.stdout
+    printed = [
+        _sql_aliases(line.rstrip())
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
+    stale = [
+        f"{page.name}:{number}:\n" + "\n".join(report)
+        for number, report in _reports(text)
+        if not _contains(printed, [_sql_aliases(line) for line in report])
+        and not OTHER_SETUPS.get(page.name, set()) & set(report)
+    ]
+    assert not stale, (
+        "a report the page shows is not, line for line, in the output of its "
+        "project:\n" + "\n\n".join(stale) + "\n\noutput:\n" + result.stdout
+    )
+
+
+# Lines that end a report: pytest separators and summaries, captured-output
+# headers, a traceback's location line, and a budget report's timings, which
+# differ from run to run.
+_END = re.compile(
+    r"===|___|---|(FAILED|PASSED|ERROR) |\d+ (failed|passed|error)|\S+:\d+: |"
+    r"  database time:"
+)
+
+
+def _reports(text: str) -> list[tuple[int, list[str]]]:
+    """(line number, lines) of each queryguard report in the page's output
+    blocks (fences without a language): from a `queryguard: ...` line to the
+    next pytest separator (`===`, `___`) or summary line, blank lines left out.
+    A budget report ends before its timings, which differ from run to run."""
+    found: list[tuple[int, list[str]]] = []
+    fence: str | None = None
+    report: list[str] | None = None
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.startswith("```"):
+            fence = None if fence is not None else line[3:].strip()
+            report = None
+        elif fence != "":
+            continue
+        elif line.startswith("queryguard: "):
+            report = [line.rstrip()]
+            found.append((number, report))
+        elif _END.match(line):
+            report = None
+        elif report is not None and line.strip():
+            report.append(line.rstrip())
+    return found
+
+
+# SQLAlchemy 2.0 renders "customer.id AS customer_id" where 2.1 renders
+# "customer.id"; the pages show 2.1's SQL.
+_ALIAS = re.compile(r"(\b\w+\.\w+) AS \w+")
+
+
+def _sql_aliases(line: str) -> str:
+    return _ALIAS.sub(r"\1", line)
+
+
+def _contains(lines: list[str], part: list[str]) -> bool:
+    return any(
+        lines[start : start + len(part)] == part
+        for start in range(len(lines) - len(part) + 1)
+    )

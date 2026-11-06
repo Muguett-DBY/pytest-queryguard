@@ -282,6 +282,41 @@ def test_endpoint():
     project.runpytest().assert_outcomes(passed=1, warnings=0)
 
 
+def test_fixture_block_counts_testclient_requests(
+    fastapi_project: pytest.Pytester,
+) -> None:
+    # docs/budgets.md: a TestClient request runs in another thread with a copy
+    # of the test's context, so it counts in a block of the queryguard fixture,
+    # also when the client (and its portal thread) was opened in a fixture
+    project = fastapi_project
+    project.makepyfile(
+        app_module=APP,
+        test_a="""
+import pytest
+from fastapi.testclient import TestClient
+
+from app_module import app
+
+
+@pytest.fixture
+def client():
+    with TestClient(app) as client:
+        yield client
+
+
+def test_opened_in_fixture(queryguard, client):
+    with queryguard.num_queries(2):
+        assert client.get("/fixed").status_code == 200
+
+
+def test_opened_in_test(queryguard):
+    with queryguard.num_queries(2):
+        assert TestClient(app).get("/fixed").status_code == 200
+""",
+    )
+    project.runpytest().assert_outcomes(passed=2, warnings=0)
+
+
 def test_plain_thread_queries_are_collected(project: pytest.Pytester) -> None:
     path = project.makepyfile(
         test_a="""

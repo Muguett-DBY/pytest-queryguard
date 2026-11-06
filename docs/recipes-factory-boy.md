@@ -25,6 +25,12 @@ them. What follows applies to SQLAlchemy suites written in the same style.
 
 ## The project
 
+Install Factory Boy next to the plugin:
+
+```console
+pip install pytest-queryguard factory-boy
+```
+
 The layout is `app/__init__.py` (an empty file), `app/models.py`,
 `app/orders.py`, `tests/factories.py`, `tests/conftest.py` and
 `tests/test_orders.py`.
@@ -222,6 +228,7 @@ queryguard: N+1 detected
 
   the same INSERT ran 10 times, one row at a time
   first at app/orders.py:15 in import_customers
+    called from tests/test_orders.py:15 in test_import_customers
   kind: write-loop  label: INSERT INTO customer (name) VALUES (?)
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#write-loop
   fix: write the rows together: session.add_all(rows) and one flush, or

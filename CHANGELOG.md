@@ -180,9 +180,22 @@ will be removed in 2.0 (#303).
   outputs and artifact name as public, and says what a change of their format
   number means. The fix patch, the query-count trend and the static check are
   listed as experimental.
+- Fixes from a new-user walkthrough: the FastAPI recipe shows every file it
+  needs (`app/db.py`, `app/models.py` with `AsyncAttrs`, `pytest.ini`,
+  `tests/test_orders_fixed.py`) and its install line; the other recipes have
+  install lines too, and their sample reports are regenerated (`called from`,
+  `parents loaded at`). docs/budgets.md no longer says that a `TestClient`
+  needs the `max_queries()` function: its requests count in a block of the
+  `queryguard` fixture. `cartesian-load` is in the kind lists of
+  docs/ignoring.md and docs/baseline.md, docs/ignoring.md shows
+  `queryguard_ignore` in `pytest.ini`, and docs/ci.md pins the action to a
+  tag and drops `-x` from `pytest-args`.
 
 ### Internal
 
+- tests/test_doc_examples.py checks that each report a page with a project
+  shows is, line for line, in the output of that project, and runs the
+  FastAPI recipe from its own files only.
 - Seeded property tests for the source patch and the static check
   (`tests/test_fuzz_fixpatch.py`, `tests/test_fuzz_lint.py`, standard library
   only; `QUERYGUARD_FUZZ=1` runs many more rounds): generated modules, random

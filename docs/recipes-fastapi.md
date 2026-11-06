@@ -5,10 +5,88 @@ with `app.dependency_overrides`, so each request runs on a session bound to a
 test database, and pytest-queryguard watches the SQL of that session. The
 project below is in
 [examples/fastapi-dependency-override](https://github.com/MaciejZiel/pytest-queryguard/tree/main/examples/fastapi-dependency-override);
-a test runs it and checks that its README shows the output you see here
-(FastAPI 0.143, httpx 0.28).
+a test runs it and checks that its README shows the output you see here, and
+another one builds the project from the files of this page and runs it
+(FastAPI 0.141, httpx 0.28).
+
+Install the plugin with FastAPI, httpx (for `TestClient` and
+`httpx.AsyncClient`), the async SQLite driver and SQLAlchemy's async extra,
+which provides greenlet:
+
+```console
+pip install pytest-queryguard fastapi httpx aiosqlite "sqlalchemy[asyncio]"
+```
+
+Without greenlet the async test stops with `ImportError: ... requires that the
+Python 'greenlet' library is installed`, and without aiosqlite with
+`ModuleNotFoundError: No module named 'aiosqlite'`. The `@pytest.mark.anyio`
+tests below run on the pytest plugin that comes with anyio, a dependency of
+FastAPI, so no other pytest plugin is needed.
+
+The layout is `pytest.ini`, `app/__init__.py` and `tests/__init__.py` (both
+empty), `app/db.py`, `app/models.py`, `app/main.py`, `tests/conftest.py`,
+`tests/test_orders.py`, `tests/test_orders_fixed.py` and `tests/test_loop.py`.
 
 ## The application
+
+`pytest.ini` puts the project directory on `sys.path`, so that the tests can
+`import app` (see [getting started](getting-started.md)). The `filterwarnings`
+line hides a Starlette deprecation warning about its test client and `httpx`,
+which is not about pytest-queryguard; leave it out if your Starlette does not
+print it:
+
+```ini
+[pytest]
+pythonpath = .
+filterwarnings =
+    ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning
+```
+
+`app/db.py` creates the application's engines. The tests replace the sessions
+through `app.dependency_overrides` and never use these:
+
+```python
+from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+engine = create_engine("sqlite:///app.db")
+sessions = sessionmaker(engine)
+
+async_engine = create_async_engine("sqlite+aiosqlite:///app.db")
+async_sessions = async_sessionmaker(async_engine, expire_on_commit=False)
+```
+
+`app/models.py` has the models of [getting started](getting-started.md), with
+SQLAlchemy's `AsyncAttrs` mixin on the base class. The async endpoint reads
+the relationship with `await order.awaitable_attrs.customer`, which without
+the mixin raises `AttributeError: 'Order' object has no attribute
+'awaitable_attrs'`:
+
+```python
+from sqlalchemy import ForeignKey
+from sqlalchemy.ext.asyncio import AsyncAttrs
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(AsyncAttrs, DeclarativeBase):
+    pass
+
+
+class Customer(Base):
+    __tablename__ = "customer"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customer.id"))
+    customer: Mapped[Customer] = relationship()
+```
 
 `app/main.py` has two endpoints per style, one with an N+1 and one fixed:
 
@@ -197,7 +275,10 @@ async def test_orders_with_async_client(async_app):
 
 Both fail. Queries are counted from any thread, so the `TestClient` worker
 thread and the event loop of the async client are both seen. The findings
-point at the line in the endpoint, not at the test:
+point at the line in the endpoint, not at the test. The async test runs the
+endpoint in its own call stack, so its report also names the test line that
+made the request (`called from`); the sync endpoint runs in a worker thread,
+whose stack does not reach the test:
 
 ```
 queryguard: N+1 detected
@@ -217,6 +298,7 @@ queryguard: N+1 detected
 
   Order.customer was lazy-loaded 5 times
   first at app/main.py:49 in list_async_orders
+    called from tests/test_orders.py:16 in test_orders_with_async_client
   parents loaded at app/main.py:48 in list_async_orders
   kind: relationship-load  label: Order.customer
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
@@ -226,7 +308,32 @@ queryguard: N+1 detected
 ```
 
 `tests/test_orders_fixed.py` calls `/orders-fixed` and `/async-orders-fixed`,
-which use `joinedload` and `selectinload`, and passes.
+which use `joinedload` and `selectinload`, and passes:
+
+```python
+import pytest
+from app.main import app
+from httpx import ASGITransport, AsyncClient
+
+
+def test_orders_with_test_client(client):
+    response = client.get("/orders-fixed")
+    assert response.status_code == 200
+    assert len(response.json()) == 5
+
+
+@pytest.mark.anyio
+async def test_orders_with_async_client(async_app):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/async-orders-fixed")
+    assert response.status_code == 200
+    assert len(response.json()) == 5
+```
+
+Run the broken tests with `pytest tests/test_orders.py`. After the two
+reports above, the summary "the same finding in several tests" groups them,
+since both are lazy loads of `Order.customer`.
 
 ## Several requests in one test
 
@@ -234,7 +341,8 @@ By default the repeated-statement rule counts a statement across the whole
 test body, not per request. A test that calls a fine endpoint in a loop is
 therefore reported, although each request sends only a few queries. With a
 detail endpoint that sends four queries per call (each request has its own
-session, from the dependency), a test like this, in
+session, from the dependency), a test like the following one is reported.
+
 `tests/test_loop.py`:
 
 ```python
@@ -244,7 +352,8 @@ def test_every_order_page_loads(client):
     assert client.get("/orders/1").status_code == 200
 ```
 
-fails with one finding for each of the four statements, six runs each:
+It fails with one finding for each of the four statements, six runs each
+(`pytest tests/test_loop.py`):
 
 ```
 F                                                                        [100%]

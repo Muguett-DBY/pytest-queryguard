@@ -2,7 +2,11 @@
 
 SQLModel models are SQLAlchemy models, and `Session.exec()` runs SQLAlchemy
 statements, so lazy loads and repeated statements are seen like in plain
-SQLAlchemy. Run with SQLModel 0.0.48.
+SQLAlchemy. Run with SQLModel 0.0.48, installed with:
+
+```console
+pip install pytest-queryguard sqlmodel
+```
 
 The layout is `app/__init__.py` (an empty file), `app/models.py`,
 `app/orders.py`, `tests/conftest.py` and `tests/test_orders.py`.
@@ -94,6 +98,8 @@ queryguard: N+1 detected
 
   Order.customer was lazy-loaded 5 times
   first at app/orders.py:8 in customer_names
+    called from tests/test_orders.py:5 in test_customer_names
+  parents loaded at app/orders.py:8 in customer_names
   kind: relationship-load  label: Order.customer
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
