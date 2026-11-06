@@ -91,18 +91,21 @@ with queryguard.track("nightly-job") as report:  # any unit of work
 
 - **Separate listeners, per engine.** The in-app handlers live in
   `app/_listeners.py` and are registered with `event.listen(engine, ...)` on
-  the watched engine (the `sync_engine` of an `AsyncEngine`). The ORM events
-  (`do_orm_execute`, `after_begin`) exist only on `Session`; they are
+  the watched engine (the `sync_engine` of an `AsyncEngine`). The Session
+  events (`after_begin`, `after_flush`) exist only on `Session`; they are
   registered on the `Session` class while at least one engine is watched, and
   return after one `ContextVar.get()` outside a request. A relationship or
-  column load is only kept when its statement reaches a watched engine: a
-  `before_cursor_execute` listener on the `Engine` class, registered with
-  them, drops a pending load whose SELECT runs on an unwatched engine, so
-  sessions on other engines add nothing. The engine is never guessed with
+  column load is read from the options of its own SELECT in the watched
+  engine's `before_cursor_execute` listener, with the plugin's
+  `orm_select()` and `_orm_load()` (as in the plugin since 0.7.0; no
+  `do_orm_execute` listener), so sessions on other engines add nothing and
+  plugin and in-app label a load the same way. The engine is never guessed with
   `Session.get_bind()`, which may be application code (`ShardedSession`'s
   `shard_chooser`, Flask-SQLAlchemy's binds, replica routers). The pytest listeners in
-  `listeners.py` are not changed; the in-app handlers reuse its pure helpers
-  (`_is_write`, the scope numbers) and the shared `QueryCollector`,
+  `listeners.py` keep their process-wide collector stack; the in-app handlers
+  reuse its helpers (`orm_select`, `_orm_load` with the unit's own call site
+  cache and flush record, `_is_write`, the scope numbers) and the shared
+  `QueryCollector`,
   `detect()` and `make_findings()`.
 
 - **Own error state.** The pytest listeners stop on their first error through

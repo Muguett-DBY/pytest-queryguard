@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- In-application mode: the watched engine's `before_cursor_execute` listener
+  reads which relationship or column load an ORM `SELECT` runs for from that
+  statement's own options, with the same code as the pytest plugin since
+  0.7.0, and `watch()` no longer registers a `do_orm_execute` listener on
+  `Session` or a `before_cursor_execute` listener on every `Engine`. Each ORM
+  statement is prepared once instead of twice: inside a request the ORM
+  `select()` of `scripts/bench_overhead.py --app` costs about a third less
+  to measure (+21 instead of +32 microseconds per statement on one laptop),
+  and outside one about half. On SQLAlchemy 2.0.20 to 2.0.49 an
+  application's `yield_per` or `autoflush=False` query with `selectinload()`
+  now works while the engine is watched (SQLAlchemy issue 13301), and the
+  in-app mode labels a load as the plugin does: the sample SQL of a
+  relationship-load finding is the lazy load, not an eager loader's query
+  (#289).
+
 ## [0.7.0] - 2026-11-06
 
 ORM statements cost about a third less to measure: the plugin reads the

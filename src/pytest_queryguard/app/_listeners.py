@@ -7,7 +7,6 @@ error state. Registered only by ``watch()``; nothing runs before that.
 
 from __future__ import annotations
 
-import contextvars
 import threading
 import time
 import weakref
@@ -15,38 +14,23 @@ from typing import Any
 
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import ORMExecuteState, Session
+from sqlalchemy.orm import Session
 
 from .. import blocks
 from ..callsite import find_callsite, find_flush
-from ..collector import QueryCollector
-from ..events import ColumnLoadEvent, RelationshipLoadEvent, StatementEvent
+from ..events import StatementEvent
 from ..listeners import (
-    _is_column_load,
-    _is_refresh_eager_load,
+    _NO_LABELS,
     _is_write,
+    _orm_load,
     _Written,
-    classify_column_load,
-    column_load_counts,
     flush_record,
+    orm_select,
     scope_of_connection,
     scope_of_session,
 )
 from . import _core
 
-# The relationship or column load of the ORM execution whose statement comes
-# next, with the collector it was seen for and whether it counts: a refresh
-# after a write and a refresh's eager loader only label their statement, as in
-# listeners.py. Context-local, so concurrent tasks of one request cannot take
-# each other's. A read on an unwatched engine drops it
-# (_on_unwatched_cursor_execute), so it is not credited to the next statement
-# on a watched one.
-_Pending = tuple[
-    QueryCollector, RelationshipLoadEvent | None, ColumnLoadEvent | None, bool
-]
-_pending: contextvars.ContextVar[_Pending | None] = contextvars.ContextVar(
-    "queryguard_app_pending", default=None
-)
 _TIMING_ATTR = "_queryguard_app_timing"
 _SCOPE_ATTR = "_queryguard_scope"  # the attribute listeners.py tags with
 # The objects the latest flush of a Session wrote, with the id of the unit
@@ -55,57 +39,17 @@ _SCOPE_ATTR = "_queryguard_scope"  # the attribute listeners.py tags with
 _WRITTEN_ATTR = "_queryguard_app_written"
 
 
-def _written(session: Any, active: _core.Active) -> _Written | None:
-    """The record of the Session's latest flush, if it ran in this unit."""
-    entry = session.__dict__.get(_WRITTEN_ATTR)
-    if entry is None or entry[0] != active.tracker.report.id:
+def _written(session: Any) -> _Written | None:
+    """The record of the Session's latest flush, if it ran in the current unit.
+
+    Called by ``_orm_load`` for a refresh only, from the cursor listener of
+    the unit's own statement.
+    """
+    entry = getattr(session, "__dict__", {}).get(_WRITTEN_ATTR)
+    active = _core.live()
+    if entry is None or active is None or entry[0] != active.tracker.report.id:
         return None
     return entry[1]  # type: ignore[no-any-return]
-
-
-def _on_orm_execute(state: ORMExecuteState) -> None:
-    active = _core.live()
-    # No watched engine: the last one was collected without unwatch(). Checked
-    # after live(), which is cheaper and ends most calls outside a request.
-    if active is None or _core._error is not None or not _watched:
-        return
-    try:
-        collector = active.collector
-        if _is_column_load(state):
-            found = classify_column_load(state)
-            if found is None:
-                _pending.set(None)
-                return
-            instance, load = found
-            counted = column_load_counts(
-                load, instance, _written(state.session, active)
-            )
-            _pending.set((collector, None, load, counted))
-            return
-        if not state.is_relationship_load:
-            if _pending.get() is not None:
-                _pending.set(None)
-            return
-        prop = state.loader_strategy_path[-1]  # type: ignore[index]
-        parent = state.lazy_loaded_from
-        # A mapped eager loader run by a refresh: label, do not count.
-        counted = parent is None or not _is_refresh_eager_load(state.execution_options)
-        key: object = None
-        if parent is not None:
-            key = parent.identity_key
-            if key is None:
-                key = id(parent)
-        rel = RelationshipLoadEvent(
-            str(prop),
-            key,
-            find_callsite(active.tracker.sites),
-            getattr(prop, "uselist", None) is False,
-            scope_of_session(state.session),
-            ignores=blocks.current(),
-        )
-        _pending.set((collector, rel, None, counted))
-    except Exception as exc:  # noqa: BLE001  # never break the application
-        _core.fail(exc, "the do_orm_execute listener")
 
 
 def _on_after_flush(session: Session, flush_context: Any) -> None:
@@ -150,61 +94,44 @@ def _on_before_cursor_execute(
         return
     try:
         collector = active.collector
-        rel: RelationshipLoadEvent | None = None
-        col: ColumnLoadEvent | None = None
-        counted = False
-        # As in listeners.py: an autoflush write may come between a load and
-        # its SELECT, so a write leaves the pending load for the next read.
+        sites = active.tracker.sites
         write = _is_write(statement)
-        if not write:
-            pending = _pending.get()
-            if pending is not None:
-                _pending.set(None)
-                if pending[0] is collector:
-                    _, rel, col, counted = pending
-        # Loads are kept only when their statement reaches a watched engine.
-        if rel is not None and counted:
-            collector.add_relationship_load(rel)
-        if col is not None:
-            col.sql = statement
-            if counted:
-                collector.add_column_load(col)
+        ignores = blocks.current()
+        # The relationship or column load this SELECT runs for, from the ORM's
+        # options of this execution, as in listeners.py (no do_orm_execute
+        # listener): the same labels as the plugin's, with the unit's own
+        # call sites and record of the latest flush.
+        orm = None if write else orm_select(context)
+        labels = (
+            None
+            if orm is None
+            else _orm_load(
+                conn, orm, (collector,), ignores, sites, _written, parents=False
+            )
+        )
+        if labels is None:
+            labels = _NO_LABELS
+        column_load = labels.column_load
+        if column_load is not None:
+            column_load.sql = statement
+        site = labels.site
         stmt = StatementEvent(
             statement,
-            find_callsite(active.tracker.sites),
-            rel.relationship if rel is not None else None,
-            column_load=col is not None,
+            site if site is not None else find_callsite(sites),
+            labels.relationship,
+            column_load=column_load is not None,
+            lazy_load=labels.lazy,
             parameters=None if executemany else parameters,
             executemany=bool(executemany),
             flush=find_flush() if write else None,
             scope=scope_of_connection(conn),
-            ignores=blocks.current(),
+            ignores=ignores,
         )
         collector.add_statement(stmt)
         if context is not None:
             setattr(context, _TIMING_ATTR, (stmt, collector, time.perf_counter()))
     except Exception as exc:  # noqa: BLE001  # never break the application
         _core.fail(exc, "the before_cursor_execute listener")
-
-
-def _on_unwatched_cursor_execute(
-    conn: Any,
-    cursor: Any,
-    statement: str,
-    parameters: Any,
-    context: Any,
-    executemany: bool,
-) -> None:
-    """Drop the pending load when its SELECT runs on an unwatched engine.
-
-    Registered on every Engine, so the engine a load runs on need not be
-    guessed with ``Session.get_bind()``: an override of it, such as a
-    ``ShardedSession``'s ``shard_chooser``, is application code.
-    """
-    if _pending.get() is None or _is_write(statement):
-        return
-    if not _in_watched(getattr(conn, "engine", None)):
-        _pending.set(None)
 
 
 def _on_after_cursor_execute(
@@ -316,15 +243,13 @@ def _remove_engine_listeners(engine: Engine) -> None:
 def _add_session_listeners() -> None:
     global _session_listeners
     if not _session_listeners:
-        event.listen(Session, "do_orm_execute", _on_orm_execute)
         event.listen(Session, "after_begin", _on_after_begin)
         event.listen(Session, "after_flush", _on_after_flush)
-        event.listen(Engine, "before_cursor_execute", _on_unwatched_cursor_execute)
         _session_listeners = True
 
 
 def _drop_session_listeners_if_unused() -> None:
-    """Remove the shared Session and Engine listeners once no engine is watched.
+    """Remove the shared Session listeners once no engine is watched.
 
     Also after the last watched engine was garbage collected without
     ``unwatch()``; not from a finalizer, which could run in the middle of a
@@ -332,10 +257,8 @@ def _drop_session_listeners_if_unused() -> None:
     """
     global _session_listeners
     if not _watched and _session_listeners:
-        event.remove(Session, "do_orm_execute", _on_orm_execute)
         event.remove(Session, "after_begin", _on_after_begin)
         event.remove(Session, "after_flush", _on_after_flush)
-        event.remove(Engine, "before_cursor_execute", _on_unwatched_cursor_execute)
         _session_listeners = False
 
 

@@ -13,7 +13,6 @@ from typing import Any, NamedTuple
 
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Mapper, ORMExecuteState, Session, loading
 from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.orm.context import QueryContext
@@ -21,7 +20,7 @@ from sqlalchemy.pool import Pool
 
 from . import blocks, catalog, collector, indexes, mysql_index, sqlite_index, sqltext
 from .blocks import IgnoreBlock
-from .callsite import find_callsite, find_flush
+from .callsite import Sites, find_callsite, find_flush
 from .events import (
     CAUSE_DEFERRED,
     CAUSE_EXPIRED,
@@ -534,61 +533,19 @@ def _loader_session(execution_options: Any) -> Any:
     return getattr(top, "session", None)
 
 
-def _load_options(state: ORMExecuteState) -> Any:
-    """The load options of an ORM execution, also for ``from_statement()``.
-
-    Before SQLAlchemy 2.0.30 ``ORMExecuteState.is_select`` is False for
-    ``select(Entity).from_statement(...)`` and ``load_options`` then raises.
-    The loader of a joined-inheritance subclass column runs exactly such a
-    statement, so read the options from the execution options directly.
-    """
-    try:
-        return state.load_options
-    except InvalidRequestError:
-        return state.execution_options.get("_sa_orm_load_options")
-
-
-def _is_column_load(state: ORMExecuteState) -> bool:
-    """True for a refresh, an expired or a deferred column load of an instance.
-
-    ``ORMExecuteState.is_column_load`` is False for a ``from_statement()``
-    execution before SQLAlchemy 2.0.30 (see ``_load_options``), so the compile
-    options of the statement are asked as well.
-    """
-    if state.is_column_load:
-        return True
-    statement = getattr(state, "statement", None)
-    options = getattr(statement, "_compile_options", None)
-    return bool(getattr(options, "_for_refresh_state", False))
-
-
-def classify_column_load(state: ORMExecuteState) -> tuple[Any, ColumnLoadEvent] | None:
-    """The instance state a column load reloads, and its event; None without one.
-
-    For the in-app mode's ``do_orm_execute`` listener, which keeps its own
-    state; the plugin classifies the load from its SELECT
-    (``column_load_of``), so both label a load the same way. The caller has
-    checked ``_is_column_load(state)``.
-    """
-    return column_load_of(
-        _load_options(state),
-        getattr(state.statement, "_compile_options", None),
-        state.session,
-        blocks.current(),
-    )
-
-
 def column_load_of(
     load_options: Any,
     options: Any,
     session: Any,
     ignores: tuple[IgnoreBlock, ...] = (),
+    sites: Sites | None = None,
 ) -> tuple[Any, ColumnLoadEvent] | None:
     """The instance state a column load reloads, and its event; None without one.
 
     ``load_options`` and ``options`` are the load and compile options of the
-    load's SELECT (``orm_select``); ``session`` is the Session it runs in and
-    ``ignores`` the ``ignore()`` blocks active there. It counts nothing.
+    load's SELECT (``orm_select``); ``session`` is the Session it runs in,
+    ``ignores`` the ``ignore()`` blocks active there and ``sites`` the call
+    site cache to use (the in-app unit's own). It counts nothing.
     """
     instance = getattr(load_options, "_refresh_state", None)
     if instance is None:
@@ -619,7 +576,7 @@ def column_load_of(
         names,
         cause,
         key,
-        find_callsite(),
+        find_callsite(sites),
         scope=scope_of_session(session),
         ignores=ignores,
     )
@@ -646,8 +603,14 @@ def _relationship_load(
     session: Any,
     conn: Any,
     ignores: tuple[IgnoreBlock, ...],
+    sites: Sites | None = None,
+    parents: bool = True,
 ) -> RelationshipLoadEvent:
-    """The event of a relationship load; ``parent`` is None for a loader."""
+    """The event of a relationship load; ``parent`` is None for a loader.
+
+    ``parents`` False leaves out where the parent came from (``_parent_load``):
+    the in-app mode does not note the origins of instances.
+    """
     key: object = None
     if parent is not None:
         key = parent.identity_key
@@ -659,12 +622,17 @@ def _relationship_load(
     return RelationshipLoadEvent(
         str(prop),
         key,
-        find_callsite(),
+        find_callsite(sites),
         getattr(prop, "uselist", None) is False,
         scope,
-        None if parent is None else _parent_load(parent, prop),
+        None if parent is None or not parents else _parent_load(parent, prop),
         ignores,
     )
+
+
+def _plugin_written(session: Any) -> _Written | None:
+    """The plugin's record of the Session's latest flush (``_on_after_flush``)."""
+    return getattr(session, "__dict__", {}).get(_WRITTEN_ATTR)
 
 
 def _orm_load(
@@ -672,6 +640,9 @@ def _orm_load(
     orm: OrmSelect,
     targets: tuple[collector.QueryCollector, ...],
     ignores: tuple[IgnoreBlock, ...],
+    sites: Sites | None = None,
+    written: Callable[[Any], _Written | None] = _plugin_written,
+    parents: bool = True,
 ) -> _Labels | None:
     """Record the relationship or column load an ORM SELECT runs for.
 
@@ -680,18 +651,22 @@ def _orm_load(
     blocks, which every event carries. Returns the statement's labels, or
     None for a top-level query (no relationship or column load). Strict mode
     decides in ``_on_orm_execute_strict``, before the SELECT; never here.
+
+    The in-app mode calls it as well, with its unit's call site cache
+    (``sites``), its own record of the latest flush (``written``, called with
+    the Session) and without parent sites (``parents``), so both label a
+    load the same way.
     """
     load_options = orm.load_options
     options = orm.compile_options
     if getattr(options, "_for_refresh_state", False):
         instance = getattr(load_options, "_refresh_state", None)
         session = getattr(instance, "session", None)
-        found = column_load_of(load_options, options, session, ignores)
+        found = column_load_of(load_options, options, session, ignores, sites)
         if found is None:
             return _NO_LABELS
         instance, column = found
-        written = getattr(session, "__dict__", {}).get(_WRITTEN_ATTR)
-        if column_load_counts(column, instance, written):
+        if column_load_counts(column, instance, written(session)):
             for target in targets:
                 target.add_column_load(column)
         return _Labels(None, column, False, column.callsite)
@@ -707,7 +682,7 @@ def _orm_load(
         session = parent.session
     else:
         session = _loader_session(orm.execution_options)
-    load = _relationship_load(prop, parent, session, conn, ignores)
+    load = _relationship_load(prop, parent, session, conn, ignores, sites, parents)
     for target in targets:
         target.add_relationship_load(load)
     return _Labels(load.relationship, None, parent is not None, load.callsite)
@@ -1021,11 +996,9 @@ def _on_orm_execute_heal(state: Any) -> None:
     Registered with the plugin's ``do_orm_execute`` listeners, those of the
     unused eager-load check (``eager.py``) and of strict mode
     (``enable_strict``), through ``use_heal()``, and only where
-    ``_leaks_load_options()`` is true. The in-app mode has a
-    ``do_orm_execute`` listener of its own and does not register it. With a
-    listener,
-    SQLAlchemy prepares the statement twice and hands the first result to the
-    second pass. For a loader statement (``sa_top_level_orm_context``) that
+    ``_leaks_load_options()`` is true. The in-app mode registers no
+    ``do_orm_execute`` listener. With a listener, SQLAlchemy prepares the
+    statement twice and hands the first result to the second pass. For a loader statement (``sa_top_level_orm_context``) that
     result holds the outer statement's options next to the loader's own load
     options from the first pass; an option whose value differs from those
     load options came from the outer statement. Removing it makes the second

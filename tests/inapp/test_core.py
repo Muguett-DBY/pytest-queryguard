@@ -39,11 +39,11 @@ def test_importing_registers_nothing_and_needs_no_pytest() -> None:
         "import pytest_queryguard.app as qg\n"
         "from pytest_queryguard.app import _listeners as L\n"
         "assert 'pytest' not in sys.modules, 'pytest was imported'\n"
-        "assert not event.contains(Session, 'do_orm_execute', L._on_orm_execute)\n"
+        "assert not event.contains(Session, 'after_flush', L._on_after_flush)\n"
         "assert not L._watched\n"
         "qg.QueryGuardASGI(lambda *a: None)\n"
         "qg.QueryGuardWSGI(lambda *a: [])\n"
-        "assert not event.contains(Session, 'do_orm_execute', L._on_orm_execute)\n"
+        "assert not event.contains(Session, 'after_flush', L._on_after_flush)\n"
         "print('ok')\n"
     )
     result = subprocess.run(
@@ -59,7 +59,7 @@ def test_watch_and_unwatch_are_idempotent(engine: Engine) -> None:
     assert event.contains(
         engine, "before_cursor_execute", _listeners._on_before_cursor_execute
     )
-    assert event.contains(Session, "do_orm_execute", _listeners._on_orm_execute)
+    assert event.contains(Session, "after_flush", _listeners._on_after_flush)
     queryguard.unwatch(engine)
     queryguard.unwatch(engine)
     assert not queryguard.is_watched(engine)
@@ -67,7 +67,23 @@ def test_watch_and_unwatch_are_idempotent(engine: Engine) -> None:
         engine, "before_cursor_execute", _listeners._on_before_cursor_execute
     )
     # The Session listeners go with the last watched engine.
-    assert not event.contains(Session, "do_orm_execute", _listeners._on_orm_execute)
+    assert not event.contains(Session, "after_flush", _listeners._on_after_flush)
+
+
+def test_watch_adds_no_do_orm_execute_listener(watched: Engine) -> None:
+    """The cursor listener reads the ORM's options, as the plugin's does.
+
+    A ``do_orm_execute`` listener would make SQLAlchemy prepare each ORM
+    statement twice, and leak load options on some releases (see
+    tests/test_yield_per_leak.py).
+    """
+    with Session(watched) as session:
+        found = [
+            fn
+            for fn in session.dispatch.do_orm_execute
+            if getattr(fn, "__module__", "").startswith("pytest_queryguard.app")
+        ]
+    assert found == []
 
 
 def test_the_session_listeners_after_the_last_watched_engine_is_collected(
@@ -80,21 +96,17 @@ def test_the_session_listeners_after_the_last_watched_engine_is_collected(
     gc.collect()
     assert not _listeners._watched
     # Still registered, but they do nothing until a watch() or unwatch() call.
-    assert event.contains(Session, "do_orm_execute", _listeners._on_orm_execute)
+    assert event.contains(Session, "after_flush", _listeners._on_after_flush)
     calls: list[object] = []
-    monkeypatch.setattr(_listeners, "find_callsite", lambda: calls.append(1))
+    monkeypatch.setattr(_listeners, "find_callsite", lambda *a: calls.append(1))
     other = create_engine("sqlite://")
     seed(other)
     with queryguard.track(report=[]):
         _lazy_loop(other)
     assert calls == []
     queryguard.unwatch(other)
-    assert not event.contains(Session, "do_orm_execute", _listeners._on_orm_execute)
     assert not event.contains(Session, "after_begin", _listeners._on_after_begin)
     assert not event.contains(Session, "after_flush", _listeners._on_after_flush)
-    assert not event.contains(
-        Engine, "before_cursor_execute", _listeners._on_unwatched_cursor_execute
-    )
     other.dispose()
 
 
