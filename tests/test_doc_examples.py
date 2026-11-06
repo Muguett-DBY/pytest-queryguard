@@ -266,11 +266,15 @@ def test_the_project_of_a_page_runs(page: Path, tmp_path: Path) -> None:
                     f"{name}: failed without a queryguard report\n{message}"
                 )
     assert not problems, f"{page.name}:\n" + "\n".join(problems) + result.stdout
-    printed = [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
+    printed = [
+        _sql_aliases(line.rstrip())
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
     stale = [
         f"{page.name}:{number}:\n" + "\n".join(report)
         for number, report in _reports(text)
-        if not _contains(printed, report)
+        if not _contains(printed, [_sql_aliases(line) for line in report])
         and not OTHER_SETUPS.get(page.name, set()) & set(report)
     ]
     assert not stale, (
@@ -310,6 +314,15 @@ def _reports(text: str) -> list[tuple[int, list[str]]]:
         elif report is not None and line.strip():
             report.append(line.rstrip())
     return found
+
+
+# SQLAlchemy 2.0 renders "customer.id AS customer_id" where 2.1 renders
+# "customer.id"; the pages show 2.1's SQL.
+_ALIAS = re.compile(r"(\b\w+\.\w+) AS \w+")
+
+
+def _sql_aliases(line: str) -> str:
+    return _ALIAS.sub(r"\1", line)
 
 
 def _contains(lines: list[str], part: list[str]) -> bool:
