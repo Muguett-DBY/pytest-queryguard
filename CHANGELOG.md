@@ -85,6 +85,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- Seeded property tests for the source patch and the static check
+  (`tests/test_fuzz_fixpatch.py`, `tests/test_fuzz_lint.py`, standard library
+  only; `QUERYGUARD_FUZZ=1` runs many more rounds): generated modules, random
+  edits, pathological code and this repository's own files. Every patch must
+  apply with `git apply`, parse and change the AST by the loader option and
+  its import only. They found, and these changes fix: an existing
+  `.options((a))` getting the loader inside the parentheses (a tuple), a
+  class rebound by a module-level `match` capture, a `global` statement or a
+  class body still patched, warnings of the parsed code shown, code nested
+  deeper than the recursion limit (a long `a + b + ...`, a long `elif`
+  chain) skipped by the static check, which also reported a loop variable
+  rebound by `except ... as`, a `match` capture, an import or a `def`, gave
+  a wrong column after a form feed or a line separator, and took seconds for
+  a comprehension with hundreds of `for` clauses.
 - Every private SQLAlchemy attribute, execution option, frame and code object
   the plugin and the in-app mode read is named in one module,
   `pytest_queryguard._compat`, with the versions it is known for, and
