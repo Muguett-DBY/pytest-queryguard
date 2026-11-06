@@ -66,15 +66,25 @@ def test_site_builds_in_strict_mode(tmp_path: Path) -> None:
     pytest.importorskip("pygments")
     if sys.version_info < (3, 11):
         pytest.skip("scripts/build_docs.py reads docs/site.toml with tomllib")
+    output = tmp_path / "site-café"
     result = subprocess.run(
-        [sys.executable, "-I", str(ROOT / "scripts" / "build_docs.py"), "--strict"]
-        + ["--out", str(tmp_path / "site")],
+        [
+            sys.executable,
+            "-I",
+            "-X",
+            "utf8",
+            str(ROOT / "scripts" / "build_docs.py"),
+            "--strict",
+            "--out",
+            str(output),
+        ],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "site" / "index.html").is_file()
+    assert f"into {output}" in result.stdout
+    assert (output / "index.html").is_file()
 
 
 def test_the_stability_policy_has_the_pre_1_0_clause() -> None:
