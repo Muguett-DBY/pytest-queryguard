@@ -82,20 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is no patch, only the hint. Made with the stdlib `ast` when the findings
   are reported (#247).
 
-### Deprecated
-
-These keep working and emit a `QueryGuardDeprecationWarning` naming the
-replacement (an ini option once per run, a keyword at each call site); they
-will be removed in 2.0 (#303).
-
-- The ini option `queryguard_repeat_scope`: use `queryguard_scope`.
-- `repeat_scope=` of `QueryLog.assert_no_nplusone()` and
-  `pytest_queryguard.app.Settings`: use `scope=`. A `Settings` built with
-  `repeat_scope=` has it in `scope`, and its `repeat_scope` reads None.
-- The `n=` keyword of the `max_queries` marker (the spelling of 0.1 to 0.3):
-  pass the limit positionally, `max_queries(3)`, or as `limit=3`. Not while
-  pytest-querycount is installed, whose own keyword it is.
-
 ### Changed
 
 - relationship-load reports fewer findings: the lazy loads of a relationship
@@ -126,6 +112,20 @@ will be removed in 2.0 (#303).
   and outside one about half. The in-app mode labels a load as the plugin
   does: the sample SQL of a relationship-load finding is the lazy load, not
   an eager loader's query (#289).
+
+### Deprecated
+
+These keep working and emit a `QueryGuardDeprecationWarning` naming the
+replacement (an ini option once per run, a keyword at each call site); they
+will be removed in 2.0 (#303).
+
+- The ini option `queryguard_repeat_scope`: use `queryguard_scope`.
+- `repeat_scope=` of `QueryLog.assert_no_nplusone()` and
+  `pytest_queryguard.app.Settings`: use `scope=`. A `Settings` built with
+  `repeat_scope=` has it in `scope`, and its `repeat_scope` reads None.
+- The `n=` keyword of the `max_queries` marker (the spelling of 0.1 to 0.3):
+  pass the limit positionally, `max_queries(3)`, or as `limit=3`. Not while
+  pytest-querycount is installed, whose own keyword it is.
 
 ### Fixed
 
