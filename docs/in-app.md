@@ -604,24 +604,29 @@ from the pytest plugin's own error state, so neither switches the other off.
 
 Importing `pytest_queryguard.app` or creating the middleware registers
 nothing; only `watch()` adds listeners: to that engine, and, while any engine
-is watched, to `Session` for the ORM events and to the `Engine` class, where
-one checks that a lazy load's SELECT runs on a watched engine. Outside a
-request those shared listeners return after one `ContextVar.get()`.
-`unwatch()` of the last watched engine removes them.
+is watched, `after_begin` and `after_flush` to `Session`. Outside a request
+those shared listeners return after one `ContextVar.get()`. `unwatch()` of
+the last watched engine removes them. As the pytest plugin does, the
+engine's `before_cursor_execute` listener reads which relationship or column
+load an ORM `SELECT` runs for from that statement's own options; there is no
+`do_orm_execute` listener, so SQLAlchemy prepares each ORM statement once,
+and the `yield_per` issue of SQLAlchemy 2.0.20 to 2.0.49 (see
+[Limitations](limitations.md)) does not apply.
 `python scripts/bench_overhead.py --app` times a statement with the engine not
 watched, watched but outside a request, and inside one. On an in-memory SQLite
-database, on a 16-core laptop that was otherwise idle (load average 1.3 to
-1.6, balanced power profile, Python 3.14, SQLAlchemy 2.1; minimum of 21 runs,
+database, on a 16-core laptop with the benchmark pinned to two cores
+(`taskset -c 6-7`, Python 3.13, SQLAlchemy 2.1; median of 9 runs,
 microseconds per statement):
 
 | Statement | Not watched | Watched, outside a request | Inside a request |
 |---|---|---|---|
-| Core `SELECT` | 71.7 | 85.0 (+13.3) | 94.5 (+22.7) |
-| ORM `select()` | 144.3 | 167.6 (+23.3) | 191.7 (+47.3) |
+| Core `SELECT` | 40.9 | 46.8 (+5.9) | 54.2 (+13.3) |
+| ORM `select()` | 77.2 | 83.5 (+6.3) | 98.4 (+21.2) |
 
 Run to run, these numbers move by a few microseconds; the shared `Session`
-and `Engine` listeners cost well under one microsecond of that when timed on
-their own.
+listeners cost well under one microsecond of that when timed on their own.
+Before the `do_orm_execute` listener was dropped, the same run measured
++11.0 (outside a request) and +31.6 (inside one) for the ORM `select()`.
 
 Treat these as an order of magnitude and measure your own application; see
 [Performance](performance.md) for the method.

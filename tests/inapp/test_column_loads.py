@@ -16,7 +16,6 @@ from typing import Any, ClassVar
 import pytest
 from sqlalchemy import ForeignKey, create_engine, inspect, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 from sqlalchemy.pool import StaticPool
@@ -323,49 +322,40 @@ def test_a_joined_inheritance_subclass_column_is_a_column_load(
     assert _column_loads(report)[0].count == ROWS
 
 
-class _OldFromStatementState(SimpleNamespace):
-    """A ``from_statement()`` execution as SQLAlchemy before 2.0.30 shows it."""
+def test_a_column_load_is_read_from_the_options_of_its_select(db: Engine) -> None:
+    """The refresh state and the compile options are all the listener needs.
 
-    @property
-    def load_options(self) -> None:
-        raise InvalidRequestError("not against a SELECT statement")
-
-
-def test_a_from_statement_column_load_is_recognised_before_sqlalchemy_2_0_30(
-    db: Engine,
-) -> None:
-    """The column load of a joined-inheritance subclass, before 2.0.30.
-
-    Such an execution reports ``is_column_load`` as False and its
-    ``load_options`` raise; the refresh state is in the execution options and
-    the compile options (issue #161).
+    The column load of a joined-inheritance subclass runs through
+    ``from_statement()``, which ``ORMExecuteState`` does not report as a
+    column load before SQLAlchemy 2.0.30 (issue #161); the SELECT carries the
+    same options either way.
     """
     with Session(db) as session:
         session.add(Team(name="t"))
         session.commit()
         team = session.scalars(select(Team)).one()
-        state = _OldFromStatementState(
-            session=session,
-            is_column_load=False,
-            is_relationship_load=False,
-            is_select=False,
+        context = SimpleNamespace(
             execution_options={
                 "_sa_orm_load_options": SimpleNamespace(_refresh_state=inspect(team))
             },
-            statement=SimpleNamespace(
+            invoked_statement=SimpleNamespace(
+                _propagate_attrs={"compile_state_plugin": "orm"},
                 _compile_options=SimpleNamespace(
                     _for_refresh_state=True, _only_load_props=frozenset({"name"})
-                )
+                ),
             ),
         )
         with queryguard.track(report=[]):
-            _listeners._on_orm_execute(state)  # type: ignore[arg-type]
-            pending = _listeners._pending.get()
+            _listeners._on_before_cursor_execute(
+                None, None, "SELECT team.name", (), context, False
+            )
+            active = _core.live()
+            assert active is not None
+            loads = list(active.collector.column_loads)
+            statements = list(active.collector.statements)
     assert _core.internal_error() is None
-    assert pending is not None
-    load = pending[2]
-    assert load is not None
-    assert load.owner == "Team"
+    assert [load.owner for load in loads] == ["Team"]
+    assert [s.column_load for s in statements] == [True]
 
 
 def test_the_eager_loader_a_refresh_runs_is_not_a_lazy_load(db: Engine) -> None:

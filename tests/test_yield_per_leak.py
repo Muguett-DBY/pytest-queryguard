@@ -4,10 +4,11 @@ On SQLAlchemy 2.0.20 to 2.0.49 (and 2.1.0b1, 2.1.0b2) any ``do_orm_execute``
 listener makes the outer statement's ``yield_per``, ``autoflush`` and similar
 options become load options of its ``selectinload`` statement (SQLAlchemy issue
 13301, fixed in 2.0.50). The plugin's listeners read the ORM's options from the
-SELECT, with no such listener; the unused eager-load check and strict mode
-still install one, so they remove the leaked options again when no other
-listener takes part; see issue 169. Each test runs with the default listeners,
-with that check on and in strict mode.
+SELECT, with no such listener, and so do the in-app mode's; the unused
+eager-load check and strict mode still install one, so they remove the leaked
+options again when no other listener takes part; see issue 169. Each test runs
+with the default listeners, with that check on, in strict mode and inside an
+in-app unit.
 
 The expected values below are what SQLAlchemy 2.0.50 returns, with or without
 the plugin; the CI job pinned to 2.0.49 checks that the plugin gets the same.
@@ -33,7 +34,8 @@ from sqlalchemy.orm import (
     selectinload,
 )
 
-from pytest_queryguard import eager, listeners
+from pytest_queryguard import app, eager, listeners
+from pytest_queryguard.app import _core as app_core
 
 LEAKS = listeners._leaks_load_options()
 # Loaders inherit the outer statement's execution options from 2.0.20 on
@@ -81,7 +83,7 @@ def strict_mode() -> Iterator[None]:
         listeners.disable_strict()
 
 
-@pytest.fixture(params=["default", "eager-check", "strict"])
+@pytest.fixture(params=["default", "eager-check", "strict", "in-app"])
 def session(request: pytest.FixtureRequest) -> Iterator[Session]:
     listeners.install()
     if request.param == "eager-check":
@@ -93,8 +95,18 @@ def session(request: pytest.FixtureRequest) -> Iterator[Session]:
     with Session(engine) as s:
         s.add_all([Parent(id=i, lines=[Line()]) for i in range(1, 1201)])
         s.commit()
-    with Session(engine) as s:
-        yield s
+    if request.param == "in-app":
+        # The in-app mode measuring a unit, as in a request of the application.
+        app.watch(engine)
+        try:
+            with app.track(report=[]), Session(engine) as s:
+                yield s
+        finally:
+            app.unwatch(engine)
+        assert app_core.internal_error() is None
+    else:
+        with Session(engine) as s:
+            yield s
     engine.dispose()
 
 

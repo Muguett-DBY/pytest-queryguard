@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import blocks, collector, listeners
+from ._compat import WITH_OPTIONS
 from .blocks import IgnoreBlock
 from .eager import LOADERS, loader_paths
 from .events import CallSite, CartesianLoadEvent
@@ -127,7 +128,7 @@ def _check(
         return
     try:
         # most statements have no loader options: one attribute read, then out
-        options = getattr(statement, "_with_options", ())
+        options = getattr(statement, WITH_OPTIONS, ())
         if not options or not getattr(statement, "is_select", False):
             return
         found = _collections(options)

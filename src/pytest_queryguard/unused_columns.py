@@ -37,9 +37,9 @@ from typing import Any
 
 from sqlalchemy import event
 from sqlalchemy.orm import Mapper
-from sqlalchemy.orm.context import QueryContext
 
 from . import blocks, collector, listeners, readhook
+from ._compat import RUNID, QueryContext
 from .blocks import IgnoreBlock
 from .events import CallSite
 from .findings import KIND_UNUSED_COLUMNS, Finding
@@ -187,7 +187,7 @@ def _note(state: Any, context: Any, attrs: Any, fresh: bool) -> None:
         return
     try:
         # Session.merge() fires it without a query context
-        run = getattr(context, "runid", None)
+        run = getattr(context, RUNID, None)
         if run is None:
             return
         # (call site, load path, generation), noted by the plugin's listener
