@@ -422,20 +422,19 @@ class _Closing:
 
 def _call_wsgi(app: Any) -> tuple[list[Any], bytes, Any]:
     started: list[Any] = []
-    written: list[bytes] = []
+    out: list[bytes] = []  # write() data and chunks, in the order sent
 
     def start_response(status: str, headers: list[Any], exc_info: Any = None) -> Any:
         started.append((status, headers))
-        return written.append
+        return out.append
 
     middleware = QueryGuardWSGI(app, report=[], page_report="footer")
     result = middleware({"REQUEST_METHOD": "GET", "PATH_INFO": "/raw"}, start_response)
-    body = b"".join(written)
     for chunk in result:
         assert started, "start_response must come before the first chunk"
-        body += chunk
+        out.append(chunk)
     result.close()  # type: ignore[attr-defined]
-    return started, body, result
+    return started, b"".join(out), result
 
 
 def test_wsgi_lazy_start_response_and_close(watched: Engine) -> None:
@@ -498,3 +497,106 @@ def test_wsgi_error_page_replaces_held_start(watched: Engine) -> None:
     started, body, _ = _call_wsgi(app)
     assert [s for s, _ in started] == ["500 Internal Server Error"]
     assert body == b"oops"
+
+
+def test_wsgi_error_page_during_iteration_drops_held_body(watched: Engine) -> None:
+    import sys
+
+    def app(environ: Any, start_response: Any) -> Any:
+        _names(watched)
+        start_response(
+            "200 OK", [("Content-Type", "text/html"), ("Content-Length", "99")]
+        )
+        yield b"<html><body>half"
+        try:
+            raise RuntimeError("late")
+        except RuntimeError:
+            start_response(
+                "500 Internal Server Error",
+                [("Content-Type", "text/plain"), ("Content-Length", "4")],
+                sys.exc_info(),
+            )
+        yield b"oops"
+
+    started, body, _ = _call_wsgi(app)
+    assert [s for s, _ in started] == ["500 Internal Server Error"]
+    assert body == b"oops"
+
+
+def test_wsgi_write_during_iteration_keeps_order(watched: Engine) -> None:
+    def app(environ: Any, start_response: Any) -> Any:
+        _names(watched)
+        write = start_response(
+            "200 OK", [("Content-Type", "text/html"), ("Content-Length", "99")]
+        )
+        yield b"<html><body>"
+        write(b"payload")
+        yield b"</body></html>"
+
+    _, body, _ = _call_wsgi(app)
+    assert body == b"<html><body>payload</body></html>"
+
+
+def test_wsgi_body_error_while_held_reports_500(watched: Engine) -> None:
+    reports: list[Any] = []
+
+    def app(environ: Any, start_response: Any) -> Any:
+        _names(watched)
+        start_response(
+            "200 OK", [("Content-Type", "text/html"), ("Content-Length", "99")]
+        )
+        yield b"<html>"
+        raise RuntimeError("body bug")
+
+    middleware = QueryGuardWSGI(app, report=reports.append, page_report="footer")
+    started: list[Any] = []
+    result = middleware(
+        {"REQUEST_METHOD": "GET", "PATH_INFO": "/raw"},
+        lambda status, headers, exc_info=None: started.append(status),
+    )
+    with pytest.raises(RuntimeError, match="body bug"):
+        list(result)
+    result.close()  # type: ignore[attr-defined]
+    assert started == []  # nothing reached the server: it answers 500
+    assert reports[0].status == 500
+
+
+def test_bom_and_digest_headers() -> None:
+    from pytest_queryguard.app import RequestReport
+
+    report = RequestReport(id=1, name="GET /", statement_count=3, budget=1)
+    assert _page.inject("<body>x</body>".encode("utf-16"), report, "footer", []) is None
+    page = _page.inject(b"<body>x</body>", report, "footer", [])
+    assert page is not None
+    assert b"queryguard: 1 problem in GET /: 3 statements, budget 1" in page
+    headers = [
+        ("Content-Length", "5"),
+        ("ETag", '"x"'),
+        ("Repr-Digest", "sha-256=:x:"),
+        ("Content-MD5", "x"),
+        ("X-Kept", "1"),
+    ]
+    assert _page.with_length(headers, 9) == [("Content-Length", "9"), ("X-Kept", "1")]
+
+
+def test_asgi_failed_flush_still_finishes(watched: Engine) -> None:
+    import asyncio
+
+    reports: list[Any] = []
+    parts = [b"<html><body>", b"never ends"]
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        _names(watched)
+        await send(
+            {"type": "http.response.start", "status": 200, "headers": _html_headers(99)}
+        )
+        for part in parts:  # returns without the last part (more_body stays True)
+            await send({"type": "http.response.body", "body": part, "more_body": True})
+
+    async def send(message: dict[str, Any]) -> None:
+        raise OSError("client went away")
+
+    middleware = QueryGuardASGI(app, report=reports.append, page_report="footer")
+    with pytest.raises(OSError, match="went away"):
+        asyncio.run(middleware(_scope(), _receive, send))
+    assert len(reports) == 1  # reported, though the held start never went out

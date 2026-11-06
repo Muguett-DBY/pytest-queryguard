@@ -31,6 +31,8 @@ _CSP_HEADERS = frozenset(
     ("content-security-policy", "content-security-policy-report-only")
 )
 _NO_BODY = frozenset((204, 205, 206))
+_WIDE_BOMS = (b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff")  # UTF-16, UTF-32
+_STALE = frozenset(("etag", "content-md5", "digest", "content-digest", "repr-digest"))
 
 _ASIDE_STYLE = (
     "display:block;clear:both;margin:16px 0 0;padding:8px 12px;"
@@ -93,14 +95,19 @@ def has_csp(headers: Iterable[tuple[str, str]]) -> bool:
 
 def inject(
     body: bytes, report: RequestReport, mode: str, headers: Sequence[tuple[str, str]]
-) -> bytes:
+) -> bytes | None:
     """``body`` with the report before its last ``</body>``, or at its end.
+
+    None when the body is not ASCII-compatible after all (a UTF-16 or UTF-32
+    byte order mark): it is then sent unchanged.
 
     Console mode adds an inline script, which a Content-Security-Policy
     without ``'unsafe-inline'`` would block (and report). The middleware does
     not edit the application's policy: with a policy in a header or a
     ``<meta>`` element, the report is a footer without ``style`` attributes.
     """
+    if body.startswith(_WIDE_BOMS):
+        return None  # UTF-16 or UTF-32 without a charset in the header
     csp = has_csp(headers) or _CSP_META.search(body) is not None
     if mode == CONSOLE and not csp:
         snippet = console(report)
@@ -173,14 +180,14 @@ def _script_json(value: object) -> str:
 def with_length(
     headers: Sequence[tuple[str, str]], length: int
 ) -> list[tuple[str, str]]:
-    """The headers with the new ``Content-Length`` and without ``ETag``.
+    """The headers with the new ``Content-Length``, without ``ETag`` and digests.
 
-    The validator described the original bytes, so a changed page drops it.
+    Those described the original bytes, so a changed page drops them.
     """
     fixed: list[tuple[str, str]] = []
     for name, value in headers:
         lower = name.lower()
-        if lower == "etag":
+        if lower in _STALE:
             continue
         fixed.append((name, str(length) if lower == "content-length" else value))
     return fixed

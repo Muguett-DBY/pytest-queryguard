@@ -73,26 +73,30 @@ class QueryGuardASGI:
             await self.app(scope, receive, send)
             return
         report = tracker.report
-        page = _Page(self.settings.page_report, tracker, scope, send)
+        mode = self.settings.page_report
+        page = _Page(mode, tracker, scope, send) if mode != "off" else None
 
         async def send_status(message: Message) -> None:
             if message.get("type") == "http.response.start":
                 report.status = message.get("status")
-                if page.on and page.hold(message):
+                if page is not None and page.hold(message):
                     return
-            elif page.held is not None and await page.take(message):
+            elif (
+                page is not None and page.held is not None and await page.take(message)
+            ):
                 return
             await send(message)
 
         try:
             await self.app(scope, receive, send_status)
+            if page is not None:
+                # An application that ends without the last part of its body.
+                await page.flush()
         except BaseException:
-            if report.status is None or page.held is not None:
+            if report.status is None or (page is not None and page.held is not None):
                 report.status = 500  # what the server answers for it
             self._finish(tracker, scope)
             raise
-        # An application that ends without the last part of its body.
-        await page.flush()
         self._finish(tracker, scope)
         if tracker.warning is not None:
             # "warn" under an "error" filter, and the app itself succeeded.
@@ -167,7 +171,6 @@ class _Page:
         "held",
         "limit",
         "mode",
-        "on",
         "scope",
         "send",
         "size",
@@ -176,7 +179,6 @@ class _Page:
 
     def __init__(self, mode: str, tracker: Tracker, scope: Scope, send: Send) -> None:
         self.mode = mode
-        self.on = mode != "off"
         self.tracker = tracker
         self.scope = scope
         self.send = send
@@ -215,21 +217,26 @@ class _Page:
             return True
         held, self.held = self.held, None
         assert held is not None
-        body, chunks = b"".join(self.chunks), self.chunks
+        body = b"".join(self.chunks)
         self.chunks = []
         headers = held.get("headers") or []
         try:
             report = self.tracker.preview(_route(self.scope))
-            if report is not None:
-                text = _headers(held)
-                body = _page.inject(body, report, self.mode, text)
+            text = _headers(held)
+            new_body = (
+                _page.inject(body, report, self.mode, text)
+                if report is not None
+                else None
+            )
+            if new_body is not None:
                 headers = [
                     (k.encode("latin-1"), v.encode("latin-1"))
-                    for k, v in _page.with_length(text, len(body))
+                    for k, v in _page.with_length(text, len(new_body))
                 ]
+                body = new_body
         except Exception as exc:  # noqa: BLE001  # never break the application
             _core.fail(exc, "the page report")
-            body, headers = b"".join(chunks), held.get("headers") or []
+            headers = held.get("headers") or []
         await self.send({**held, "headers": headers})
         await self.send({**message, "body": body})
         return True

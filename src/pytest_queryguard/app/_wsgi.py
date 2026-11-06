@@ -103,8 +103,8 @@ class QueryGuardWSGI:
         try:
             result = self.app(environ, start)
         except BaseException:
-            if report.status is None:
-                report.status = 500
+            if report.status is None or (page is not None and page.held is not None):
+                report.status = 500  # what the server answers for it
             tracker.detach()
             self._finish(tracker)
             raise
@@ -119,7 +119,11 @@ class QueryGuardWSGI:
         for native_result, measured in wrapped_files:
             if result is native_result:
                 if page is not None:
-                    page.flush()  # a file is sent as it is
+                    try:
+                        page.flush()  # a file is sent as it is
+                    except BaseException:
+                        self._finish(tracker)
+                        raise
                 measured.returned()
                 return result
         return _Body(result, tracker, self, page)
@@ -309,24 +313,31 @@ class _Body:
             return None
         except BaseException:
             self._failed = True
+            if self._page is not None and self._page.held is not None:
+                self._tracker.report.status = 500  # no headers sent: the server's
             raise
         finally:
             _core.current.reset(token)
 
     def _buffer(self, page: _Page, chunk: bytes | None) -> None:
-        """Read the whole body of a held response, then start it, with the report."""
-        parts: list[bytes] = []
-        size = 0
+        """Read the whole body of a held response, then start it, with the report.
+
+        The parts are kept on ``page``: a ``start_response`` call that
+        replaces the held response (an error page) drops them, and a
+        ``write()`` sends them before its own data.
+        """
         while chunk is not None:
-            parts.append(chunk)
-            size += len(chunk)
-            if size > page.limit or page.held is None:
-                # Longer than its Content-Length, or write() was used: as sent.
-                page.flush()
-                self._ready.extend(parts)
-                return
+            page.add(chunk)
+            if page.held is None:
+                break  # started by write() or by a response not held
+            if page.size > page.limit:
+                page.flush()  # longer than its Content-Length: as sent
+                break
             chunk = self._pull()
-        body = page.finish(b"".join(parts), self._tracker)
+        if page.held is None:
+            self._ready.extend(page.take())
+            return
+        body = page.finish(self._tracker)
         if body:
             self._ready.append(body)
 
@@ -362,7 +373,16 @@ class _Page:
     ``Content-Length``. Any other response starts as the application asks.
     """
 
-    __slots__ = ("_write", "environ", "held", "limit", "mode", "start_response")
+    __slots__ = (
+        "_parts",
+        "_write",
+        "environ",
+        "held",
+        "limit",
+        "mode",
+        "size",
+        "start_response",
+    )
 
     def __init__(
         self, mode: str, start_response: StartResponse, environ: Environ
@@ -372,12 +392,25 @@ class _Page:
         self.environ = environ
         self.held: tuple[str, list[tuple[str, str]], ExcInfo | None] | None = None
         self.limit = 0
+        self._parts: list[bytes] = []
+        self.size = 0
         self._write: Callable[[bytes], Any] | None = None
+
+    def add(self, chunk: bytes) -> None:
+        self._parts.append(chunk)
+        self.size += len(chunk)
+
+    def take(self) -> list[bytes]:
+        """The buffered parts, which the caller now sends."""
+        parts, self._parts, self.size = self._parts, [], 0
+        return parts
 
     def start(
         self, status: str, headers: Any, exc_info: ExcInfo | None, code: int | None
     ) -> Any:
         if self._write is None:  # not started yet: an error page may replace it
+            if self.held is not None:
+                self.take()  # the replaced response's body is never sent
             self.held = None
             try:
                 limit = _page.eligible(
@@ -401,6 +434,8 @@ class _Page:
         """The legacy ``write()``: the body is not ours to hold; start as sent."""
         self.flush()
         if self._write is not None:
+            for part in self.take():  # what the iterable yielded before
+                self._write(part)
             self._write(data)
 
     def flush(self) -> None:
@@ -408,15 +443,18 @@ class _Page:
         if held is not None:
             self._write = self._start(*held)
 
-    def finish(self, body: bytes, tracker: Tracker) -> bytes:
-        """Start the held response, with the report in ``body`` when it has problems."""
+    def finish(self, tracker: Tracker) -> bytes:
+        """Start the held response, with the report in its body when it has problems."""
         held, self.held = self.held, None
         assert held is not None
         status, headers, exc_info = held
+        body = b"".join(self.take())
         try:
             report = tracker.preview()
+            new_body = None
             if report is not None:
                 new_body = _page.inject(body, report, self.mode, headers)
+            if new_body is not None:
                 headers, body = _page.with_length(headers, len(new_body)), new_body
         except Exception as exc:  # noqa: BLE001  # never break the application
             _core.fail(exc, "the page report")

@@ -413,7 +413,8 @@ until the body was complete, and statements of a later background task
 count only for the usual report.
 
 Only a response the middleware can change safely gets a report. It must be
-`text/html` (any charset in which `</body>` is ASCII, so not UTF-16), a 2xx
+`text/html` (any charset in which `</body>` is ASCII, so not UTF-16, nor a
+body that starts with a UTF-16 or UTF-32 byte order mark), a 2xx
 status other than 204, 205 and 206, an answer to a method other than `HEAD`,
 with a `Content-Length` of at most 4 MiB and without `Content-Encoding`
 (`gzip`, `br`: wrap a compressing middleware around queryguard's, in
@@ -424,8 +425,12 @@ sent with `wsgi.file_wrapper` pass through as they are. Every other response
 passes through untouched, and an HTML response the rules allow is held back
 only until its body is complete: ASGI holds its start message and body
 parts, WSGI calls `start_response` once the body iterable has been read (an
-application that uses the legacy `write()` callable is passed through). A
-changed page loses its `ETag`, which described the original bytes.
+application that uses the legacy `write()` callable is passed through; a
+later `start_response` call with `exc_info` replaces the held page, whose
+body is then not sent). A changed page loses its `ETag` and digest headers
+(`Content-MD5`, `Digest`, `Content-Digest`, `Repr-Digest`), which described
+the original bytes. For such a page the detectors run twice: once when its
+body is complete and once when the request ends.
 
 Every value is escaped: the footer's text with `html.escape()` and character
 references for non-ASCII characters, the script's data as JSON in which `<`,
@@ -436,8 +441,11 @@ edit the application's policy. When the response has a
 `Content-Security-Policy` or `Content-Security-Policy-Report-Only` header,
 or the page a `<meta http-equiv="Content-Security-Policy">` element,
 `"console"` falls back to the footer, and the footer has no `style`
-attributes, so nothing triggers a violation report. Like the panel, the page
-report is for development: it shows SQL text to whoever loads the page.
+attributes, so nothing triggers a violation report.
+
+Like the panel, the page report is for development only: it shows SQL text,
+file names and line numbers to whoever loads the page, with no loopback
+check or token. Never enable it in production or on a server others reach.
 
 ## The panel
 

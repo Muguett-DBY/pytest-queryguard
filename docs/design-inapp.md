@@ -151,10 +151,16 @@ with queryguard.track("nightly-job") as report:  # any unit of work
   ending or reporting the unit (statements of a later background task still
   count for the usual report), so detection runs twice for such responses.
   With problems, the report goes before the last `</body>` (else at the
-  end), `Content-Length` is rewritten and `ETag` dropped; without, the held
+  end), `Content-Length` is rewritten and `ETag` and digest headers
+  dropped; a body starting with a UTF-16/32 byte order mark is left alone;
+  without problems, the held
   messages are sent unchanged. WSGI defers `start_response` until the body
-  iterable has been read, replaces a held start with a later `exc_info`
-  call, and gives up (starts as asked) when the application uses `write()`.
+  iterable has been read, replaces a held start (and drops its buffered
+  parts) on a later `exc_info` call, and gives up when the application uses
+  `write()`: it starts as asked and sends the buffered parts before the
+  written data. A held response that fails is recorded with status 500,
+  which the server answers. No loopback check or token: like the panel it
+  is a development aid, and the docs say never to enable it in production.
   Escaping: `html.escape()` plus `xmlcharrefreplace` for the footer, JSON
   with `<`, `>`, `&` as `\u` escapes for the script. Console mode is an
   inline script, which a CSP without `'unsafe-inline'` blocks; adding its
