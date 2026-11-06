@@ -64,11 +64,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them, so two single-object lookups that each read the relationship
   (`session.get(Order, 1).customer`, then `session.get(Order, 2).customer`)
   are no longer an N+1. Lookups at the same line (a loop of `session.get()`)
-  still count together, and when the query of any parent is unknown (objects
-  the test created, or loaded before the test body) all the parents of the
-  relationship count together as before, so such a loop is still reported.
-  A finding counts the lazy loads of the query lines that reach the
-  threshold, no longer those of single lookups next to the loop (#307).
+  still count together, and a parent whose query is unknown (an object the
+  test created, or loaded before the test body) counts with the parents of
+  every query line, so a loop over such objects is still reported. A
+  finding counts the lazy loads of the query lines that reach the
+  threshold, no longer those of single lookups next to the loop, and leaves
+  out a query line whose loads all ran inside an `ignore()` block. A loop
+  over the rows of several queries that return one row each is no longer
+  reported. This applies to `assert_no_nplusone()` too; the
+  in-application mode does not note where parents came from and counts as
+  before (#307).
 - In-application mode: the watched engine's `before_cursor_execute` listener
   reads which relationship or column load an ORM `SELECT` runs for from that
   statement's own options, with the same code as the pytest plugin since

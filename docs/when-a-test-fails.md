@@ -131,7 +131,7 @@ It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
   objects whose query is unknown (made by the test, loaded before it). Objects
   loaded one by one at the same line (`for id in ids: get_order(id).customer`)
   count together, as in the report. The report at the end still covers the
-  rest (there the objects whose query is unknown count together), and with
+  rest (there an object whose query is unknown counts with every query line), and with
   `queryguard_repeat_scope = session` each Session counts on its own here
   too.
 - The finding is the one the report makes, at the first lazy load, so

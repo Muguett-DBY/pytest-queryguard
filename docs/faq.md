@@ -33,8 +33,9 @@ only create a couple of objects. Two orders loaded separately, at two
 different lines (`session.get(Order, 1)` and `session.get(Order, 2)`), each
 reading its customer, are not an N+1 and are not reported. When the plugin
 cannot tell which query loaded a parent (an object the test created, or one
-loaded before the test body), all the parents of the relationship count
-together, so two such objects are reported. If two is too strict for your
+loaded before the test body), that parent counts with the parents of every
+query line, so two such objects, or one of them and one looked up, are
+reported. If two is too strict for your
 code, raise it:
 
 ```toml

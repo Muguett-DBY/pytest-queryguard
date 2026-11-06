@@ -54,9 +54,16 @@ the groups that reach the threshold; when several do, it names the first
 query line and how many others. When the query of a parent is unknown
 (objects the test created that a query or `session.get()` handed back without
 reading their row, objects loaded before the test body, objects that two
-queries read), the plugin cannot tell which query it belongs to, so every
-parent of that relationship counts together, as one group: an unknown origin
-never hides a loop.
+queries read), the plugin cannot tell which query it belongs to: it counts for
+every query line's group, and the parents of unknown origin also count as a
+group of their own, so an unknown origin never hides a loop. A query line
+whose lazy loads all ran inside an `ignore("relationship-load")` block is
+left out of the finding, the other lines are still reported.
+
+The grouping has a cost: a loop over the rows of several queries that return
+one row each (`for order in [*open_orders, *closed_orders]` with one order of
+each) has a single parent per query line and is not reported; give the test
+two rows for one of the queries, as for any N+1 test.
 
 #### Refreshing an object with an eager relationship
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from pytest_queryguard.blocks import IgnoreBlock, Sieve
 from pytest_queryguard.collector import QueryCollector
 from pytest_queryguard.detectors import (
     ColumnLoadFinding,
@@ -922,6 +923,46 @@ def test_parents_of_unknown_origin_count_together_with_every_parent() -> None:
     assert (f.parent_site, f.other_parent_sites, f.count) == (None, 0, 3)
     f = _found(_with_parent(1, None), _with_parent(2, None))
     assert f.count == 2
+
+
+def test_a_parent_of_unknown_origin_counts_for_each_query_line_alone() -> None:
+    # it may belong to either line, not to both: one line and it make 2
+    c = QueryCollector()
+    c.relationship_loads.extend(
+        (
+            _with_parent(1, ParentLoad(SITE, "Order", CHAIN)),
+            _with_parent(2, ParentLoad(OTHER, "Order", CHAIN)),
+            _with_parent(3, None),
+        )
+    )
+    assert detect(c, relationship_threshold=3, repeat_threshold=5) == []
+    c.relationship_loads.append(_with_parent(4, ParentLoad(SITE, "Order", CHAIN)))
+    [f] = detect(c, relationship_threshold=3, repeat_threshold=5)
+    assert isinstance(f, RelationshipFinding)
+    assert (f.count, f.parent_site) == (3, None)
+
+
+def test_a_query_line_inside_an_ignore_block_is_left_out_of_the_finding() -> None:
+    block = IgnoreBlock(("relationship-load",), None, None)
+
+    def load(
+        key: int, site: CallSite, ignores: tuple[IgnoreBlock, ...]
+    ) -> RelationshipLoadEvent:
+        return RelationshipLoadEvent(
+            "Order.customer", key, SITE, True, None, ParentLoad(site, None), ignores
+        )
+
+    c = QueryCollector()
+    c.relationship_loads.extend(load(k, OTHER, (block,)) for k in (1, 2))
+    sieve = Sieve()
+    assert detect(c, relationship_threshold=2, repeat_threshold=5, sieve=sieve) == []
+    assert list(sieve.used) == [block]
+    c.relationship_loads.extend(load(k, SITE, ()) for k in (3, 4))
+    sieve = Sieve()
+    [f] = detect(c, relationship_threshold=2, repeat_threshold=5, sieve=sieve)
+    assert isinstance(f, RelationshipFinding)
+    assert (f.count, f.parent_site, f.other_parent_sites) == (2, SITE, 0)
+    assert list(sieve.used) == [block]
 
 
 def test_per_session_the_parents_of_one_query_line_count() -> None:
