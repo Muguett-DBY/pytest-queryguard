@@ -432,7 +432,8 @@ COMBOS = [
         unused_eager="fail",
         unused_columns="fail",
         cartesian="fail",
-        fail_on=("*-load",),
+        # relationship-load only warns: strict mode must not raise
+        fail_on=("cartesian-*", "unused-*", "repeated-statement"),
     ),
 ]
 
@@ -565,6 +566,8 @@ def _run(pytester: pytest.Pytester, combo: Combo, *, xdist: bool) -> Run:
         args += ["-p", "xdist", "-n", "2"]
     result = pytester.runpytest_subprocess(*args)
     lines = result.outlines
+    if xdist:
+        result.stdout.fnmatch_lines(["created: 2/2 workers"])
     outcomes = {}
     for line in lines:
         short = _SHORT.match(line)
