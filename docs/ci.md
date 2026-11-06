@@ -77,9 +77,11 @@ failed. Install your own project first: the action does not know how.
 | `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. Empty: none. |
 | `compare` | `true` | On a pull request, compare the counts with the base branch and write the result to the job summary. |
 | `comment` | `true` | Also post the comparison as a pull-request comment, updated in place on later pushes. |
-| `github-token` | `github.token` | Token for the comparison and the comment. |
+| `trend` | `false` | A number of runs N (2 to 100; `true` means 10): on pushes to the default branch and on pull requests, show how the counts moved over the last N runs, see [below](#query-counts-over-the-last-runs). |
+| `github-token` | `github.token` | Token for the comparison, the trend and the comment. |
 
-Outputs: `exit-code` (pytest's), `sarif-file` and `json-file`.
+Outputs: `exit-code` (pytest's), `sarif-file`, `json-file` and `trend-report`
+(the trend's Markdown file, empty when there is none).
 
 ### Query counts on pull requests
 
@@ -121,6 +123,64 @@ never fails the job.
   at `json-file`.
 - Several jobs (for example one per database) keep apart by `category`.
 - The same report locally: `python -m pytest_queryguard.compare base.json head.json`.
+
+### Query counts over the last runs
+
+The comparison shows one step; `trend: "10"` shows the last ten runs, as an
+APM shows a query count over time in production. On a push to the default
+branch and on a pull request, the action downloads the query-count artifacts
+of the latest finished runs of the same workflow on the (base) branch, adds
+the file of this run as the newest, and appends the trend to the job summary.
+On a pull request with a comment it is also folded into that comment, as a
+collapsed `<details>` block below the comparison.
+
+```
+### pytest-queryguard: query counts over the last 5 runs
+
+5 runs, statements 3120 -> 3187 (+67) `▁▁▂▂█`. 3 tests changed their count, 2 new, 0 not in the latest run; 1 new findings, 0 gone.
+
+| Run | Tests | Statements | |
+| `1a2b3c4` | 410 | 3120 |  |
+| ... | | | |
+| `9f8e7d6 (this run)` | 412 | 3187 |  |
+
+#### Tests whose count changed most
+| Test | Runs | First | Last | Change |
+| `tests/test_orders.py::test_list` | `▁▁▁▁█` | 3 | 53 | +50 |
+```
+
+- Each run is named by its commit. A run that stopped early or whose
+  measurement failed (`complete: false`) is marked `incomplete`: its total is
+  partial, and tests missing from it did not run.
+- A test's change is its count in the latest run against its first run in the
+  window, with one sparkline character per run (`·` where the test did not
+  run), scaled between its lowest and highest count. A renamed test is one
+  new test and one that is no longer in the latest run.
+- New and gone findings compare the oldest run with the newest, as the
+  comparison does; `Since` is the run from which on a new finding is in
+  every run.
+- Pull-request runs are not history: only runs of other events (push,
+  schedule, merge queue) on the branch count, one per commit. Runs without
+  the artifact (expired after 30 days, or a job that stopped before writing
+  it) or with a file that cannot be read are skipped, so the window may have
+  fewer runs. The
+  trend needs `actions: read` and never fails the job; without the
+  permission it has this run only and the log has a warning.
+
+The same report locally, from files given oldest first:
+
+```
+python -m pytest_queryguard.trend mon.json tue.json wed.json --top 20
+python -m pytest_queryguard.trend runs/*.json --test "tests/test_orders.py::*" --format text
+```
+
+`--format` is `markdown` (the default), `text` or `json`; `--test` keeps the
+tests whose node id contains the pattern, or matches it when it is a glob;
+`--label` names the runs (once per file, default: the file names). The
+sparklines use Unicode blocks; `--ascii` prints `_-~=+*#@` instead, and the
+console output falls back to it by itself when the console cannot print the
+blocks (a Windows console with cp1252). The exit status is 2 when a file
+cannot be read (`--skip-unreadable` leaves it out instead), otherwise 0.
 
 A typical rollout: run once with `fail: "false"` to see the alerts, create a
 [baseline](baseline.md) for what you cannot fix yet, then switch to
@@ -221,6 +281,8 @@ The `action` job in `.github/workflows/ci.yml` runs the local action
 (`uses: ./action`) on `examples/action-sample`, a project with one N+1 query:
 once with `fail: "false"` (the SARIF file is checked, including that its URI
 starts with `examples/action-sample/`, the working directory), once expecting
-the step to fail, and once with the finding in a baseline. None of them
+the step to fail, and once with the finding in a baseline. The first run
+also has `trend: "5"`; when the trend wrote a report, the job checks that it
+has this run's row. None of them
 uploads: a sample upload with no results would make every pull request report
 "1 configuration not found" in its checks.

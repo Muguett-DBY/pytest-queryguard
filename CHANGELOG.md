@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `python -m pytest_queryguard.trend RUN1.json RUN2.json ...` shows how the
+  query counts moved over several `--queryguard-json` files, oldest first:
+  the statements of each run, the tests whose count changed most with a
+  sparkline per test, and the findings new or gone in the window. Runs that
+  stopped early are marked. `--top`, `--test`, `--format markdown|text|json`
+  and `--ascii` (also chosen by itself for a console that cannot print the
+  blocks). The GitHub Action's new input `trend: N` adds the trend of the
+  last N runs on the base branch to the job summary on pushes to the default
+  branch and on pull requests, and folds it into the pull-request comment;
+  new output `trend-report` (#248).
 - An experimental static check, `python -m pytest_queryguard.lint --models
   app.models PATHS...`, reports likely N+1 queries without running tests: a
   loop or comprehension over an ORM query (`session.scalars(select(C))`,
