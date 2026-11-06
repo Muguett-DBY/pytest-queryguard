@@ -86,7 +86,13 @@ from .messages import (
     make_index_finding,
     swap_root,
 )
-from .warnings import QueryGuardInternalWarning, QueryGuardWarning, warn_internal
+from .warnings import (
+    REMOVED_IN,
+    QueryGuardDeprecationWarning,
+    QueryGuardInternalWarning,
+    QueryGuardWarning,
+    warn_internal,
+)
 
 _MODES = ("fail", "warn", "off")
 _EAGER_MODES = ("off", "warn", "fail")
@@ -203,7 +209,8 @@ class _Settings:
         self.baseline_failed: str | None = None
         # what the ignores did, for the stale-ignore warning in the summary
         self.ignore_used: set[IgnoreRule] = set()
-        self.stale_markers: list[tuple[str, IgnoreRule]] = []
+        # (test, rule, name of the marker it comes from)
+        self.stale_markers: list[tuple[str, IgnoreRule, str]] = []
         # ignore() blocks entered in a test that was analysed, as
         # "file:line" -> "ignore('kind')", and those that left out a finding;
         # incomplete when a pytest-xdist worker did not send them
@@ -392,12 +399,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         **_INT_TYPE,
     )
     parser.addini(
-        "queryguard_repeat_scope",
+        "queryguard_scope",
         "What the repeat, relationship, column-load and write-loop rules count "
-        "together: test (everything one test runs) or session (each SQLAlchemy "
-        "Session or connection checkout on its own, for tests that make several "
-        "requests)",
-        default=SCOPE_TEST,
+        "together: test (everything one test runs; the default) or session (each "
+        "SQLAlchemy Session or connection checkout on its own, for tests that "
+        "make several requests)",
+        default=None,
+    )
+    parser.addini(
+        "queryguard_repeat_scope",
+        "Deprecated name of queryguard_scope, removed in 2.0",
+        default=None,
     )
     parser.addini(
         "queryguard_fail_on",
@@ -590,8 +602,44 @@ def _choice(
     return value
 
 
-def _repeat_scope(config: pytest.Config) -> str:
-    return _choice(config, "queryguard_repeat_scope", SCOPES)
+def _optional_choice(
+    config: pytest.Config, name: str, choices: tuple[str, ...]
+) -> str | None:
+    """Like ``_choice()``, for an option without a default: None when it is unset."""
+    with contextlib.suppress(TypeError, ValueError):  # _choice() reports these
+        if config.getini(name) is None:
+            return None
+    return _choice(config, name, choices)
+
+
+def _scope(config: pytest.Config) -> str:
+    """queryguard_scope, or its deprecated name queryguard_repeat_scope."""
+    new = _optional_choice(config, "queryguard_scope", SCOPES)
+    old = _optional_choice(config, "queryguard_repeat_scope", SCOPES)
+    if new is not None and old is not None and new != old:
+        raise pytest.UsageError(
+            f"queryguard_scope = {new} and its deprecated name "
+            f"queryguard_repeat_scope = {old} disagree; keep only queryguard_scope"
+        )
+    return new or old or SCOPE_TEST
+
+
+def _warn_deprecated_options(config: pytest.Config) -> None:
+    """Warn once per run (not once per xdist worker) about deprecated ini names."""
+    if _is_worker(config):
+        return
+    try:
+        old = config.getini("queryguard_repeat_scope")
+    except (TypeError, ValueError):
+        return  # _read_settings() reports the bad value
+    if old is not None:
+        config.issue_config_time_warning(
+            QueryGuardDeprecationWarning(
+                "queryguard_repeat_scope is deprecated and will be removed in "
+                f"pytest-queryguard {REMOVED_IN}; rename it to queryguard_scope"
+            ),
+            stacklevel=2,
+        )
 
 
 def _write_loop(config: pytest.Config) -> int | None:
@@ -910,7 +958,7 @@ def _read_settings(config: pytest.Config) -> _Settings:
         _sarif_path(config),
         _index_advisor(config),
         _hypopg(config),
-        _repeat_scope(config),
+        _scope(config),
     )
     settings.baseline_previous_error = previous_error
     settings.rootpath = config.rootpath
@@ -953,14 +1001,29 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
+        "queryguard_max_queries(limit): max_queries under a name no other plugin "
+        "reads; it wins over max_queries.",
+    )
+    config.addinivalue_line(
+        "markers",
         "max_db_time(seconds): fail the test if its SQL statements take more "
         "than that many seconds in total.",
     )
     config.addinivalue_line(
         "markers",
-        "allow_nplusone(*labels, kind=..., file=..., function=..., stack=...): "
+        "queryguard_max_db_time(seconds): max_db_time under a name no other "
+        "plugin reads; it wins over max_db_time.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "queryguard_ignore(*labels, kind=..., file=..., function=..., stack=...): "
         "do not report N+1 query findings for this test; with arguments, only "
         "the findings they match (fnmatch patterns).",
+    )
+    config.addinivalue_line(
+        "markers",
+        "allow_nplusone(*labels, kind=..., file=..., function=..., stack=...): "
+        "the same as queryguard_ignore.",
     )
     config.addinivalue_line(
         "markers",
@@ -968,6 +1031,8 @@ def pytest_configure(config: pytest.Config) -> None:
         "test, or only for the given tables.",
     )
     config.stash[_outer_error] = swap_error(None)
+    # outside the guard below: with -W error the warning is raised on purpose
+    _warn_deprecated_options(config)
     try:
         _configure(config)
     except pytest.UsageError:
@@ -1128,39 +1193,51 @@ def _write_internal_failure(terminalreporter: pytest.TerminalReporter) -> None:
         terminalreporter.write_line(line)
 
 
+# queryguard_ignore and its permanent alias allow_nplusone mean the same.
+_IGNORE_MARKERS = ("queryguard_ignore", "allow_nplusone")
+
+
 def _nplusone_ignores(item: pytest.Item) -> tuple[bool, tuple[IgnoreRule, ...]]:
-    """(ignore every N+1 finding, rules) from allow_nplusone markers."""
+    """(ignore every N+1 finding, rules) from queryguard_ignore markers."""
+    ignore_all, named = _named_ignores(item)
+    return ignore_all, tuple(rule for _, rule in named)
+
+
+def _named_ignores(
+    item: pytest.Item,
+) -> tuple[bool, tuple[tuple[str, IgnoreRule], ...]]:
+    """(ignore every N+1 finding, (marker name, rule) pairs) of the test."""
     ignore_all = False
-    rules: list[IgnoreRule] = []
-    for marker in item.iter_markers("allow_nplusone"):
-        patterns = marker.args
-        extra = set(marker.kwargs) - {"kind", "file", "function", "stack"}
-        values = [*patterns, *marker.kwargs.values()]
-        if extra or not all(isinstance(v, str) and v for v in values):
-            pytest.fail(
-                f"allow_nplusone on {item.nodeid} takes label patterns and the "
-                "keywords kind, file, function and stack, all as strings, got "
-                f"{marker.args!r} {marker.kwargs!r}",
-                pytrace=False,
-            )
-        if not marker.args and not marker.kwargs:
-            ignore_all = True
-            continue
-        kind = marker.kwargs.get("kind", "*")
-        try:
-            check_kind(kind)
-        except ValueError as exc:
-            pytest.fail(f"allow_nplusone on {item.nodeid}: {exc}", pytrace=False)
-        for label in patterns or ("*",):
-            rules.append(
-                IgnoreRule(
+    rules: list[tuple[str, IgnoreRule]] = []
+    for name in _IGNORE_MARKERS:
+        for marker in item.iter_markers(name):
+            patterns = marker.args
+            extra = set(marker.kwargs) - {"kind", "file", "function", "stack"}
+            values = [*patterns, *marker.kwargs.values()]
+            if extra or not all(isinstance(v, str) and v for v in values):
+                pytest.fail(
+                    f"{name} on {item.nodeid} takes label patterns and the "
+                    "keywords kind, file, function and stack, all as strings, got "
+                    f"{marker.args!r} {marker.kwargs!r}",
+                    pytrace=False,
+                )
+            if not marker.args and not marker.kwargs:
+                ignore_all = True
+                continue
+            kind = marker.kwargs.get("kind", "*")
+            try:
+                check_kind(kind)
+            except ValueError as exc:
+                pytest.fail(f"{name} on {item.nodeid}: {exc}", pytrace=False)
+            for label in patterns or ("*",):
+                rule = IgnoreRule(
                     kind,
                     label,
                     marker.kwargs.get("file"),
                     marker.kwargs.get("function"),
                     marker.kwargs.get("stack"),
                 )
-            )
+                rules.append((name, rule))
     return ignore_all, tuple(rules)
 
 
@@ -1381,13 +1458,16 @@ def _drop_ignored(
     settings.ignore_used.update(used)
     if indexes:
         settings.stale_markers[:] = [
-            (nodeid, rule)
-            for nodeid, rule in settings.stale_markers
+            (nodeid, rule, name)
+            for nodeid, rule, name in settings.stale_markers
             if nodeid != item.nodeid or rule not in used
         ]
     else:
+        # the rules of _named_ignores() are marker_rules, with their marker
         settings.stale_markers.extend(
-            (item.nodeid, rule) for rule in marker_rules if rule not in used
+            (item.nodeid, rule, name)
+            for name, rule in _named_ignores(item)[1]
+            if rule not in used
         )
     return kept
 
@@ -1556,21 +1636,33 @@ def _note_index_check(config: pytest.Config, collector: QueryCollector) -> None:
             notes.first_error = error
 
 
+def _budget_marker(item: pytest.Item, name: str) -> tuple[str, pytest.Mark] | None:
+    """(name, marker) of ``queryguard_<name>``, else of ``<name>``, or None.
+
+    ``max_queries`` is also a marker of pytest-querycount; the prefixed name is
+    read by this plugin only, so it wins when a test has both.
+    """
+    for spelled in (f"queryguard_{name}", name):
+        marker = item.get_closest_marker(spelled)
+        if marker is not None:
+            return spelled, marker
+    return None
+
+
 def _budget(item: pytest.Item) -> int | None:
-    marker = item.get_closest_marker("max_queries")
-    if marker is None:
+    found = _budget_marker(item, "max_queries")
+    if found is None:
         return None
-    # ``n`` is the spelling of 0.1 to 0.3; it stays accepted, without a warning,
-    # until a deprecation period (docs/stability.md) says otherwise.
+    name, marker = found
     if len(marker.args) > 1 or set(marker.kwargs) - {"limit", "n"}:
         pytest.fail(
-            f"max_queries on {item.nodeid} takes a single argument, the limit",
+            f"{name} on {item.nodeid} takes a single argument, the limit",
             pytrace=False,
         )
-    keywords = [name for name in ("limit", "n") if name in marker.kwargs]
+    keywords = [key for key in ("limit", "n") if key in marker.kwargs]
     if len(marker.args) + len(keywords) > 1:
         pytest.fail(
-            f"max_queries on {item.nodeid} got the limit more than once "
+            f"{name} on {item.nodeid} got the limit more than once "
             "(positionally, as limit= or as n=)",
             pytrace=False,
         )
@@ -1579,11 +1671,28 @@ def _budget(item: pytest.Item) -> int | None:
         limit = marker.args[0]
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         pytest.fail(
-            f"max_queries on {item.nodeid} needs a non-negative integer "
+            f"{name} on {item.nodeid} needs a non-negative integer "
             f"as its limit, got {limit!r}",
             pytrace=False,
         )
     return limit
+
+
+def _warn_deprecated_markers(item: pytest.Item) -> None:
+    """Warn about ``max_queries(n=...)``, the spelling of 0.1 to 0.3.
+
+    Outside the guard of the measurement: with -W error the warning fails the
+    test, as a deprecation should, instead of being taken for a plugin bug.
+    """
+    found = _budget_marker(item, "max_queries")
+    if found is not None and "n" in found[1].kwargs:
+        item.warn(
+            QueryGuardDeprecationWarning(
+                f"{found[0]}(n=...) is deprecated and will be removed in "
+                f"pytest-queryguard {REMOVED_IN}; pass the limit positionally, "
+                f"{found[0]}({found[1].kwargs['n']!r}), or as limit="
+            )
+        )
 
 
 def _other_budget(
@@ -1610,18 +1719,18 @@ def _other_budget(
 
 
 def _time_budget(item: pytest.Item) -> float | None:
-    marker = item.get_closest_marker("max_db_time")
-    if marker is None:
+    found = _budget_marker(item, "max_db_time")
+    if found is None:
         return None
+    name, marker = found
     if len(marker.args) > 1 or set(marker.kwargs) - {"seconds"}:
         pytest.fail(
-            f"max_db_time on {item.nodeid} takes a single argument, the limit "
-            "in seconds",
+            f"{name} on {item.nodeid} takes a single argument, the limit in seconds",
             pytrace=False,
         )
     if marker.args and "seconds" in marker.kwargs:
         pytest.fail(
-            f"max_db_time on {item.nodeid} got the limit twice, positionally "
+            f"{name} on {item.nodeid} got the limit twice, positionally "
             "and as seconds=",
             pytrace=False,
         )
@@ -1633,7 +1742,7 @@ def _time_budget(item: pytest.Item) -> float | None:
         or limit == float("inf")
     ):
         pytest.fail(
-            f"max_db_time on {item.nodeid} needs a non-negative number of "
+            f"{name} on {item.nodeid} needs a non-negative number of "
             f"seconds as its limit, got {limit!r}",
             pytrace=False,
         )
@@ -1743,7 +1852,7 @@ def _write_stale_ignores(
     if settings.mode == "off" or internal_error() is not None:
         return
     stale: list[IgnoreRule] = []
-    markers: list[tuple[str, IgnoreRule]] = []
+    markers: list[tuple[str, IgnoreRule, str]] = []
     # The ini patterns match in the workers, so the controller cannot tell;
     # the workers send the ignore() blocks they saw.
     if not config.pluginmanager.has_plugin("dsession"):
@@ -2444,6 +2553,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         record_error(exc, "start of the measurement")
         _report_internal_error(item.config)
         return (yield)
+    _warn_deprecated_markers(item)
     if settings.mode == "off" and limit is None and time_limit is None:
         return (yield)
     index_check = settings.mode != "off" and settings.index_check

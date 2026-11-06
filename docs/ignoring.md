@@ -2,19 +2,23 @@
 
 Four mechanisms leave findings out, from the narrowest to the widest: an
 [`ignore()` block](#the-ignore-block) (a few lines of code), the
-`allow_nplusone` marker (one test), `queryguard_ignore` (the whole suite) and
-a [baseline](baseline.md) (everything that exists today). Budgets are never
-affected by them.
+`queryguard_ignore` marker (one test), the `queryguard_ignore` option (the
+whole suite) and a [baseline](baseline.md) (everything that exists today).
+Budgets are never affected by them.
 
-## The marker and `queryguard_ignore`
+## The `queryguard_ignore` marker and option
 
 ```python
-@pytest.mark.allow_nplusone
+@pytest.mark.queryguard_ignore
 def test_legacy_report(session): ...
 ```
 
 The test is not checked for N+1. A `max_queries` marker on the same test is
 still enforced.
+
+The marker is new in 0.8.0. Its earlier name, `allow_nplusone`, takes the
+same arguments, means the same and stays as a permanent alias, without a
+warning; the "stale ignores" summary names the marker as the test spells it.
 
 To leave out one finding instead of the whole test, give the marker patterns
 (`fnmatch`, case-sensitive) for the finding's label, and optionally `kind`,
@@ -23,18 +27,18 @@ matches too, even when it holds `[` or `]`, which `fnmatch` would read as a
 character class:
 
 ```python
-@pytest.mark.allow_nplusone("Order.customer", function="list_orders")
+@pytest.mark.queryguard_ignore("Order.customer", function="list_orders")
 def test_legacy_report(session): ...
 ```
 
 The patterns match every kind of finding, `missing-index` included, so
-`@pytest.mark.allow_nplusone("public.audit_log", kind="missing-index")` leaves
+`@pytest.mark.queryguard_ignore("public.audit_log", kind="missing-index")` leaves
 out one table's finding. The bare marker leaves out N+1 findings only;
 `allow_missing_index` is the shortcut for skipping the index check for the test
 or for some tables.
 
 A table name is matched the same way in all four places that take one
-(`allow_nplusone(..., kind="missing-index")`, `queryguard_ignore`,
+(the `queryguard_ignore(..., kind="missing-index")` marker, the `queryguard_ignore` option,
 `allow_missing_index` and `queryguard_index_ignore_tables`), so one spelling
 works everywhere. A pattern is a table name or `schema.table`, and each part is
 an identifier:
@@ -52,11 +56,11 @@ table `audit_log` in the schema `public` also when the report prints it as
 `schema.table` (`audit*` also matches every table in the schema `audit`). Schemas are
 known on PostgreSQL only; on SQLite and MySQL only bare names match.
 
-In `queryguard_ignore` and `allow_nplusone`, this makes a bare name match the
+In the `queryguard_ignore` option and marker, this makes a bare name match the
 table in every schema: `missing-index audit_log` also leaves out the finding
 labelled `audit.audit_log`.
 
-The same patterns work for the whole suite in `queryguard_ignore`, one per
+The same patterns work for the whole suite in the `queryguard_ignore` option, one per
 line as `KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB]`:
 
 ```toml
@@ -112,7 +116,7 @@ queryguard_ignore = [
 ]
 ```
 
-or, for one test, `@pytest.mark.allow_nplusone("Order.customer",
+or, for one test, `@pytest.mark.queryguard_ignore("Order.customer",
 stack="app/admin/export.py:export_orders")`. A test that calls `names()` from
 a view still fails (unless it went through the export first, see below).
 
@@ -236,7 +240,7 @@ workers send the blocks they entered and used to the controller. A block is
 noted only when it is entered in the context of a measured test (its thread,
 its tasks, or a thread given a copy of its context), so a thread left over
 from another test does not count. It is not listed when it only ran in tests
-with a bare `allow_nplusone` marker or past `queryguard_max_events`, or when
+with a bare `queryguard_ignore` marker or past `queryguard_max_events`, or when
 none of its kinds was checked there (a `write-loop` block while
 `queryguard_write_loop_threshold` is off, a `missing-index` block without the
 index check).

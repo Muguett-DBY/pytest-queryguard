@@ -48,7 +48,7 @@ the code is fine, all listed on the [Limitations](limitations.md) page, are:
 - pagination or a batched `IN (...)` load that runs five or more pages or
   chunks;
 - a test that makes several independent requests, each repeating the same
-  lookup (use `queryguard_repeat_scope = session`, see below);
+  lookup (use `queryguard_scope = session`, see below);
 - two parent objects that each load a relationship once (the default
   threshold of 2, see the next question);
 - `IN (...)` queries with lists of different lengths: every length is one
@@ -65,7 +65,7 @@ From the narrowest to the widest:
 
 - a few lines of code, in a test or in the application:
   `with pytest_queryguard.ignore("relationship-load"):`;
-- one finding, in one test: `@pytest.mark.allow_nplusone("Order.customer",
+- one finding, in one test: `@pytest.mark.queryguard_ignore("Order.customer",
   function="list_orders")`;
 - one finding, in the whole suite: a line in `queryguard_ignore`, for example
   `relationship-load Order.customer function=list_orders`;
@@ -89,7 +89,7 @@ with a note naming the option. Set it to count each `Session` on its own:
 
 ```toml
 [tool.pytest.ini_options]
-queryguard_repeat_scope = "session"
+queryguard_scope = "session"
 ```
 
 A loop inside one request, or any code that runs the same statement five times
@@ -262,7 +262,7 @@ transaction are left as they were.
   (markers such as `max_queries` are then unknown, which pytest reports as a
   warning, or an error under `--strict-markers`); `pytest --queryguard-mode=off`
   loads it but stops N+1 detection, while budgets still apply.
-- For one test: `@pytest.mark.allow_nplusone` without arguments.
+- For one test: `@pytest.mark.queryguard_ignore` without arguments.
 - For the suite: `queryguard_mode = "off"` in the configuration.
 
 ## Does it work in a monorepo?

@@ -79,7 +79,7 @@ compares statements without their bind values, so an integration test that
 sends several requests, each doing the same lookups once, can trip it with
 code that is fine (see
 [the FAQ](faq.md#my-integration-test-makes-several-requests-and-fails-with-repeated-statement)
-and `queryguard_repeat_scope`).
+and `queryguard_scope`).
 A report from another plugin with the same kinds points the same way: on a
 project generator with 22,000 tests,
 [queryspy issue #14](https://github.com/sqla-native/queryspy/issues/14)

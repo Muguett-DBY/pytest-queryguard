@@ -19,9 +19,14 @@ def test_order_page_again(client):
 ```
 
 The keyword is `limit`, as in the function below. Releases before 0.4 called
-it `n`; `n=3` keeps working, without a warning. It may be removed in a future
-minor release, but only after a deprecation period with a warning (see
-[Stability](stability.md)).
+it `n`; since 0.8.0 `n=3` still works but emits a `QueryGuardDeprecationWarning`,
+and it will be removed in 2.0 (see [Stability](stability.md#deprecation-policy)).
+Write `max_queries(3)` or `max_queries(limit=3)` instead.
+
+`@pytest.mark.queryguard_max_queries(3)` (since 0.8.0) is the same marker under
+a name only this plugin reads; when a test has both, `queryguard_max_queries`
+counts. Use it when another plugin that reads `max_queries` is installed too,
+see [below](#pytest-querycount-and-the-max_queries-marker).
 
 The test fails when its body runs more SQL statements than the limit. The
 failure lists every statement with the line that issued it. Budgets count
@@ -202,4 +207,37 @@ that issued them. A `max_queries` failure shows the total database time and
 its three slowest statements too. Like `max_queries`, the budget fails
 whatever `queryguard_mode` is set to. In `record_queries()`, each `Query` has
 a `duration` (seconds), and the log has `db_time` and `slowest(n)`.
+`@pytest.mark.queryguard_max_db_time(0.25)` (since 0.8.0) is the same marker
+under the plugin's own prefix, like `queryguard_max_queries`; when a test has
+both, `queryguard_max_db_time` counts.
+
+## pytest-querycount and the `max_queries` marker
+
+[pytest-querycount](https://github.com/ldavidsm/pytest-querycount) registers a
+`max_queries` marker of its own. With both plugins installed (checked with
+pytest-querycount 0.4.0), each reads every `max_queries` marker:
+
+- `@pytest.mark.max_queries(3)` is enforced twice, by each plugin with its own
+  count. When pytest-querycount fails the test first, its failure is the one
+  shown, since the original failure wins (see above).
+- `@pytest.mark.max_queries(limit=3)` stops the whole run at collection:
+  pytest-querycount takes only a positional limit or `n=` and reports
+  `@pytest.mark.max_queries needs a number`.
+- `pytest --querycount-write-budgets` writes `max_queries` markers into your
+  test files, and pytest-queryguard then enforces them too.
+
+`max_db_time` and the other markers of pytest-queryguard do not clash. To keep
+the budgets of the two plugins apart, use the prefixed markers for
+pytest-queryguard, which pytest-querycount does not read:
+
+```python
+@pytest.mark.queryguard_max_queries(3)  # pytest-queryguard only
+@pytest.mark.max_queries(5)  # pytest-querycount (and nothing else)
+def test_order_page(client):
+    client.get("/orders/1")
+```
+
+With both markers on a test, pytest-queryguard uses `queryguard_max_queries`
+and ignores `max_queries`. Or turn one plugin off for a run with
+`-p no:querycount` or `-p no:queryguard`.
 

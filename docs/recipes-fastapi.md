@@ -257,8 +257,8 @@ queryguard: N+1 detected
   kind: repeated-statement  label: SELECT orders.id, orders.customer_id FROM orders WHERE orders.id = ?
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
-  loop; set queryguard_repeat_scope = session to count each Session on its
-  own (QueryLog.assert_no_nplusone: repeat_scope='session')
+  loop; set queryguard_scope = session to count each Session on its
+  own (QueryLog.assert_no_nplusone: scope='session')
   fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop
 
   the same statement ran 6 times across 6 different Sessions or connection checkouts
@@ -266,8 +266,8 @@ queryguard: N+1 detected
   kind: repeated-statement  label: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
-  loop; set queryguard_repeat_scope = session to count each Session on its
-  own (QueryLog.assert_no_nplusone: repeat_scope='session')
+  loop; set queryguard_scope = session to count each Session on its
+  own (QueryLog.assert_no_nplusone: scope='session')
   fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop
 
   the same statement ran 6 times across 6 different Sessions or connection checkouts
@@ -275,8 +275,8 @@ queryguard: N+1 detected
   kind: repeated-statement  label: SELECT count(*) AS count_1 FROM orders WHERE orders.customer_id = ?
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
-  loop; set queryguard_repeat_scope = session to count each Session on its
-  own (QueryLog.assert_no_nplusone: repeat_scope='session')
+  loop; set queryguard_scope = session to count each Session on its
+  own (QueryLog.assert_no_nplusone: scope='session')
   fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop
 
   the same statement ran 6 times across 6 different Sessions or connection checkouts
@@ -284,8 +284,8 @@ queryguard: N+1 detected
   kind: repeated-statement  label: SELECT count(*) AS count_1 FROM orders
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
-  loop; set queryguard_repeat_scope = session to count each Session on its
-  own (QueryLog.assert_no_nplusone: repeat_scope='session')
+  loop; set queryguard_scope = session to count each Session on its
+  own (QueryLog.assert_no_nplusone: scope='session')
   fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop
 =========================== short test summary info ============================
 FAILED tests/test_loop.py::test_every_order_page_loads - Failed: queryguard: ...
@@ -295,11 +295,11 @@ FAILED tests/test_loop.py::test_every_order_page_loads - Failed: queryguard: ...
 The first call site is the endpoint, which is where the statement is written,
 and the report says that the runs were spread over six sessions. Because every
 request used its own `Session`, this is not a loop in the endpoint. Setting
-`queryguard_repeat_scope = session` makes the rules count each session on its
+`queryguard_scope = session` makes the rules count each session on its
 own, and the same test then passes (run for this page; see
 [Several sessions or requests](several-sessions.md) for what the option does
 and does not change). Other ways out: write one request per test with
 `pytest.mark.parametrize` over the ids, or mark the test with
-`@pytest.mark.allow_nplusone` (see [Ignoring findings](ignoring.md)). A
+`@pytest.mark.queryguard_ignore` (see [Ignoring findings](ignoring.md)). A
 `with max_queries(4):` around each request does not help: it checks its own
 block, and the repeated-statement rule still looks at the whole test.

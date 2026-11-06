@@ -46,8 +46,8 @@ queryguard: N+1 detected
   different places read the same objects, since the plugin cannot tell which
   result the loop uses. An object that a later query returns from the Session
   without reading its row again keeps the query that loaded it.
-- `kind` and `label` name the finding the way ignore patterns, `allow_nplusone`
-  and the baseline do: `relationship-load Order.customer` is the pattern for
+- `kind` and `label` name the finding the way ignore patterns, the `queryguard_ignore`
+  marker and the baseline do: `relationship-load Order.customer` is the pattern for
   this one. For a repeated statement the label is the normalized statement,
   which takes the place of a separate line; a statement longer than 200
   characters is cut and ends with `*`, so the label as printed still matches.
@@ -134,14 +134,14 @@ It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
   objects whose query is unknown (made by the test, loaded before it). Objects
   loaded one by one at the same line (`for id in ids: get_order(id).customer`)
   count together, as in the report. The report at the end still covers the
-  rest, and with `queryguard_repeat_scope = session` each Session counts on
+  rest, and with `queryguard_scope = session` each Session counts on
   its own here too.
 - The finding is the one the report makes, at the first lazy load, so
   ignore patterns with `file=`/`function=` and baseline entries match it.
   The analysis at the end still runs: SARIF, `--queryguard-json` and the
   summary include the N+1, and the exception replaces the report's text.
 - It raises only what would fail the test anyway: in `fail` mode, for an N+1
-  that no `allow_nplusone`, `queryguard_ignore` pattern or baseline entry
+  that no `queryguard_ignore` marker or pattern or baseline entry
   covers. It does not raise while `--queryguard-update-baseline` records the
   findings.
 - Code that catches `AssertionError` around the loop does not hide the N+1:
@@ -161,7 +161,7 @@ database only hides the cost because it holds few rows. Look closer when:
 - **The test makes several requests**, for example five calls through a test
   client, and the repeated statement is an authentication or settings lookup.
   The report says `across N different Sessions or connection checkouts` in
-  that case. Nothing loops; set `queryguard_repeat_scope = session`, see
+  that case. Nothing loops; set `queryguard_scope = session`, see
   [Several sessions or requests](several-sessions.md).
 - **The loop is pagination or a batched `IN (...)` load** that runs five or
   more pages or chunks. The repeat rule counts each page; see
@@ -269,8 +269,9 @@ If the code is right as it is, or you cannot fix it now, leave the finding
 out, from the narrowest scope to the widest:
 
 - one finding in one test:
-  `@pytest.mark.allow_nplusone("Order.customer", function="list_orders")`;
-- one finding in the whole suite: a line in `queryguard_ignore`, such as
+  `@pytest.mark.queryguard_ignore("Order.customer", function="list_orders")`
+  (`allow_nplusone` is the same marker under its old name);
+- one finding in the whole suite: a line in the `queryguard_ignore` option, such as
   `relationship-load Order.customer function=list_orders`;
 - everything that exists today: a [baseline](baseline.md), so that only new
   findings fail;

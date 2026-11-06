@@ -380,8 +380,8 @@ def findings(
                     f"  fix: load only what is used, .options({_load_only(item)}),",
                     "  or defer() the large columns that are never read",
                     "  (experimental: if they are read later, or by code the plugin",
-                    "  cannot see, ignore it with allow_nplusone(kind=KIND) or",
-                    "  queryguard_ignore, KIND being unused-columns)",
+                    "  cannot see, ignore it with queryguard_ignore(kind=KIND) or",
+                    "  the queryguard_ignore option, KIND being unused-columns)",
                 ]
             )
             result.append(

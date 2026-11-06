@@ -44,10 +44,10 @@ primary key is always loaded. For a query that is used by other code too,
 The kind works with the usual mechanisms:
 
 ```python
-@pytest.mark.allow_nplusone(kind="unused-columns")
+@pytest.mark.queryguard_ignore(kind="unused-columns")
 def test_export(session): ...
 
-@pytest.mark.allow_nplusone("Account")  # one class
+@pytest.mark.queryguard_ignore("Account")  # one class
 def test_report(session): ...
 ```
 

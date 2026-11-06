@@ -37,7 +37,7 @@ CONFIGS: dict[str, tuple[str, frozenset[str]]] = {
         frozenset({kit.UNUSED}),
     ),
     # Counts the repeat, relationship and column-load rules per Session.
-    "session-scope": ("queryguard_repeat_scope = session\n", frozenset()),
+    "session-scope": ("queryguard_scope = session\n", frozenset()),
     # Every opt-in rule at once: what a project that turned them all on sees.
     "all-opt-in": (
         (

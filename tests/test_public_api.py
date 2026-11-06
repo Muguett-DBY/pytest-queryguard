@@ -83,7 +83,7 @@ EXPECTED_QUERYLOG = {
         "column_load_threshold: 'int' = 5, "
         "small_repeat_threshold: 'int | None' = None, "
         "write_loop_threshold: 'int | None' = None, "
-        "repeat_scope: 'str' = 'test') -> 'None'"
+        "scope: 'str' = 'test', repeat_scope: 'str | None' = None) -> 'None'"
     ),
     "count": "property",
     "db_time": "property",
@@ -107,7 +107,8 @@ EXPECTED_INI = {
     "queryguard_max_events": "10000",
     "queryguard_stack_depth": "3",
     "queryguard_small_repeat_threshold": "0",
-    "queryguard_repeat_scope": "test",
+    "queryguard_scope": "None",
+    "queryguard_repeat_scope": "None",
     "queryguard_write_loop_threshold": "0",
     "queryguard_unused_eager_load": "off",
     "queryguard_unused_columns": "off",
@@ -146,6 +147,9 @@ EXPECTED_MARKERS = [
     "allow_nplusone",
     "max_db_time",
     "max_queries",
+    "queryguard_ignore",
+    "queryguard_max_db_time",
+    "queryguard_max_queries",
 ]
 
 
@@ -253,7 +257,8 @@ def test_markers(pytester: pytest.Pytester) -> None:
         {
             name
             for name in re.findall(r"@pytest\.mark\.(\w+)", text)
-            if name in EXPECTED_MARKERS or name.startswith(("allow_", "max_"))
+            if name in EXPECTED_MARKERS
+            or name.startswith(("allow_", "max_", "queryguard_"))
         }
     )
     assert found == EXPECTED_MARKERS
@@ -356,7 +361,7 @@ EXPECTED_APP_FIELDS = {
         "column_load_threshold",
         "small_repeat_threshold",
         "write_loop_threshold",
-        "repeat_scope",
+        "scope",
         "budgets",
         "default_budget",
         "report",
@@ -364,6 +369,7 @@ EXPECTED_APP_FIELDS = {
         "sample_rate",
         "min_db_time",
         "page_report",
+        "repeat_scope",
     ],
     "RequestReport": [
         "id",

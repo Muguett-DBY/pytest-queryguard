@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `queryguard_scope`, the new name of `queryguard_repeat_scope`: it scopes
+  the relationship-load, column-load and write-loop rules as well as the
+  repeat rules. Likewise `scope=` in `QueryLog.assert_no_nplusone()` and in
+  `pytest_queryguard.app.Settings` (and so in `track()` and the middleware).
+  Setting both the new and the old name to different values is a usage error
+  (`ValueError` in Python) (#303).
+- `@pytest.mark.queryguard_ignore(*labels, kind=, file=, function=, stack=)`,
+  the marker under the same name as the `queryguard_ignore` option. It is
+  `allow_nplusone` under a new name; `allow_nplusone` stays as a permanent
+  alias, without a warning. The "stale ignores" summary names the marker as
+  the test spells it (#303).
+- `@pytest.mark.queryguard_max_queries(limit)` and
+  `@pytest.mark.queryguard_max_db_time(seconds)`: `max_queries` and
+  `max_db_time` under names no other plugin reads. pytest-querycount also
+  registers `max_queries`, so with both plugins installed each enforced the
+  other's marker, and `max_queries(limit=3)` stopped the run at collection.
+  When a test has both spellings, the prefixed one counts. See
+  docs/budgets.md (#303).
 - Experimental: `python -m pytest_queryguard.trend RUN1.json RUN2.json ...`
   shows how the query counts moved over several `--queryguard-json` files,
   oldest first: the statements of each run, the tests whose count changed
@@ -62,6 +80,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged since the session started, and names the module imports, there
   is no patch, only the hint. Made with the stdlib `ast` when the findings
   are reported (#247).
+
+### Deprecated
+
+These keep working and emit a `QueryGuardDeprecationWarning` naming the
+replacement (an ini option once per run, a keyword at each call site); they
+will be removed in 2.0 (#303).
+
+- The ini option `queryguard_repeat_scope`: use `queryguard_scope`.
+- `repeat_scope=` of `QueryLog.assert_no_nplusone()` and
+  `pytest_queryguard.app.Settings`: use `scope=`. A `Settings` built with
+  `repeat_scope=` has it in `scope`, and its `repeat_scope` reads None.
+- The `n=` keyword of the `max_queries` marker (the spelling of 0.1 to 0.3):
+  pass the limit positionally, `max_queries(3)`, or as `limit=3`.
 
 ### Changed
 

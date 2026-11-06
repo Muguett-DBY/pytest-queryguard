@@ -428,7 +428,7 @@ def test_marker_with_another_label_still_fails(project: pytest.Pytester) -> None
     result.stdout.fnmatch_lines(
         [
             "*stale ignores*",
-            "allow_nplusone patterns that matched no finding in their test:",
+            "allow_nplusone marker patterns that matched no finding in their test:",
             "  test_a.py::test_loop: * Other.rel",
         ]
     )
@@ -497,6 +497,70 @@ def test_marker_with_an_unknown_kind_fails_the_test(project: pytest.Pytester) ->
     result = project.runpytest()
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(["*allow_nplusone on*matches no finding kind*"])
+
+
+# --- queryguard_ignore, the primary name of allow_nplusone ---
+
+
+def test_queryguard_ignore_marker_ignores_like_allow_nplusone(
+    project: pytest.Pytester,
+) -> None:
+    marker = (
+        '@pytest.mark.queryguard_ignore("Order.customer", kind="relationship-load")'
+    )
+    project.makepyfile(test_a=HEADER + LAZY.format(marker=marker))
+    result = project.runpytest("--strict-markers", "-W", "error::DeprecationWarning")
+    result.assert_outcomes(passed=1)
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_bare_queryguard_ignore_marker_ignores_everything(
+    project: pytest.Pytester,
+) -> None:
+    project.makepyfile(
+        test_a=HEADER + LAZY.format(marker="@pytest.mark.queryguard_ignore")
+    )
+    project.runpytest("--strict-markers").assert_outcomes(passed=1)
+
+
+def test_stale_marker_report_names_the_marker_used(project: pytest.Pytester) -> None:
+    marker = (
+        '@pytest.mark.queryguard_ignore("Gone.one")\n'
+        '@pytest.mark.allow_nplusone("Gone.two")\n'
+        '@pytest.mark.queryguard_ignore("Order.customer")'
+    )
+    project.makepyfile(test_a=HEADER + LAZY.format(marker=marker))
+    result = project.runpytest()
+    result.assert_outcomes(passed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "*stale ignores*",
+            "queryguard_ignore marker patterns that matched no finding in their test:",
+            "  test_a.py::test_loop: * Gone.one",
+            "allow_nplusone marker patterns that matched no finding in their test:",
+            "  test_a.py::test_loop: * Gone.two",
+        ]
+    )
+    result.stdout.no_fnmatch_line("*Order.customer*matched no*")
+
+
+@pytest.mark.parametrize(
+    ("marker", "message"),
+    [
+        ("@pytest.mark.queryguard_ignore(1)", "*queryguard_ignore on*takes label*"),
+        (
+            '@pytest.mark.queryguard_ignore("x", kind="nope")',
+            "*queryguard_ignore on*matches no finding kind*",
+        ),
+    ],
+)
+def test_bad_queryguard_ignore_arguments_name_the_marker(
+    project: pytest.Pytester, marker: str, message: str
+) -> None:
+    project.makepyfile(test_a=HEADER + LAZY.format(marker=marker))
+    result = project.runpytest()
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines([message])
 
 
 # --- stack= ---
