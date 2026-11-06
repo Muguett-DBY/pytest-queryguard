@@ -465,15 +465,19 @@ def _ini(combo: Combo) -> str:
 def _write_project(pytester: pytest.Pytester, combo: Combo) -> None:
     root = pytester.path
     (root / "app").mkdir()
-    (root / "app" / "__init__.py").write_text("")
-    (root / "app" / "models.py").write_text(MODELS)
-    (root / "app" / "queries.py").write_text(QUERIES)
+    (root / "app" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (root / "app" / "models.py").write_text(MODELS, encoding="utf-8", newline="\n")
+    (root / "app" / "queries.py").write_text(QUERIES, encoding="utf-8", newline="\n")
     (root / "tests").mkdir()
-    (root / "tests" / "test_app.py").write_text(TESTS)
-    (root / "pytest.ini").write_text(_ini(combo))
-    (root / "budgets.json").write_text(json.dumps(BUDGETS))
+    (root / "tests" / "test_app.py").write_text(TESTS, encoding="utf-8", newline="\n")
+    (root / "pytest.ini").write_text(_ini(combo), encoding="utf-8", newline="\n")
+    (root / "budgets.json").write_text(
+        json.dumps(BUDGETS), encoding="utf-8", newline="\n"
+    )
     if combo.baseline:
-        (root / "baseline.json").write_text(json.dumps(BASELINE))
+        (root / "baseline.json").write_text(
+            json.dumps(BASELINE), encoding="utf-8", newline="\n"
+        )
 
 
 # --- one run and what it wrote ---
@@ -582,7 +586,7 @@ def _run(pytester: pytest.Pytester, combo: Combo, *, xdist: bool) -> Run:
         terminal=_terminal_findings(lines),
         json=json.loads((root / f"out-{tag}.json").read_text()),
         sarif=json.loads((root / f"out-{tag}.sarif").read_text()),
-        patch=patch_file.read_text() if patch_file.exists() else None,
+        patch=patch_file.read_bytes().decode() if patch_file.exists() else None,
         sections=_sections(lines),
     )
 
@@ -782,8 +786,8 @@ def _check_patch(run: Run, combo: Combo, pytester: pytest.Pytester) -> None:
     original = pytester.path / "app" / "queries.py"
     shutil.copyfile(original, copy / "app" / "queries.py")
     _git_apply(copy, patch)
-    patched = (copy / "app" / "queries.py").read_text()
-    assert _apply_sarif_fixes(original.read_text(), results) == patched
+    patched = (copy / "app" / "queries.py").read_bytes().decode()
+    assert _apply_sarif_fixes(original.read_bytes().decode(), results) == patched
 
 
 def _check_stale(run: Run, combo: Combo, *, xdist: bool) -> None:
@@ -893,7 +897,9 @@ def test_strict_reports_no_unused_load_the_test_never_reached(
     only the relationship load is a finding, with and without strict mode.
     """
     _write_project(pytester, Combo("stopped"))
-    (pytester.path / "tests" / "test_app.py").write_text(STOPPED)
+    (pytester.path / "tests" / "test_app.py").write_text(
+        STOPPED, encoding="utf-8", newline="\n"
+    )
     args = [
         "-p",
         "no:cacheprovider",
@@ -992,7 +998,9 @@ def test_strict_lists_no_marker_of_a_stopped_test_as_stale(
 ) -> None:
     """The marker is for the second loop, which a strict run never reaches."""
     _write_project(pytester, Combo("stopped-marker"))
-    (pytester.path / "tests" / "test_app.py").write_text(STOPPED_MARKER)
+    (pytester.path / "tests" / "test_app.py").write_text(
+        STOPPED_MARKER, encoding="utf-8", newline="\n"
+    )
     args = ["-p", "no:cacheprovider"]
     if strict:
         args.append("--queryguard-strict")
@@ -1010,18 +1018,19 @@ from app.models import Order, make_session
 
 
 def names_a(session):
-    orders = session.scalars(select(Order).where(Order.id < 20)).all()
+    orders = session.scalars(select(Order).where(Order.id.in_([10, 20]))).all()
     return [order.customer.name for order in orders]
 
 
 def names_b(session):
-    orders = session.scalars(select(Order).where(Order.id >= 20)).all()
+    orders = session.scalars(select(Order).where(Order.id.in_([11, 21]))).all()
     return [order.customer.name for order in orders]
 
 
 def test_two_helpers():
     session = make_session()
     names_a(session)
+    session.expunge_all()  # the customers are loaded again
     names_b(session)
 """
 
@@ -1038,7 +1047,9 @@ def test_strict_accepts_what_the_report_accepts_across_parent_lines(
     mode must not raise at the loads of ``names_b`` then.
     """
     _write_project(pytester, Combo("two-helpers"))
-    (pytester.path / "tests" / "test_app.py").write_text(TWO_HELPERS)
+    (pytester.path / "tests" / "test_app.py").write_text(
+        TWO_HELPERS, encoding="utf-8", newline="\n"
+    )
     args = ["-p", "no:cacheprovider", "--queryguard-json=out.json"]
     if accepted_by == "pattern":
         args += [
@@ -1053,7 +1064,9 @@ def test_strict_accepts_what_the_report_accepts_across_parent_lines(
             "function": "names_a",
         }
         (pytester.path / "baseline.json").write_text(
-            json.dumps({"version": 1, "findings": [entry]})
+            json.dumps({"version": 1, "findings": [entry]}),
+            encoding="utf-8",
+            newline="\n",
         )
         args.append("--queryguard-baseline=baseline.json")
     if strict:
@@ -1067,28 +1080,41 @@ def test_strict_accepts_what_the_report_accepts_across_parent_lines(
     assert [(f["function"], f["baselined"]) for f in entry_["findings"]] == expected
 
 
-def test_strict_error_has_no_patch_when_parents_come_from_two_lines(
+def test_strict_error_and_report_agree_when_one_line_loads_one_parent(
     pytester: pytest.Pytester,
 ) -> None:
-    """As in the report, a patch of one of two parent queries would not fix it."""
-    _write_project(pytester, Combo("two-lines-patch"))
+    """A single lookup at another line is no N+1 (#309), in strict mode too.
+
+    ``names_a`` loads one parent, ``names_b`` four: the report's finding is
+    at ``names_b`` alone with a patch for its query, and so is the error
+    strict mode raises.
+    """
+    _write_project(pytester, Combo("one-parent-line"))
     (pytester.path / "tests" / "test_app.py").write_text(
-        TWO_HELPERS.replace("Order.id < 20", "Order.id == 10")
+        TWO_HELPERS.replace("Order.id.in_([10, 20])", "Order.id == 10"),
+        encoding="utf-8",
+        newline="\n",
     )
-    result = pytester.runpytest_subprocess(
-        "-p",
-        "no:cacheprovider",
-        "--queryguard-strict",
-        "--queryguard-show-patch",
-        "--queryguard-write-patch=out.patch",
-    )
-    result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines(
-        [
-            "E*NPlusOneDetected: queryguard strict: Order.customer*",
-            "E*first at tests/test_app.py:8 in names_a",
-            "E*parents loaded at tests/test_app.py:12 in names_b and 1 other place",
+    runs = {}
+    for strict in (False, True):
+        args = [
+            "-p",
+            "no:cacheprovider",
+            "--queryguard-show-patch",
+            f"--queryguard-write-patch=out-{strict}.patch",
         ]
-    )
-    result.stdout.no_fnmatch_line("*patch (git apply*")
-    assert (pytester.path / "out.patch").read_text() == ""
+        if strict:
+            args.append("--queryguard-strict")
+        result = pytester.runpytest_subprocess(*args)
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            [
+                "*first at tests/test_app.py:13 in names_b",
+                "*parents loaded at tests/test_app.py:12 in names_b",
+                "*patch (git apply*",
+            ]
+        )
+        result.stdout.no_fnmatch_line("*other place*")
+        runs[strict] = (pytester.path / f"out-{strict}.patch").read_bytes()
+    assert runs[True] == runs[False]
+    assert b"joinedload(Order.customer)" in runs[True]

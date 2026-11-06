@@ -99,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Strict mode no longer raises for a relationship lazy-loaded for the
   parents of two query lines when an ignore pattern with `file=` or
   `function=`, or a baseline entry, accepts the report's finding: the report
-  makes one finding at the first lazy load of the test, and strict mode
+  makes one finding, at the first lazy load of the query lines that make the
+  N+1, and strict mode
   matched the first lazy load of the later line instead, so it failed a test
   the report passed. Its error now names the other parent lines, as the
   report does, and has no patch then.

@@ -214,16 +214,17 @@ class QueryCollector:
         """(where the report puts this N+1, whether other lines loaded parents).
 
         The report makes one finding per relationship (per scope with
-        ``queryguard_repeat_scope = session``), located at its first lazy
-        load, whatever line loaded the parents; ignore patterns and the
-        baseline must match that line, not the first load of this group's
-        parent line. When parents of other lines are in it too, the report's
-        finding has no patch, so neither has the strict error. Computed once
-        per group, when it reaches the threshold.
+        ``queryguard_repeat_scope = session``) from the query lines whose
+        parents make an N+1, located at its first lazy load; ignore patterns
+        and the baseline must match that line, not the first load of this
+        group's line. Loads of parents whose query is unknown join every
+        line, as in the report. When parents of other lines are in it, the
+        report's finding has no patch, so neither has the strict error.
+        Computed once per group, when it reaches the threshold.
         """
+        here = load.parent.callsite if load.parent is not None else None
         first: CallSite | None = None
         other_lines = False
-        here = load.parent.callsite if load.parent is not None else None
         for earlier in self.relationship_loads:
             if (
                 earlier.relationship != load.relationship
@@ -231,10 +232,15 @@ class QueryCollector:
                 or (scope is not None and earlier.scope != scope)
             ):
                 continue
+            parent = earlier.parent
+            line = None if parent is None else parent.callsite
+            if line is not None and line != here:
+                group = self.strict_groups.get((load.relationship, line, scope))
+                if group is None or len(group.parents) < self.strict_threshold:
+                    continue  # a line with too few parents is no N+1
             if first is None and earlier.callsite is not None:
                 first = earlier.callsite
-            parent = earlier.parent
-            if parent is None or parent.callsite != here:
+            if line != here:
                 other_lines = True
         return first, other_lines
 
