@@ -247,7 +247,8 @@ tests started running more queries before anything fails.
          "file": "app/orders.py", "function": "list_orders", "line": 12,
          "stack": [{"file": "tests/test_orders.py", "function": "test_list_orders",
                     "line": 7}],
-         "baselined": false}
+         "baselined": false,
+         "message": "Order.customer was lazy-loaded 50 times\nfirst at app/orders.py:12 in list_orders\n..."}
       ]
     }
   }
@@ -264,7 +265,9 @@ tests started running more queries before anything fails.
   lines of your code that called `file:line`, innermost first, as the
   terminal report's `called from` lines (`queryguard_stack_depth`). Findings in the
   baseline are listed too, with `"baselined": true`, so the file is the same
-  whether or not the baseline is being updated. `db_time` is null when no
+  whether or not the baseline is being updated. `message` is the finding's
+  text as the terminal report shows it, without the indent; like every
+  message, its wording is not stable. `db_time` is null when no
   statement was timed.
 - `complete` is false when the run stopped early (`-x`, Ctrl-C, a collection
   error, a crashed pytest-xdist worker) or measurement failed: tests missing

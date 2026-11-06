@@ -10,7 +10,8 @@ test node id:
       "db_time": 0.0042,            # seconds, or null when no statement was timed
       "truncated": false,           # by_verb counts only the stored statements
       "findings": [{"kind": ..., "label": ..., "count": ..., "file": ...,
-                    "function": ..., "line": ..., "stack": [...]}]
+                    "function": ..., "line": ..., "stack": [...],
+                    "message": ...}]
     }
 
 ``stack`` lists the application frames that called ``file:line``, innermost
@@ -31,7 +32,7 @@ from typing import Any
 
 from .collector import QueryCollector
 from .fileio import atomic_write_text
-from .findings import Finding
+from .findings import Finding, message_text
 from .sqltext import _WORD, QUOTED, is_transaction_control, skip_prefix
 
 FORMAT_VERSION = 1
@@ -133,6 +134,7 @@ def record_findings(
                 for file, line, function in f.stack
             ],
             "baselined": baseline is not None and f.identity in baseline,
+            "message": message_text(f),
         }
         for f in findings
     )
