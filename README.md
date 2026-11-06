@@ -231,17 +231,16 @@ The [comparison page](https://maciejziel.github.io/pytest-queryguard/comparison.
 was run and what was only read) and the results of running 45 scenarios against
 queryspy 0.5.0 and pytest-querycount 0.4.0 on 2026-10-12 and 2026-10-13
 (queryspy 0.5.1 and 0.6.0, released since, change only the supported Python
-versions by their changelog; not run again). In short, in my runs: pytest-queryguard fails on N+1 with no
-configuration (the other two need a flag or a marker), reported a loop of Core
+versions by their changelog). In short, in my runs: pytest-queryguard fails on
+N+1 with no configuration (the other two need a flag or a marker), reported a loop of Core
 `select()` statements and a loop with literal values that queryspy missed, and
 lists the statements in a budget failure (queryspy's marker printed only the
 counts). queryspy and pytest-querycount also report runs of 2 to 4 identical
 statements, which pytest-queryguard does only when you set
 `queryguard_small_repeat_threshold`. pytest-querycount has a PostgreSQL
 missing-index check of its own, queryspy has middleware and a request panel for
-running apps (pytest-queryguard has an experimental
-[in-application mode](https://maciejziel.github.io/pytest-queryguard/in-app.html)
-with both since 0.5.0; the two were not compared), and django-zeal covers Django.
+running apps (so does pytest-queryguard's experimental [in-application mode](https://maciejziel.github.io/pytest-queryguard/in-app.html)
+since 0.5.0; the two were not compared), and django-zeal covers Django.
 Moving from nplusone: [migration guide](https://maciejziel.github.io/pytest-queryguard/migrating-from-nplusone.html).
 
 ## Overhead
