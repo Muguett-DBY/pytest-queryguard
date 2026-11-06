@@ -92,7 +92,7 @@ def _make(tmp_path: Path, finding: RelationshipFinding) -> SourceFix | None:
 def _patched(tmp_path: Path, fix: SourceFix) -> str:
     """The file after ``git apply`` of the fix; the patch must apply cleanly."""
     patch = tmp_path / "fix.patch"
-    patch.write_text(fix.diff, encoding="utf-8")
+    patch.write_bytes(fix.diff.encode("utf-8"))  # no newline translation
     return _git_apply(tmp_path, patch, fix.file)
 
 
@@ -576,7 +576,7 @@ def test_fixes_of_one_file_combine_into_one_patch(tmp_path: Path) -> None:
     # a file modified after the session started is left out and named
     assert fixpatch.combine([country], tmp_path, 0.0) == ("", 0, ["app/views.py"])
     patch = tmp_path / "all.patch"
-    patch.write_text(text, encoding="utf-8")
+    patch.write_bytes(text.encode("utf-8"))  # no newline translation
     after = _git_apply(tmp_path, patch, "app/views.py")
     assert (
         "from app.models import Customer\n"
@@ -782,8 +782,12 @@ def test_sarif_results_carry_the_fix(project: pytest.Pytester) -> None:
         assert region["startLine"] == region["endLine"]
         assert region["startColumn"] == region["endColumn"]
     texts = sorted(r["insertedContent"]["text"] for r in change["replacements"])
+    # pytester writes the file with the platform's line ends, which are kept
+    newline = (
+        "\r\n" if b"\r\n" in (project.path / "test_loops.py").read_bytes() else "\n"
+    )
     assert texts == [
-        "\nfrom sqlalchemy.orm import selectinload",
+        f"{newline}from sqlalchemy.orm import selectinload",
         ".options(selectinload(Customer.orders))",
     ]
     option = next(
