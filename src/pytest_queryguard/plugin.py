@@ -1373,17 +1373,15 @@ def _blocked_scans(
     """The ids of the selected scans whose every run was inside ignore() blocks.
 
     A statement is explained at its first run only; ``index_runs`` holds the
-    blocks of its later runs. A scan's own run counts too: a statement
-    explained again after DDL has a scan per explain, and one made outside
-    any block before ``index_runs`` followed the statement is not in it.
+    blocks of its later runs (see ``QueryCollector.runs_of``).
     """
     if not any(scan.ignores for scan in collector.scans):
         return set()
     runs: dict[tuple[object, ...], list[tuple[blocks.IgnoreBlock, ...]]] = {}
     for scan in collector.scans:
-        later = collector.index_runs.get(scan.key)
+        later = collector.runs_of(scan)
         runs.setdefault(scan_key(scan.issue), []).extend(
-            [scan.ignores] if later is None else [scan.ignores, *later]
+            [scan.ignores] if later is None else later
         )
     found: set[int] = set()
     for scan in selected:
@@ -1405,24 +1403,28 @@ def _note_blocks(
 
     A block is stale when no test that entered it left out a finding with it,
     in the plugin's analysis or in a check run in the test (``blocks_used``).
-    Not noted: blocks of a test whose analysis did not run (an internal error,
-    a bare allow_nplusone marker) or stopped storing events, and blocks for
-    kinds the test did not look for (``kinds``): they could not have left
-    anything out.
+    Not noted as entered: blocks of a test whose analysis did not run (an
+    internal error, a bare allow_nplusone marker) or stopped storing events,
+    and blocks for kinds the test did not look for (``kinds``): they could
+    not have left anything out.
     """
-    if internal_error() is not None or _nplusone_ignores(item)[0]:
+    if internal_error() is not None:
         return
     root = item.config.rootpath
+    with blocks.lock:
+        used = (*sieve.used, *collector.blocks_used)
+    for block in used:
+        where = _block_site(block, root)
+        if where is not None:
+            settings.blocks_used.add(where)
+    if _nplusone_ignores(item)[0]:
+        return
     for block in list(collector.blocks_entered.values()):
         if not any(block.matches(kind) for kind in kinds):
             continue
         where = _block_site(block, root)
         if where is not None:
             settings.blocks_entered.setdefault(where, block.describe())
-    for block in (*sieve.used, *list(collector.blocks_used)):
-        where = _block_site(block, root)
-        if where is not None:
-            settings.blocks_used.add(where)
 
 
 def _analysed_kinds(

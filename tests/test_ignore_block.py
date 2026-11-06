@@ -557,6 +557,35 @@ queryguard_repeat_threshold = 50
     result.stdout.no_fnmatch_line("*stale ignores*")
 
 
+def test_a_block_used_in_a_test_with_a_bare_marker_is_not_stale(
+    pytester: pytest.Pytester,
+) -> None:
+    _project(
+        pytester,
+        """
+def helper(session, n_plus_one):
+    with ignore("relationship-load"):
+        if n_plus_one:
+            loop(session)
+
+
+@pytest.mark.allow_nplusone
+def test_marked():
+    session = make_sync_session()
+    with record_queries() as log:
+        helper(session, True)
+    log.assert_no_nplusone(relationship_threshold=2)
+
+
+def test_not_used():
+    helper(make_sync_session(), False)
+""",
+    )
+    result = _run(pytester)
+    result.assert_outcomes(passed=2)
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
 def test_a_block_assert_no_nplusone_did_not_use_is_still_stale(
     pytester: pytest.Pytester,
 ) -> None:
@@ -693,10 +722,20 @@ def test_inside_then_ddl_then_inside():
     ddl(session)
     with ignore("missing-index"):
         scan(session)
+
+
+def test_inside_then_an_index_then_outside():
+    # the runs after the index do not scan: only the run inside did
+    session = make_sync_session()
+    with ignore("missing-index"):
+        scan(session)
+    session.execute(text("CREATE INDEX ix_orders_customer ON orders (customer_id)"))
+    for _ in range(3):
+        scan(session)
 """,
     )
     result = _run(pytester, "--queryguard-index-check")
-    result.assert_outcomes(passed=1, failed=2)
+    result.assert_outcomes(passed=2, failed=2)
     result.stdout.fnmatch_lines(
         [
             "FAILED*test_outside_then_ddl_then_inside*",

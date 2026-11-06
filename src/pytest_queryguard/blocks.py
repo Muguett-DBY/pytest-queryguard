@@ -64,7 +64,7 @@ class IgnoreBlock:
             entered = recording[0]
             key = (self.site.filename, self.site.lineno)
             if key not in entered:
-                with _lock:
+                with lock:
                     entered.setdefault(key, self)
         return self
 
@@ -163,9 +163,10 @@ current = _blocks.get
 Entered = dict[tuple[str, int], IgnoreBlock]
 Used = dict[IgnoreBlock, None]  # ordered set
 _recording: ContextVar[tuple[Entered, Used] | None] = ContextVar(
-    "pytest_queryguard_ignore_entered", default=None
+    "pytest_queryguard_ignore_recording", default=None
 )
-_lock = threading.Lock()  # threads given the context may enter blocks at once
+# threads given the context may enter or use blocks at once
+lock = threading.Lock()
 
 
 def record_entered(entered: Entered, used: Used) -> Token[tuple[Entered, Used] | None]:
@@ -233,7 +234,7 @@ class Sieve:
         if recording is not None:
             # a check run inside a measured test: the test's stale-block
             # report counts the blocks too (see record_entered)
-            with _lock:
+            with lock:
                 recording[1].update(new)
 
     def drops(self, events: Iterable[_Tagged], kind: str) -> bool:

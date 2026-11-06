@@ -58,10 +58,16 @@ class QueryCollector:
     # A statement is explained at its first run only. For one first explained
     # inside an ignore() block: explain key -> the blocks of every run of it
     # (blocks.current() of each), so a run outside the block is not missed.
-    # Kept when DDL clears explained (see catalog.clear).
     index_runs: dict[object, dict[tuple[IgnoreBlock, ...], None]] = field(
         default_factory=dict
     )
+    # The runs of the scans recorded before a catalog change, which makes the
+    # statements be explained again (see freeze_index_runs): id(scan) -> its
+    # runs, None for a statement not followed (its own run is all).
+    frozen_runs: dict[int, dict[tuple[IgnoreBlock, ...], None] | None] = field(
+        default_factory=dict
+    )
+    frozen_scans: int = 0  # how many of scans have their runs in frozen_runs
     scans: list[ScanEvent] = field(default_factory=list)
     index_notices: dict[str, None] = field(default_factory=dict)  # ordered set
     explain_errors: list[tuple[str, str]] = field(default_factory=list)
@@ -206,6 +212,24 @@ class QueryCollector:
             group.parents.add(load.parent_key)
         return group if len(group.parents) >= self.strict_threshold else None
 
+    def freeze_index_runs(self) -> None:
+        """Keep the runs of the scans so far; the statements start afresh.
+
+        After a catalog change a statement is explained again: its later runs
+        belong to that explain, and do not count for the scans before it.
+        """
+        scans = self.scans[self.frozen_scans :]
+        for scan in scans:
+            self.frozen_runs[id(scan)] = self.index_runs.get(scan.key)
+        self.frozen_scans += len(scans)
+        self.index_runs = {}
+
+    def runs_of(self, scan: ScanEvent) -> dict[tuple[IgnoreBlock, ...], None] | None:
+        """The blocks of every run of ``scan``'s statement, or None if not followed."""
+        if id(scan) in self.frozen_runs:
+            return self.frozen_runs[id(scan)]
+        return self.index_runs.get(scan.key)
+
     def note_index_run(self, key: object, tags: tuple[IgnoreBlock, ...]) -> None:
         """Another run of an explained statement (see ``index_runs``)."""
         runs = self.index_runs.get(key)
@@ -242,16 +266,9 @@ def note_index_reruns(
 def note_index_first_run(
     fresh: Sequence[QueryCollector], key: object, tags: tuple[IgnoreBlock, ...]
 ) -> None:
-    """The statement under ``key`` was explained, with scans, inside ``tags``.
-
-    Explained again after a catalog change (see ``catalog.clear``), it adds
-    to the runs noted before.
-    """
-    for target in fresh:
-        runs = target.index_runs.get(key)
-        if runs is not None:
-            runs[tags] = None
-        elif tags:
+    """The statement under ``key`` was explained, with scans, inside ``tags``."""
+    if tags:
+        for target in fresh:
             target.index_runs[key] = {tags: None}
 
 
