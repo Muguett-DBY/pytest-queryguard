@@ -84,8 +84,18 @@ inputs:
       requests from forks and Dependabot. "false": job summary only.
     required: false
     default: "true"
+  trend:
+    description: >-
+      A number N: on pushes to the default branch and on pull requests, show
+      how the query counts moved over the last N runs (this one and the
+      latest N-1 runs of this workflow on the base branch that have the
+      artifact) in the job summary, and folded into the pull-request comment
+      when there is one. "true" means 10 runs. Needs "actions: read".
+      "false" (the default): skip.
+    required: false
+    default: "false"
   github-token:
-    description: Token for the comparison and the comment.
+    description: Token for the comparison, the trend and the comment.
     required: false
     default: ${{ github.token }}
 
@@ -99,6 +109,11 @@ outputs:
   json-file:
     description: Path of the query-count JSON file, relative to working-directory.
     value: ${{ inputs.json-file }}
+  trend-report:
+    description: >-
+      Path of the trend report (Markdown) when the trend step wrote one,
+      otherwise empty.
+    value: ${{ steps.trend.outputs.report }}
 
 runs:
   using: composite
@@ -274,6 +289,80 @@ runs:
         cat "$report" >> "$GITHUB_STEP_SUMMARY"
         echo "report=$report" >> "$GITHUB_OUTPUT"
 
+    - name: Show the query-count trend
+      id: trend
+      if: >-
+        always() && inputs.trend != 'false' && inputs.trend != ''
+        && steps.json.outputs.path != ''
+        && (github.event_name == 'pull_request'
+        || (github.event_name == 'push'
+        && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))
+      # The trend is information: it never fails the job.
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        QG_REPO: ${{ github.repository }}
+        QG_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+        QG_WORKFLOW_REF: ${{ github.workflow_ref }}
+        QG_CATEGORY: ${{ inputs.category }}
+        QG_RUNS: ${{ inputs.trend }}
+        QG_HEAD_JSON: ${{ steps.json.outputs.path }}
+        QG_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        QG_TMP: ${{ runner.temp }}
+      run: |
+        if [ "$QG_RUNS" = "true" ]; then
+          QG_RUNS=10
+        fi
+        if ! [[ "$QG_RUNS" =~ ^[0-9]+$ ]] || [ "$QG_RUNS" -lt 2 ] || [ "$QG_RUNS" -gt 100 ]; then
+          echo "::warning::trend must be \"false\" or a number of runs from 2 to 100, not \"$QG_RUNS\""
+          exit 0
+        fi
+        workflow="${QG_WORKFLOW_REF%%@*}"
+        workflow="${workflow##*/}"
+        dir="$QG_TMP/queryguard-trend"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        wanted=$((QG_RUNS - 1))
+        # newest first: run id and short commit of the finished runs of this
+        # workflow on the branch; some may have no artifact (expired, or the
+        # job failed before writing it), so a few more are listed
+        files=()
+        labels=()
+        if runs="$(gh run list -R "$QG_REPO" --workflow "$workflow" --branch "$QG_BRANCH" \
+            --status completed --limit $((wanted * 2 + 10)) \
+            --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha[0:7])"' 2>&1)"; then
+          while read -r run sha; do
+            [ "${#files[@]}" -ge "$wanted" ] && break
+            [ -n "$run" ] || continue
+            if gh run download "$run" -R "$QG_REPO" -n "queryguard-json-$QG_CATEGORY" -D "$dir/$run" 2>/dev/null; then
+              file="$(find "$dir/$run" -name '*.json' -type f | head -n 1)"
+              if [ -n "$file" ]; then
+                files=("$file" "${files[@]}")
+                labels=("$sha" "${labels[@]}")
+              fi
+            fi
+          done <<< "$runs"
+        else
+          echo "::warning::listing the runs of $workflow failed (the job needs the actions: read permission); the trend has this run only"
+        fi
+        # the files oldest first, then one --label per file in the same order
+        args=("${files[@]}" "$QG_HEAD_JSON")
+        for label in "${labels[@]}" "${QG_SHA:0:7} (this run)"; do
+          args+=(--label "$label")
+        done
+        key=""
+        if [ "$QG_CATEGORY" != "pytest-queryguard" ]; then
+          key="$QG_CATEGORY"
+        fi
+        report="$QG_TMP/queryguard-trend.md"
+        folded="$QG_TMP/queryguard-trend-details.md"
+        python -m pytest_queryguard.trend "${args[@]}" --key "$key" --output "$report" > /dev/null
+        python -m pytest_queryguard.trend "${args[@]}" --key "$key" --details --output "$folded" > /dev/null
+        cat "$report" >> "$GITHUB_STEP_SUMMARY"
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+        echo "details=$folded" >> "$GITHUB_OUTPUT"
+
     - name: Comment the comparison on the pull request
       if: >-
         always() && inputs.comment == 'true' && steps.compare.outputs.report != ''
@@ -286,7 +375,16 @@ runs:
         QG_REPO: ${{ github.repository }}
         QG_PR: ${{ github.event.pull_request.number }}
         QG_REPORT: ${{ steps.compare.outputs.report }}
+        QG_TREND: ${{ steps.trend.outputs.details }}
+        QG_TMP: ${{ runner.temp }}
       run: |
+        # The trend, when there is one, goes folded below the comparison, so
+        # the comment keeps the comparison's marker on its first line.
+        if [ -n "$QG_TREND" ] && [ -f "$QG_TREND" ]; then
+          body="$QG_TMP/queryguard-comment.md"
+          { cat "$QG_REPORT"; echo; cat "$QG_TREND"; } > "$body"
+          QG_REPORT="$body"
+        fi
         # One comment per category: the action's own comment, found by the
         # marker on its first line. A comment of anyone else is never edited.
         export QG_MARKER="$(head -n 1 "$QG_REPORT")"
