@@ -825,6 +825,17 @@ def test_the_column_counts_characters(models: lint.Models) -> None:
     assert finding.column == len('    print("Zamówienie żółć", o.') + 1
 
 
+def test_the_line_of_a_finding_is_the_line_ast_counts(models: lint.Models) -> None:
+    # str.splitlines would also split at the form feed and the line separator
+    source = HEADER + (
+        "# a line separator: \u2028\n"
+        "for o in session.scalars(select(Order)):\n"
+        "    x = '\x0c'; print('ż', o.customer)\n"
+    )
+    (finding,) = lint.lint_source(source, "app.py", models)
+    assert finding.column == len("    x = '\x0c'; print('ż', o.") + 1
+
+
 def test_a_select_not_from_sqlalchemy(models: lint.Models) -> None:
     source = (
         f"from {MODULE} import Order\n"
