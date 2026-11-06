@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-06
+
+ORM statements cost about a third less to measure: the plugin reads the
+ORM's options on the `SELECT` itself and no longer registers a
+`do_orm_execute` listener by default. Each finding shows the lines of your
+code that led to it (`called from`). New in a test: the `queryguard` fixture
+(`max_queries` / `num_queries` blocks, like pytest-django's) and
+`pytest_queryguard.ignore()` blocks; ignore rules can match the call stack
+(`stack=`). The in-app mode can report to OpenTelemetry and Sentry and sample
+requests. An experimental check reports wide rows of which a test reads few
+columns.
+
+Upgrading from 0.6.0: reports have up to three more lines per finding
+(`queryguard_stack_depth = 0` restores the old layout). A lazy load answered
+without a `SELECT` (your own `do_orm_execute` cache) is no longer counted, and
+the cartesian-load check now also sees ORM selects run through
+`Connection.execute()`. Nothing else changes for an existing configuration.
+
 ### Added
 
 - Each finding shows a short stack: under `first at`, a `called from` line
@@ -2032,7 +2050,8 @@ First release.
 - An internal error disables the plugin with a single warning instead of
   failing the test suite.
 
-[Unreleased]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0rc3...v0.5.0
 [0.5.0rc3]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0rc2...v0.5.0rc3
