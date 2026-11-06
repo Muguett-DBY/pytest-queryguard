@@ -101,7 +101,7 @@ also install `sqlalchemy[asyncio]`.
 Every test is checked automatically, inside the test function:
 
 - **relationship-load**: one relationship (`Order.customer`) is lazy-loaded
-  for 2 or more different parent objects. The hint is `joinedload` for a
+  for 2 or more parents loaded by one query. The hint is `joinedload` for a
   many-to-one relationship and `selectinload` for a collection;
 - **repeated-statement**: one `SELECT`, with its parameters and literals
   removed, runs 5 or more times. Core and `text()` statements count, not only

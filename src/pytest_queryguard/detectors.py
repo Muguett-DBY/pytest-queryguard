@@ -247,6 +247,47 @@ def _parents(
     return first, max(len(sites) - 1, 0), root, path
 
 
+def _n_plus_one_groups(
+    loads: Sequence[RelationshipLoadEvent], threshold: int
+) -> list[list[RelationshipLoadEvent]]:
+    """The groups of loads of one relationship that make an N+1.
+
+    As in strict mode, the parents are grouped by the query line that loaded
+    them, and a group needs ``threshold`` distinct parents, so two
+    single-object lookups at two lines are no N+1 (#307). A parent whose
+    query is unknown (made by the test, loaded before the measurement, read
+    by two queries) may belong to any of them: its loads count for every
+    group, and form one of their own, so an unknown origin never hides a loop.
+    """
+    unknown: list[RelationshipLoadEvent] = []
+    groups: dict[CallSite, list[RelationshipLoadEvent]] = {}
+    for load in loads:
+        parent = load.parent
+        if parent is None or parent.callsite is None:
+            unknown.append(load)
+        else:
+            groups.setdefault(parent.callsite, []).append(load)
+    candidates = [[*group, *unknown] for group in groups.values()]
+    if unknown:
+        candidates.append(unknown)
+    return [
+        group
+        for group in candidates
+        if len({load.parent_key for load in group}) >= threshold
+    ]
+
+
+def _merge(
+    loads: Sequence[RelationshipLoadEvent],
+    groups: Sequence[Sequence[RelationshipLoadEvent]],
+) -> list[RelationshipLoadEvent]:
+    """The loads of ``groups``, once each, in the order of ``loads``."""
+    if len(groups) == 1 and len(groups[0]) == len(loads):
+        return list(loads)
+    kept = {id(load) for group in groups for load in group}
+    return [load for load in loads if id(load) in kept]
+
+
 def _relationship_findings(
     collector: QueryCollector,
     threshold: int,
@@ -261,16 +302,32 @@ def _relationship_findings(
     for name, loads in by_name.items():
         best: list[RelationshipLoadEvent] | None = None
         best_parents = 0
+        best_dropped: list[IgnoreBlock] = []
         held: list[IgnoreBlock] = []
-        for group in _split(loads, lambda load: load.scope, scoped):
+        for scope_loads in _split(loads, lambda load: load.scope, scoped):
+            groups = _n_plus_one_groups(scope_loads, threshold)
+            if not groups:
+                continue
+            # a query line whose loads all ran inside ignore() blocks is
+            # left out of the finding; the others are still reported
+            dropped: list[IgnoreBlock] = []
+            shown = [
+                group
+                for group in groups
+                if not _hidden(sieve, group, KIND_RELATIONSHIP, dropped)
+            ]
+            if not shown:
+                held.extend(dropped)
+                continue
+            group = _merge(scope_loads, shown)
             parents = len({load.parent_key for load in group})
-            if parents >= threshold and parents > best_parents:
-                if _hidden(sieve, group, KIND_RELATIONSHIP, held):
-                    continue
-                best, best_parents = group, parents
+            if parents > best_parents:
+                best, best_parents, best_dropped = group, parents, dropped
         if best is None:
             _note_hidden(sieve, held)
             continue
+        # the blocks that left a query line out of the reported finding
+        _note_hidden(sieve, best_dropped)
         scope = best[0].scope
         # A lazy load is the statement the finding counts; the query of an
         # eager loader carries the same label and is used only when no lazy

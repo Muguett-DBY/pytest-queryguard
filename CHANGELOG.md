@@ -98,6 +98,23 @@ will be removed in 2.0 (#303).
 
 ### Changed
 
+- relationship-load reports fewer findings: the lazy loads of a relationship
+  now count per query line that loaded the parents, as strict mode counts
+  them, so two single-object lookups that each read the relationship
+  (`session.get(Order, 1).customer`, then `session.get(Order, 2).customer`)
+  are no longer an N+1. Lookups at the same line (a loop of `session.get()`)
+  still count together, and a parent whose query is unknown (an object the
+  test created, or loaded before the test body) counts with the parents of
+  every query line, so a loop over such objects is still reported. A
+  finding counts the lazy loads of the query lines that reach the
+  threshold, no longer those of single lookups next to the loop, and leaves
+  out a query line whose loads all ran inside an `ignore()` block. A loop
+  over the rows of several queries that return one row each is no longer
+  reported. This applies to `assert_no_nplusone()` too; the
+  in-application mode does not note where parents came from and counts as
+  before. In the accuracy corpus, `clean_93_two_single_object_lookups` is no
+  longer reported and no other finding changed: relationship-load is at 29
+  TP, 0 FP, 0 FN (#307).
 - In-application mode: the watched engine's `before_cursor_execute` listener
   reads which relationship or column load an ORM `SELECT` runs for from that
   statement's own options, with the same code as the pytest plugin since
@@ -112,6 +129,10 @@ will be removed in 2.0 (#303).
 
 ### Fixed
 
+- On Python 3.10 and 3.11 a query in a list, dict or set comprehension was
+  reported "first at … in <listcomp>" with an extra "called from" line for
+  the same place. Reports now name the function the comprehension is
+  written in, as on 3.12 and later.
 - In-application mode: on SQLAlchemy 2.0.20 to 2.0.49 an application's
   `yield_per` or `autoflush=False` query with `selectinload()` now works
   while the engine is watched (SQLAlchemy issue 13301) (#289).
@@ -127,6 +148,10 @@ will be removed in 2.0 (#303).
 - A statement run outside an `ignore("missing-index")` block, then again
   inside it after DDL made the check explain it again, is reported: the block
   no longer leaves the missing-index finding out (#284).
+- The patch of `--queryguard-write-patch` no longer adds an option twice
+  when one query has two relationship-load findings, a relationship and a
+  chain through it: `.options(selectinload(A.b)).options(selectinload(A.b)
+  .joinedload(B.c))` is now `.options(selectinload(A.b).joinedload(B.c))`.
 
 ### Documentation
 
@@ -138,6 +163,29 @@ will be removed in 2.0 (#303).
   listed as experimental.
 
 ### Internal
+
+- Seeded property tests for the source patch and the static check
+  (`tests/test_fuzz_fixpatch.py`, `tests/test_fuzz_lint.py`, standard library
+  only; `QUERYGUARD_FUZZ=1` runs many more rounds): generated modules, random
+  edits, pathological code and this repository's own files. Every patch must
+  apply with `git apply`, parse and change the AST by the loader option and
+  its import only. They found, and these changes fix: an existing
+  `.options((a))` getting the loader inside the parentheses (a tuple), a
+  class rebound by a module-level `match` capture, a `global` statement or a
+  class body still patched, warnings of the parsed code shown, code nested
+  deeper than the recursion limit (a long `a + b + ...`, a long `elif`
+  chain) skipped by the static check, which also reported a loop variable
+  rebound by `except ... as`, a `match` capture, an import or a `def`, gave
+  a wrong column after a form feed or a line separator, and took seconds for
+  a comprehension with hundreds of `for` clauses.
+- The accuracy corpus has 50 more scenarios (197) and measures
+  `cartesian-load` (it warns by default, and warnings are now measured),
+  `unused-columns`, strict mode, `ignore()` blocks and fixtures; a new test
+  applies the patch of `--queryguard-write-patch` to the corpus and checks
+  that the N+1 is gone. `cartesian-load` has minimums in the release gate;
+  the relationship-load minimum precision stays at 100% (its one new false
+  positive, two single-object lookups, is fixed by #307). See
+  docs/accuracy.md.
 
 - Every private SQLAlchemy attribute, execution option, frame and code object
   the plugin and the in-app mode read is named in one module,

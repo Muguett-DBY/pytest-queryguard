@@ -90,13 +90,11 @@ def test_single_objects_and_allowed_tests_do_not_raise(
     project: pytest.Pytester,
 ) -> None:
     result = _run(project, "--queryguard-strict", "-k", "one_object or allowed")
-    # objects of two different queries: no raise at the access; the usual
-    # report at the end still counts the two lazy loads of Order.customer
-    result.assert_outcomes(passed=2, failed=1)
+    # objects of two different queries, one each: no raise at the access, and
+    # the report at the end, which groups the parents the same way, agrees
+    # (#307)
+    result.assert_outcomes(passed=3)
     assert "queryguard strict" not in result.stdout.str()
-    result.stdout.fnmatch_lines(
-        ["FAILED test_strict_suite.py::test_two_queries_one_object_each - Failed:*"]
-    )
 
 
 def test_an_ignore_pattern_or_the_baseline_lets_it_pass(

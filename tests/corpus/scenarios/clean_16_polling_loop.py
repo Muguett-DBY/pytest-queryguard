@@ -2,7 +2,7 @@
 
 The same SELECT six times, on purpose: another worker finishes the job while the
 loop waits (simulated by an UPDATE on a second connection). Real code would
-sleep between polls. Tests of such code need ``allow_nplusone``.
+sleep between polls. Tests of such code need the ``queryguard_ignore`` marker.
 """
 
 from sqlalchemy import select, update
@@ -14,7 +14,7 @@ from ..kit import CLEAN, Ctx
 VERDICT = CLEAN
 KINDS = frozenset()
 KNOWN = {
-    "*": "every poll has the same parameters, like the loop-invariant query of bug_55; the statements cannot tell them apart; use allow_nplusone",
+    "*": "every poll has the same parameters, like the loop-invariant query of bug_55; the statements cannot tell them apart; use the queryguard_ignore marker",
 }
 setup = shop.setup
 

@@ -122,3 +122,60 @@ def test_callsite_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(callsite._sites) <= 2
     site = find_callsite()
     assert site is not None and site.function == "test_callsite_cache_is_bounded"
+
+
+def test_a_comprehension_is_named_after_the_function_it_is_in(
+    pytester: pytest.Pytester,
+) -> None:
+    # Before 3.12 a list comprehension runs in a frame of its own; the report
+    # names the enclosing function, with no extra "called from" line, as on
+    # 3.12 and later.
+    pytester.makepyfile(
+        test_comp="""
+        from sqlalchemy import ForeignKey, create_engine, select
+        from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
+
+
+        class Base(DeclarativeBase):
+            pass
+
+
+        class Customer(Base):
+            __tablename__ = "customer"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            name: Mapped[str]
+
+
+        class Order(Base):
+            __tablename__ = "orders"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            customer_id: Mapped[int] = mapped_column(ForeignKey("customer.id"))
+            customer: Mapped[Customer] = relationship()
+
+
+        def names(session):
+            return [o.customer.name for o in session.scalars(select(Order))]
+
+
+        def test_names():
+            engine = create_engine("sqlite://")
+            Base.metadata.create_all(engine)
+            with Session(engine) as session:
+                session.add_all(
+                    [Order(id=n, customer=Customer(id=n, name="c")) for n in range(3)]
+                )
+                session.commit()
+            with Session(engine) as session:
+                names(session)
+        """
+    )
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
+    result.assert_outcomes(failed=1)
+    out = result.stdout.str()
+    assert "<listcomp>" not in out
+    result.stdout.fnmatch_lines(
+        [
+            "*first at test_comp.py:* in names",
+            "*called from test_comp.py:* in test_names",
+        ]
+    )

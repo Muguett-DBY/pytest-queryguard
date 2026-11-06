@@ -261,7 +261,7 @@ class QueryLog:
 
         The rules, and the defaults of the thresholds, are the plugin's: one
         relationship lazy-loaded for ``relationship_threshold`` different
-        parent objects, or one ``SELECT``, without its literals and
+        parent objects that one query line loaded, or one ``SELECT``, without its literals and
         parameters, run ``repeat_threshold`` times (pagination and chunked
         ``IN`` loads, recognised by their parameters, do not count), or
         ``column_load_threshold``
