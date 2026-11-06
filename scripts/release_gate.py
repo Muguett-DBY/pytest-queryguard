@@ -118,13 +118,50 @@ def check_doc_versions(version: str, texts: dict[str, str] | None = None) -> lis
     return problems
 
 
+# The GitHub Action pinned in the workflow that docs/ci.md shows.
+ACTION_PIN = rf"MaciejZiel/pytest-queryguard/action@v({VERSION})\b"
+
+
+def check_action_pin(
+    version: str, changelog: str, ci_text: str | None = None
+) -> list[str]:
+    """The release tag docs/ci.md pins the action to.
+
+    It is ``__version__``, the release being made or the last one; during a
+    pre-release (``1.3.0rc1``) it is the newest final release in the
+    changelog, the one pip installs by default. ``ci_text`` is the content of
+    docs/ci.md; by default the file is read.
+    """
+    problems = Problems()
+    text = (
+        ci_text
+        if ci_text is not None
+        else (ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+    )
+    if re.fullmatch(FINAL, version):
+        wanted: str | None = version
+    else:
+        headings = re.findall(r"^## \[([^\]]+)\]", changelog, flags=re.MULTILINE)
+        wanted = next((h for h in headings if re.fullmatch(FINAL, h)), None)
+    pins = re.findall(ACTION_PIN, text)
+    if problems.check(pins, "docs/ci.md does not pin the action to a release tag"):
+        for pin in sorted(set(pins)):
+            problems.check(
+                pin == wanted,
+                f"docs/ci.md pins the action to v{pin}; it must be v{wanted} "
+                f"(__version__ is {version})",
+            )
+    return problems
+
+
 def check_consistency(
     changelog: str | None = None, version: str | None = None
 ) -> list[str]:
     """The version, the top changelog entry, its date and the link references.
 
     Without ``changelog`` the repository is checked, and then also the version
-    its documentation describes (``check_doc_versions``).
+    its documentation describes (``check_doc_versions``) and the release tag
+    docs/ci.md pins the action to (``check_action_pin``).
     """
     problems = Problems()
     version = version or package_version()
@@ -135,6 +172,8 @@ def check_consistency(
         if changelog is not None
         else (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     )
+    if changelog is None:
+        problems.extend(check_action_pin(version, text))
     problems.check(
         re.fullmatch(VERSION, version), f"version {version!r} is not PEP 440"
     )
@@ -602,7 +641,7 @@ def check_bench() -> list[str]:
 
 
 CHECKS: dict[str, str] = {
-    "consistency": "version, changelog entry, date, links and docs version agree",
+    "consistency": "version, changelog entry, date, links, docs version and action pin agree",
     "accuracy": "accuracy corpus precision and recall are at least the recorded minimums",
     "contents": "wheel and sdist contain what they should and nothing else",
     "install": "wheel and sdist install into clean environments and work",
