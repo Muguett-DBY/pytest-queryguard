@@ -141,6 +141,52 @@ def test_a_released_version_must_not_be_pending(gate: ModuleType, path: str) -> 
     assert len(problems) == 2
 
 
+def _ci(tag: str) -> str:
+    return (
+        f"      - uses: MaciejZiel/pytest-queryguard/action@{tag}   # a release tag\n"
+    )
+
+
+def test_the_action_pin_is_the_release(gate: ModuleType) -> None:
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert gate.check_action_pin(gate.package_version(), changelog) == []
+    assert gate.check_action_pin("1.2.0", GOOD, _ci("v1.2.0")) == []
+    # a pre-release keeps the newest final release
+    rc = GOOD.replace(
+        "## [Unreleased]\n", "## [Unreleased]\n\n## [1.3.0rc1] - 2026-03-01\n"
+    )
+    assert gate.check_action_pin("1.3.0rc1", rc, _ci("v1.2.0")) == []
+    assert gate.check_action_pin("1.3.0rc1", rc, _ci("v1.3.0rc1")) != []
+
+
+@pytest.mark.parametrize(
+    ("version", "ci", "message"),
+    [
+        ("1.2.0", "v1.1.0", "pins the action to v1.1.0; it must be v1.2.0"),
+        ("1.2.0", "v1.3.0", "pins the action to v1.3.0; it must be v1.2.0"),
+        ("1.2.0", "COMMIT_SHA", "does not pin the action to a release tag"),
+    ],
+)
+def test_a_stale_action_pin_fails(
+    gate: ModuleType, version: str, ci: str, message: str
+) -> None:
+    problems = gate.check_action_pin(version, GOOD, _ci(ci))
+    assert any(message in problem for problem in problems), problems
+
+
+def test_a_pre_release_without_a_final_release_says_so(gate: ModuleType) -> None:
+    only_rc = "## [Unreleased]\n\n## [1.0.0rc1] - 2026-03-01\n"
+    (problem,) = gate.check_action_pin("1.0.0rc1", only_rc, _ci("v0.9.0"))
+    assert "no final release" in problem
+
+
+def test_every_action_pin_is_checked(gate: ModuleType) -> None:
+    text = _ci("v1.2.0") + _ci("v1.1.0")
+    assert gate.check_action_pin("1.2.0", GOOD, text) == [
+        "docs/ci.md pins the action to v1.1.0; it must be v1.2.0 (__version__ is 1.2.0)"
+    ]
+
+
 def test_the_accuracy_thresholds_are_recorded_in_the_docs() -> None:
     thresholds = json.loads(
         (ROOT / "scripts" / "accuracy_thresholds.json").read_text(encoding="utf-8")

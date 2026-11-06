@@ -37,7 +37,7 @@ title = "Using it"
 pages = [
   { title = "Configuration reference", file = "configuration.md", description = "Every ini option, command-line flag and marker of pytest-queryguard, with defaults and accepted values." },
   { title = "Budgets and timing", file = "budgets.md", description = "Fail a pytest test that runs too many SQL statements or spends too long in the database, with markers or context managers." },
-  { title = "Ignoring findings", file = "ignoring.md", description = "Leave out single findings or whole kinds with an ignore() block, the allow_nplusone marker, queryguard_ignore and baselines." },
+  { title = "Ignoring findings", file = "ignoring.md", description = "Leave out single findings or whole kinds with an ignore() block, the queryguard_ignore marker and option, and baselines." },
   { title = "Several sessions or requests", file = "several-sessions.md", description = "Count repeated statements per Session or connection checkout, for tests that make several independent requests." },
   { title = "Reading the queries", file = "python-api.md", description = "Read the SQL statements, durations and call sites of a block in a test with record_queries and QueryLog." },
   { title = "In-application mode", file = "in-app.md", description = "Run the N+1 rules and query budgets on every request of a running FastAPI, Starlette or Flask app, with an optional development panel." },

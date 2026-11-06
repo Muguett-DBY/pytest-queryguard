@@ -72,7 +72,7 @@ queryguard_column_load_threshold = 2
 | queryspy | pytest-queryguard |
 |---|---|
 | `@pytest.mark.queryspy(max_queries=3)` | `@pytest.mark.max_queries(3)` |
-| `@pytest.mark.queryspy(allow_n_plus_one=True)` | `@pytest.mark.allow_nplusone`, or with patterns to allow only some findings: `@pytest.mark.allow_nplusone("Order.customer")` |
+| `@pytest.mark.queryspy(allow_n_plus_one=True)` | `@pytest.mark.queryguard_ignore` (alias `allow_nplusone`), or with patterns to allow only some findings: `@pytest.mark.queryguard_ignore("Order.customer")` |
 | `@pytest.mark.queryspy(threshold=3)` | No per-test threshold marker: set the ini option, or use `record_queries()` with `assert_no_nplusone(relationship_threshold=3, repeat_threshold=3)` |
 | `@pytest.mark.queryspy(fail_on=...)` | No per-test equivalent; `queryguard_fail_on` applies to the suite |
 | `with assert_max_queries(2):` | `with max_queries(2):` (raises `QueryBudgetExceeded`, an `AssertionError`) |

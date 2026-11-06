@@ -77,15 +77,15 @@ keyword-only arguments, with the same defaults as the ini options:
 | `column_load_threshold` | `5` | `queryguard_column_load_threshold` | This many instances of one class each loading deferred or expired columns on their own (kind `column-load`). |
 | `small_repeat_threshold` | `None` (off) | `queryguard_small_repeat_threshold` | An integer of at least 2 and below `repeat_threshold`: a statement that ran this many times from one line, each time with other parameters, counts too. |
 | `write_loop_threshold` | `None` (off) | `queryguard_write_loop_threshold` | An integer of at least 2: this many single-row `INSERT`, `UPDATE` or `DELETE` statements of one shape from one line (kind `write-loop`). |
-| `repeat_scope` | `"test"` | `queryguard_repeat_scope` | See below. |
+| `scope` | `"test"` | `queryguard_scope` | See below. `repeat_scope=`, its name before 0.8.0, still works with a `QueryGuardDeprecationWarning` until 2.0. |
 
 An ini option set to `0` for "off" is `None` here.
 
-`repeat_scope="session"` counts each `Session` on its own, like
-`queryguard_repeat_scope = session` (see [Tests with several sessions or
+`scope="session"` counts each `Session` on its own, like
+`queryguard_scope = session` (see [Tests with several sessions or
 requests](several-sessions.md)); the default is `"test"`.
 
-It does not read the ini options, `queryguard_mode` or the `allow_nplusone`
+It does not read the ini options, `queryguard_mode` or the `queryguard_ignore`
 marker; calling it is an explicit request. It does leave out what ran inside
 an [`ignore()` block](#leaving-out-a-block-ignore), as the plugin does. A project that sets
 `queryguard_repeat_threshold = 10` in its configuration therefore has to pass

@@ -17,7 +17,7 @@ from .messages import (
     format_time_budget,
     make_findings,
 )
-from .warnings import QueryGuardInternalWarning, warn_internal
+from .warnings import QueryGuardInternalWarning, default, renamed, warn_internal
 
 
 class QueryBudgetExceeded(AssertionError):
@@ -254,7 +254,8 @@ class QueryLog:
         column_load_threshold: int = 5,
         small_repeat_threshold: int | None = None,
         write_loop_threshold: int | None = None,
-        repeat_scope: str = "test",
+        scope: str = default("test"),
+        repeat_scope: str | None = None,
     ) -> None:
         """Raise ``NPlusOneDetected`` when the recorded block has N+1 queries.
 
@@ -272,13 +273,14 @@ class QueryLog:
         2), that many single-row INSERT, UPDATE or DELETE statements of one
         shape from one line count too.
 
-        ``repeat_scope`` is ``"test"`` (the default: everything in the block counts
+        ``scope`` is ``"test"`` (the default: everything in the block counts
         together) or ``"session"``: each SQLAlchemy ``Session`` (or, for a
         connection no Session opened, each connection checkout) counts on its
         own, which is what a block that makes several independent requests needs.
+        ``repeat_scope`` is its deprecated name (removed in 2.0).
 
-        The thresholds and ``repeat_scope`` are these arguments only. The ``queryguard_*`` ini
-        options, ``queryguard_mode`` and the ``allow_nplusone`` marker are not
+        The thresholds and ``scope`` are these arguments only. The ``queryguard_*`` ini
+        options, ``queryguard_mode`` and the ``queryguard_ignore`` marker are not
         read, so a project that changes ``queryguard_repeat_threshold``,
         ``queryguard_relationship_threshold`` or
         ``queryguard_column_load_threshold``,
@@ -320,10 +322,9 @@ class QueryLog:
                 "small_repeat_threshold must be None or an integer >= 2 and "
                 f"below repeat_threshold ({repeat_threshold}), got {small!r}"
             )
-        if repeat_scope not in SCOPES:
-            raise ValueError(
-                f"repeat_scope must be one of {', '.join(SCOPES)}, got {repeat_scope!r}"
-            )
+        scope = renamed("scope", scope, "repeat_scope", repeat_scope)
+        if scope not in SCOPES:
+            raise ValueError(f"scope must be one of {', '.join(SCOPES)}, got {scope!r}")
         loop = write_loop_threshold
         if loop is not None and (
             isinstance(loop, bool) or not isinstance(loop, int) or loop < 2
@@ -340,7 +341,7 @@ class QueryLog:
                 column_load_threshold=column_load_threshold,
                 small_repeat_threshold=small_repeat_threshold,
                 write_loop_threshold=write_loop_threshold,
-                scope=repeat_scope,
+                scope=scope,
                 sieve=Sieve(),
             ),
             cwd=root,

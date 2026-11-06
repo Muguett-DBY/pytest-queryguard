@@ -175,7 +175,7 @@ This changed in the release after 0.4.0rc2: earlier versions reported each
 partition under its own name. An entry that names a partition stops matching,
 and the finding appears under the partitioned table: in
 `queryguard_index_ignore_tables`, in `allow_missing_index`, in an
-`allow_nplusone` or `queryguard_ignore` pattern with the `missing-index` kind,
+`queryguard_ignore` marker or pattern with the `missing-index` kind,
 and in a baseline file. Replace the partition's name with the partitioned
 table's, for example `allow_missing_index("events_2025", "events_2026")` with
 `allow_missing_index("events")`, and record the baseline again with
@@ -251,10 +251,10 @@ production. Exclude such tables with `queryguard_index_ignore_tables`, one
 test with `@pytest.mark.allow_missing_index`, or only some tables in one
 test with `@pytest.mark.allow_missing_index("countries", "currencies")`.
 Findings follow `queryguard_mode`: `warn` turns them into warnings and
-`off` turns the check off. `allow_nplusone` without arguments does not
-affect the index check, but `allow_nplusone` with patterns matches
-missing-index findings the same way `queryguard_ignore` does
-(`@pytest.mark.allow_nplusone("audit_log", kind="missing-index")`).
+`off` turns the check off. The `queryguard_ignore` marker without arguments does not
+affect the index check, but with patterns it matches
+missing-index findings the same way the `queryguard_ignore` option does
+(`@pytest.mark.queryguard_ignore("audit_log", kind="missing-index")`).
 
 ## PostgreSQL versions
 

@@ -15,7 +15,7 @@ from ..kit import BUG, REPEAT, Ctx
 VERDICT = BUG
 KINDS = frozenset({REPEAT})
 KNOWN = {
-    "session-scope": "by design: with queryguard_repeat_scope = session each Session is counted on its own, and each task runs one lookup"
+    "session-scope": "by design: with queryguard_scope = session each Session is counted on its own, and each task runs one lookup"
 }
 setup = shop.setup
 

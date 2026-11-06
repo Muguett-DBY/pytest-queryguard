@@ -45,7 +45,7 @@ your code.
   installed, once per configuration: the defaults, then each opt-in rule on its
   own (`queryguard_small_repeat_threshold = 2`, `queryguard_write_loop_threshold = 2`,
   `queryguard_column_load_threshold = 2`, `queryguard_unused_eager_load = fail`,
-  `queryguard_unused_columns = fail`), then `queryguard_repeat_scope = session`,
+  `queryguard_unused_columns = fail`), then `queryguard_scope = session`,
   then `queryguard_strict = true`, then all opt-in rules together.
   The findings of each test are read back from the plugin, those that fail the
   test and those that only warn: `cartesian-load` warns by default, and a
@@ -197,7 +197,7 @@ where the eager load is read by some rows only, by Pydantic, by an
 rules on, 93 of 95 BUG scenarios are flagged, and 8 of 100 CLEAN scenarios
 are.
 
-**Effect of `queryguard_repeat_scope = session`** (added after the first run of this
+**Effect of `queryguard_scope = session`** (added after the first run of this
 corpus): the scenarios that run each lookup in its own `Session`
 (`bug_47_session_per_item`, `bug_48_threadpool_lookups`,
 `bug_52_async_gather_session_per_task`, `bug_53_celery_task_per_id`) are no longer
@@ -213,7 +213,7 @@ rules report is the polling loop, which repeats one statement inside one `Sessio
 | `bug_44_expired_after_commit_three` | BUG: 3 objects reload after a commit | not reported | The column-load threshold is 5. Threshold 2 reports it. |
 | `bug_50_cascade_delete_loop` | BUG: delete cascade loads per parent | `relationship-load` and also `repeated-statement` (before the fix) | Bug [#59](https://github.com/MaciejZiel/pytest-queryguard/issues/59), fixed: an autoflush before the lazy load took over its relationship attribution. After the fix the repeated-statement false positive of this scenario is gone, and the repeated-statement rows on this page were re-measured. |
 | `clean_12_offset_pagination`, `clean_13_keyset_pagination`, `clean_15_chunked_in_six_chunks` | CLEAN: pages and chunks | `repeated-statement` before 2026-10-13, nothing after | Fixed by the rule for pagination and chunks ([#60](https://github.com/MaciejZiel/pytest-queryguard/issues/60)). `clean_14_chunked_in_three_chunks` was reported by the small-repeat rule before it. |
-| `clean_16_polling_loop` | CLEAN: polling a status on purpose | `repeated-statement` | Every run has the same parameters, like the loop-invariant query of `bug_55_loop_invariant_query`, which is a bug. The statements cannot tell them apart. Use `allow_nplusone`. |
+| `clean_16_polling_loop` | CLEAN: polling a status on purpose | `repeated-statement` | Every run has the same parameters, like the loop-invariant query of `bug_55_loop_invariant_query`, which is a bug. The statements cannot tell them apart. Use the `queryguard_ignore` marker. |
 | `clean_20_cached_lookup` | CLEAN | `repeated-statement` with small-repeat on | Two statements of one shape from one line are what the rule reports. |
 | `clean_22_expire_on_commit_two_objects` | CLEAN | `column-load` with threshold 2 | Two reloads after a commit are the threshold. |
 | `clean_18_factory_boy_seed_in_body`, `clean_30_savepoint_per_row_insert`, `clean_77_refresh_after_each_create` | CLEAN: seeding, per-row inserts with their own error handling, eight creates each refreshed | `write-loop` with the rule on | The rule cannot tell them from a write loop. |

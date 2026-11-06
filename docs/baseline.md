@@ -119,7 +119,7 @@ An entry is the identity of a finding: kind, label, file and function.
   table's name until the baseline is updated. Run once with
   `--queryguard-update-baseline`, or replace the partitions' entries in the
   file by one entry with the partitioned table's name in the label.
-- Findings that `queryguard_ignore` or `allow_nplusone` leave out are not
+- Findings that the `queryguard_ignore` option or marker leaves out are not
   written to the baseline.
 - Two parts of an entry depend on the environment. The label of a
   `repeated-statement` finding is the normalized SQL as SQLAlchemy renders it,
