@@ -226,14 +226,16 @@ certain, and otherwise only the `fix:` hint:
 
 - every parent was loaded by one query line, and the plugin knows the class it
   selected;
-- the statement on that line has exactly one `select(...)` or `.query(...)`
-  call, with that class as its only argument. A query built on another line
-  (`statement = select(Order)` and then `session.scalars(statement)`), a
-  `session.get()` or a statement with a subquery gets no patch;
+- that line is one statement with exactly one `select(...)` call, or
+  `.query(...)` on something named like a session, with that class as its
+  only argument, and the statement runs nothing else. A query built on
+  another line (`statement = select(Order)` and then
+  `session.scalars(statement)`), a `session.get()`, a subquery, or a choice
+  between queries (`a if c else b`, `or`, a comprehension) gets no patch;
 - `select` is imported from SQLAlchemy or SQLModel, the classes are imported
   (or defined) in the module under their own names, the function does not
-  rebind them, and no `.options(...)` in the chain names the relationship
-  already;
+  rebind them, and an `.options(...)` already in the chain lists only loader
+  calls, none of them for the relationship (not `*options` or a variable);
 - the file is inside the rootdir, UTF-8 with `\n` line ends, and was not
   modified after the session started, so it is the code that ran.
 

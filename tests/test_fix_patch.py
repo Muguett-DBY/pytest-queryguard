@@ -240,7 +240,7 @@ def test_columns_count_characters_and_utf16_units(tmp_path: Path) -> None:
         tmp_path,
         """\
         def load(session):
-            name = "\U0001f600ż"; orders = session.scalars(select(Order)).all()  # parents
+            name, orders = "\U0001f600ż", session.scalars(select(Order)).all()  # parents
             return orders
         """,
     )
@@ -359,6 +359,58 @@ def test_columns_count_characters_and_utf16_units(tmp_path: Path) -> None:
         ),
         pytest.param(
             """\
+            def load(session, stmt, cached):
+                return session.scalars(stmt if cached else select(Order)).all()  # parents
+            """,
+            HEADER,
+            id="a-conditional-expression",
+        ),
+        pytest.param(
+            """\
+            def load(session, stmt):
+                return [session.scalars(stmt).all(), select(Order)]  # parents
+            """,
+            HEADER,
+            id="another-statement-runs-on-the-line",
+        ),
+        pytest.param(
+            """\
+            def load(session, other):
+                match session.scalars(select(Order)).all():
+                    case [first, *rest]:
+                        return session.scalars(other).all()  # parents
+            """,
+            HEADER,
+            id="a-line-in-a-match-case",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                def select(entity):
+                    return entity
+                return session.scalars(select(Order)).all()  # parents
+            """,
+            HEADER,
+            id="select-defined-in-the-function",
+        ),
+        pytest.param(
+            """\
+            def load(repo):
+                return repo.query(Order)  # parents
+            """,
+            HEADER,
+            id="query-on-something-not-a-session",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                return session.scalars(select(Order).options(*DEFAULTS)).all()  # parents
+            """,
+            HEADER,
+            id="options-from-a-list",
+        ),
+        pytest.param(
+            """\
             def load(session):
                 return session.scalars(select(Order)).all()  # parents
             """,
@@ -459,10 +511,12 @@ def test_fixes_of_one_file_combine_into_one_patch(tmp_path: Path) -> None:
         _finding(file, relationship="Customer.orders", scalar=False, root="Customer"),
     )
     assert country is not None and orders is not None
-    text, files = fixpatch.combine(
+    text, files, changed = fixpatch.combine(
         [country, orders, country], tmp_path, time.time() + 1
     )
-    assert files == 1
+    assert (files, changed) == (1, [])
+    # a file modified after the session started is left out and named
+    assert fixpatch.combine([country], tmp_path, 0.0) == ("", 0, ["app/views.py"])
     patch = tmp_path / "all.patch"
     patch.write_text(text, encoding="utf-8")
     after = _git_apply(tmp_path, patch, "app/views.py")

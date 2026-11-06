@@ -11,14 +11,16 @@ A wrong patch costs more trust than no patch, so every doubt means none:
 - the file is inside the rootdir, UTF-8 with ``\\n`` line ends, parses with
   ``ast``, and was not modified after the session started;
 - the line belongs to the function the query ran in;
-- the statement on that line has exactly one ``select(...)`` or
-  ``.query(...)`` call, with the parent class as its only argument, and
-  ``select`` is SQLAlchemy's (or SQLModel's);
+- the line is one statement with exactly one ``select(...)`` call, or
+  ``.query(...)`` on something named like a session, with the parent class as
+  its only argument; the statement runs no other query and does not choose
+  between expressions; ``select`` is SQLAlchemy's (or SQLModel's);
 - the classes and loaders the option names are module-level names that the
   function does not rebind; a loader missing from the module is added to its
   ``from sqlalchemy.orm import`` line, or on a new line after its imports;
 - an ``.options(...)`` already in the chain gets the loader as one more
-  argument, unless it mentions a relationship of the option already.
+  argument, when its arguments are all calls and none mentions a
+  relationship of the option.
 
 Everything runs when a test's findings are made, never per statement.
 """
@@ -39,19 +41,33 @@ from .messages import loader_option, loader_steps
 _ORM = "sqlalchemy.orm"
 # Modules whose ``select`` builds a statement that takes loader options.
 _SELECT_MODULES = ("sqlalchemy", "sqlmodel")
-_COMPOUND = (
-    ast.For,
-    ast.AsyncFor,
-    ast.While,
-    ast.If,
-    ast.With,
-    ast.AsyncWith,
-    ast.Try,
-    ast.FunctionDef,
-    ast.AsyncFunctionDef,
-    ast.ClassDef,
-)
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+_NAMED = (*_SCOPES, ast.ExceptHandler, ast.MatchAs, ast.MatchStar)
+# Session methods that run a statement. On the parent line, one of them with
+# an argument that is not the select() call means another query may have run.
+_RUNS = frozenset(
+    {
+        "execute",
+        "scalars",
+        "scalar",
+        "stream",
+        "stream_scalars",
+        "get",
+        "get_one",
+        "merge",
+        "refresh",
+    }
+)
+# Expressions that run one of several queries, or none: never certain.
+_BRANCHES = (
+    ast.IfExp,
+    ast.BoolOp,
+    ast.Lambda,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
 
 
 class _Module:
@@ -65,6 +81,27 @@ class _Module:
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):
                 self.parents[child] = node
+        # made on first use, once per parse
+        self._names: dict[str, str] | None | bool = False
+        self._statements: dict[int, list[ast.stmt]] | None = None
+
+    @property
+    def names(self) -> dict[str, str] | None:
+        if self._names is False:
+            self._names = _module_names(self.tree)
+        assert not isinstance(self._names, bool)
+        return self._names
+
+    def statements_at(self, line: int) -> list[ast.stmt]:
+        """The statements whose header (see ``_header``) covers a line."""
+        if self._statements is None:
+            self._statements = {}
+            for node in ast.walk(self.tree):
+                if isinstance(node, ast.stmt):
+                    first, last = _header(node)
+                    for number in range(first, last + 1):
+                        self._statements.setdefault(number, []).append(node)
+        return self._statements.get(line, [])
 
     def column(self, line: int, byte_offset: int) -> int:
         """The character column of an ``ast`` offset (UTF-8 bytes) on a line."""
@@ -194,8 +231,15 @@ def _local_names(module: _Module, node: ast.AST) -> set[str]:
             ):
                 names.add(arg.arg)
             for inner in ast.walk(scope):
+                if inner is scope:
+                    continue
                 if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
                     names.add(inner.id)
+                elif isinstance(inner, _NAMED) and inner.name:
+                    # a nested def or class, except ... as name, a match capture
+                    names.add(inner.name)
+                elif isinstance(inner, ast.MatchMapping) and inner.rest:
+                    names.add(inner.rest)
                 elif isinstance(inner, (ast.Import, ast.ImportFrom)):
                     names.update(
                         alias.asname or alias.name.split(".", 1)[0]
@@ -232,29 +276,64 @@ def _statement(module: _Module, node: ast.AST) -> ast.stmt | None:
 def _header(stmt: ast.stmt) -> tuple[int, int]:
     """The lines of a statement without the body of a compound statement."""
     end = stmt.end_lineno or stmt.lineno
-    if isinstance(stmt, _COMPOUND) and stmt.body:
-        end = max(stmt.lineno, stmt.body[0].lineno - 1)
+    if isinstance(stmt, ast.Match):
+        end = stmt.subject.end_lineno or stmt.lineno
+    else:
+        body = getattr(stmt, "body", None)
+        if isinstance(body, list) and body:
+            end = max(stmt.lineno, body[0].lineno - 1)
     return stmt.lineno, end
 
 
+def _terminal(node: ast.expr) -> str:
+    """The last name of an expression: ``session`` of ``self.session``."""
+    if isinstance(node, ast.Call):
+        return _terminal(node.func)
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return ""
+
+
 def _is_query(call: ast.Call) -> bool:
+    """``select(...)``, or ``.query(...)`` on something named as a session."""
     func = call.func
-    return (isinstance(func, ast.Name) and func.id == "select") or (
-        isinstance(func, ast.Attribute) and func.attr == "query"
+    if isinstance(func, ast.Name):
+        return func.id == "select"
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "query"
+        and "session" in _terminal(func.value).lower()
     )
 
 
 def _query_call(module: _Module, line: int) -> ast.Call | None:
-    """The only ``select(...)`` or ``.query(...)`` call of the statement at a line."""
-    found: list[ast.Call] = []
-    for node in ast.walk(module.tree):
-        if isinstance(node, ast.Call) and _is_query(node):
-            stmt = _statement(module, node)
-            if stmt is not None:
-                first, last = _header(stmt)
-                if first <= line <= last:
-                    found.append(node)
-    return found[0] if len(found) == 1 else None
+    """The only query call of the statement at a line, when it is the one that ran.
+
+    None when the statement has no such call or several, when it chooses
+    between expressions (``a if c else b``, ``or``, a lambda or a
+    comprehension), or when it runs a statement that does not contain the call
+    (``session.scalars(stmt)``) or another query call.
+    """
+    statements = module.statements_at(line)
+    if len(statements) != 1:
+        return None  # several statements on one line
+    stmt = statements[0]
+    # the statement's own expressions, not those of a compound statement's body
+    nodes = [node for node in ast.walk(stmt) if _statement(module, node) is stmt]
+    if any(isinstance(node, _BRANCHES) for node in nodes):
+        return None
+    calls = [node for node in nodes if isinstance(node, ast.Call)]
+    found = [call for call in calls if _is_query(call)]
+    if len(found) != 1:
+        return None
+    query = found[0]
+    for call in calls:
+        runs = isinstance(call.func, ast.Attribute) and call.func.attr in _RUNS
+        if runs and not any(query in ast.walk(argument) for argument in call.args):
+            return None
+    return query
 
 
 def _chain(module: _Module, call: ast.Call) -> list[tuple[str, ast.Call]]:
@@ -322,7 +401,10 @@ def _option_edit(
     if not existing:
         return module.after(call, f".options({option})")
     options = existing[0]
+    # only plain loader calls: a starred or named list may hide an option
     if options.keywords or not options.args:
+        return None
+    if not all(isinstance(argument, ast.Call) for argument in options.args):
         return None
     for node in ast.walk(options):
         # an option for the same relationship already: adding one would conflict
@@ -381,7 +463,7 @@ def make(finding: RelationshipFinding, root: Path, since: float) -> SourceFix | 
         return None
     if _scope_name(module, call) != site.function:
         return None
-    names = _module_names(module.tree)
+    names = module.names
     if names is None:
         return None
     steps = loader_steps(finding)
@@ -423,8 +505,10 @@ def make(finding: RelationshipFinding, root: Path, since: float) -> SourceFix | 
     )
 
 
-def combine(fixes: Iterable[SourceFix], root: Path, since: float) -> tuple[str, int]:
-    """(one patch with every fix, number of files in it), file by file.
+def combine(
+    fixes: Iterable[SourceFix], root: Path, since: float
+) -> tuple[str, int, list[str]]:
+    """(one patch with every fix, number of files in it, files left out).
 
     Fixes of one file are merged; a file changed since the session started is
     left out.
@@ -433,12 +517,14 @@ def combine(fixes: Iterable[SourceFix], root: Path, since: float) -> tuple[str, 
     for fix in fixes:
         by_file.setdefault(fix.file, set()).update(fix.insertions)
     parts: list[str] = []
+    changed: list[str] = []
     for file in sorted(by_file):
         module = _load(root / file, since)
         if module is None:
+            changed.append(file)
             continue
         parts.append(_diff(file, module, by_file[file]))
-    return "".join(parts), len(parts)
+    return "".join(parts), len(parts), changed
 
 
 # --- for pytest-xdist and the SARIF store ---

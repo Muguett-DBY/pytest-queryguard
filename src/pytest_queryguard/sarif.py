@@ -149,7 +149,8 @@ def add(store: Collected, finding: Finding, level: str) -> None:
         tests=old.tests + finding.tests,
         peak=max(_peak(old), _peak(finding)),
         stack=best.stack,
-        fix=best.fix,
+        # a test whose parent query was certain gives the result its fix
+        fix=best.fix or old.fix or finding.fix,
     )
     store[key] = (merged, LEVEL_ERROR if LEVEL_ERROR in (level, old_level) else level)
 

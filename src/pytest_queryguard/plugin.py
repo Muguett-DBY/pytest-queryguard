@@ -1150,8 +1150,12 @@ def _analyse(
     try:
         root = item.config.rootpath
         rules = bool(settings.ignore or marker_rules)
-        findings = _findings(collector, settings, tracker, root, None)
-        if sieve is not None and _in_blocks(collector, tracker):
+        blocked = sieve is not None and _in_blocks(collector, tracker)
+        # with blocks, the first set only matches the patterns: no patches
+        findings = _findings(
+            collector, settings, tracker, root, None, fixes=not blocked
+        )
+        if blocked:
             # The patterns and markers are matched against what the test found
             # without the blocks, so one that a block also covers is not stale.
             if rules:
@@ -1188,8 +1192,14 @@ def _findings(
     tracker: eager.Tracker | None,
     root: Path,
     sieve: blocks.Sieve | None,
+    *,
+    fixes: bool = True,
 ) -> list[Finding]:
-    """The N+1 findings of the test; with a sieve, minus those of ignore() blocks."""
+    """The N+1 findings of the test; with a sieve, minus those of ignore() blocks.
+
+    With ``fixes`` (and a patch or SARIF asked for), relationship-load
+    findings get the patch of their parent query when it is certain.
+    """
     detections = detect(
         collector,
         relationship_threshold=settings.relationship,
@@ -1201,7 +1211,7 @@ def _findings(
         sieve=sieve,
     )
     findings = make_findings(detections, cwd=root)
-    if settings.fixing:
+    if fixes and settings.fixing:
         findings = [
             _with_fix(finding, detection, root, settings.started)
             for finding, detection in zip(findings, detections, strict=True)
@@ -1732,7 +1742,11 @@ def pytest_testnodedown(node: Any, error: object) -> None:
             record_error(exc, "merging the results of a pytest-xdist worker")
     if settings.patch_path is not None:
         try:
-            if error is not None or "queryguard_fixes" not in output:
+            if (
+                error is not None
+                or "queryguard_fixes" not in output
+                or output.get("queryguard_fixes_incomplete", True)
+            ):
                 settings.fixes_incomplete = True
             for raw in output.get("queryguard_fixes", []):
                 fix = fixpatch.from_wire(raw)
@@ -1910,6 +1924,7 @@ def pytest_sessionfinish(
                 output["queryguard_fixes"] = [
                     fixpatch.to_wire(fix) for fix in settings.fixes
                 ]
+                output["queryguard_fixes_incomplete"] = internal_error() is not None
             if settings.counting:
                 output["queryguard_tests"] = settings.tests
                 output["queryguard_deselected"] = settings.deselected
@@ -2018,7 +2033,7 @@ def _write_patch(settings: _Settings) -> None:
     if path is None or root is None:
         return
     try:
-        text, files = fixpatch.combine(settings.fixes, root, settings.started)
+        text, files, changed = fixpatch.combine(settings.fixes, root, settings.started)
         atomic_write_text(path, text)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         settings.patch_failed = f"could not write {path}: {exc}"
@@ -2032,6 +2047,10 @@ def _write_patch(settings: _Settings) -> None:
         settings.patch_result = (
             f"{path}: empty, no finding had a parent query line certain enough "
             "for a patch"
+        )
+    if changed:
+        settings.patch_result += (
+            f"\nleft out, modified after the session started: {', '.join(changed)}"
         )
 
 
