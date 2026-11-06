@@ -42,7 +42,7 @@ queryguard: N+1 detected
 
 A test fails when, inside the test function, one of these finding kinds is found (thresholds are ini options):
 
-- `relationship-load`: one relationship is lazy-loaded for 2 or more different parent objects (hint: `joinedload` for many-to-one, `selectinload` for collections);
+- `relationship-load`: one relationship is lazy-loaded for 2 or more different parent objects that one query line loaded (a parent whose query is unknown counts for every query line) (hint: `joinedload` for many-to-one, `selectinload` for collections);
 - `repeated-statement`: one `SELECT` (parameters and literals removed; ORM, Core and `text()`) runs 5 or more times; `INSERT`, `UPDATE` and `DELETE` never count towards it. With `queryguard_small_repeat_threshold` (off by default), 2 to 4 runs from one source line with different parameters count too;
 - `column-load`: 5 or more instances of one class each reload a deferred column (hint: `undefer`) or attributes expired by `commit()`/`expire()` (hint: `expire_on_commit=False`);
 - `write-loop` (opt-in, `queryguard_write_loop_threshold`): the same single-row `INSERT`, `UPDATE` or `DELETE` run many times from one source line;
