@@ -9,12 +9,13 @@ templates; budgets match the path unless the application calls
 from __future__ import annotations
 
 import sys
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from types import TracebackType
 from typing import Any
 from urllib.parse import quote
 
-from . import _core, _panel
+from . import _core, _page, _panel
 from ._core import RequestReport, Settings, Tracker
 
 Environ = dict[str, Any]
@@ -67,12 +68,19 @@ class QueryGuardWSGI:
         if tracker is None:
             return self.app(environ, start_response)
         report = tracker.report
+        page = (
+            _Page(self.settings.page_report, start_response, environ)
+            if self.settings.page_report != "off"
+            else None
+        )
 
         def start(status: str, headers: Any, exc_info: ExcInfo | None = None) -> Any:
             try:
                 report.status = int(status.split(None, 1)[0])
             except (ValueError, IndexError, AttributeError):
                 pass
+            if page is not None:
+                return page.start(status, headers, exc_info, report.status)
             if exc_info is None:
                 return start_response(status, headers)
             return start_response(status, headers, exc_info)
@@ -95,8 +103,8 @@ class QueryGuardWSGI:
         try:
             result = self.app(environ, start)
         except BaseException:
-            if report.status is None:
-                report.status = 500
+            if report.status is None or (page is not None and page.held is not None):
+                report.status = 500  # what the server answers for it
             tracker.detach()
             self._finish(tracker)
             raise
@@ -110,9 +118,15 @@ class QueryGuardWSGI:
         tracker.detach()
         for native_result, measured in wrapped_files:
             if result is native_result:
+                if page is not None:
+                    try:
+                        page.flush()  # a file is sent as it is
+                    except BaseException:
+                        self._finish(tracker)
+                        raise
                 measured.returned()
                 return result
-        return _Body(result, tracker, self)
+        return _Body(result, tracker, self, page)
 
     def _finish(self, tracker: Tracker) -> None:
         if tracker.finished:
@@ -247,12 +261,19 @@ class _Body:
     """The response iterable: re-enters the request's context for each chunk."""
 
     def __init__(
-        self, result: Iterable[bytes], tracker: Tracker, owner: QueryGuardWSGI
+        self,
+        result: Iterable[bytes],
+        tracker: Tracker,
+        owner: QueryGuardWSGI,
+        page: _Page | None = None,
     ) -> None:
         self._result = result
         self._iter: Iterator[bytes] | None = None
         self._tracker = tracker
         self._owner = owner
+        self._page = page
+        self._ready: deque[bytes] = deque()
+        self._exhausted = False
         self._closed = False
         self._failed = False
 
@@ -260,24 +281,65 @@ class _Body:
         return self
 
     def __next__(self) -> bytes:
+        if self._ready:
+            return self._ready.popleft()
         if self._closed:
             raise StopIteration
+        chunk = self._pull()
+        page = self._page
+        if page is not None and page.held is not None:
+            self._buffer(page, chunk)
+            if self._ready:
+                return self._ready.popleft()
+            chunk = None
+        if chunk is not None:
+            return chunk
+        # Include response cleanup before finalizing the report; outside the
+        # except block, where close() would take it for an error.
+        self.close()
+        raise StopIteration
+
+    def _pull(self) -> bytes | None:
+        """The application's next chunk, in the request's context; None at the end."""
+        if self._exhausted:
+            return None
         token = _core.current.set(self._tracker.active)
         try:
             if self._iter is None:
                 self._iter = iter(self._result)
             return next(self._iter)
         except StopIteration:
-            pass
+            self._exhausted = True
+            return None
         except BaseException:
             self._failed = True
+            if self._page is not None and self._page.held is not None:
+                self._tracker.report.status = 500  # no headers sent: the server's
             raise
         finally:
             _core.current.reset(token)
-        # Include response cleanup before finalizing the report; outside the
-        # except block, where close() would take it for an error.
-        self.close()
-        raise StopIteration
+
+    def _buffer(self, page: _Page, chunk: bytes | None) -> None:
+        """Read the whole body of a held response, then start it, with the report.
+
+        The parts are kept on ``page``: a ``start_response`` call that
+        replaces the held response (an error page) drops them, and a
+        ``write()`` sends them before its own data.
+        """
+        while chunk is not None:
+            page.add(chunk)
+            if page.held is None:
+                break  # started by write() or by a response not held
+            if page.size > page.limit:
+                page.flush()  # longer than its Content-Length: as sent
+                break
+            chunk = self._pull()
+        if page.held is None:
+            self._ready.extend(page.take())
+            return
+        body = page.finish(self._tracker)
+        if body:
+            self._ready.append(body)
 
     def close(self) -> None:
         if self._closed:
@@ -301,6 +363,103 @@ class _Body:
         if warning is not None and not self._failed:
             # "warn" under an "error" filter, and the app itself succeeded.
             _log_raised(warning)
+
+
+class _Page:
+    """Holds back ``start_response`` of an HTML response to add the report.
+
+    Only for a response ``_page.eligible()`` accepts: ``start_response`` is
+    called once the body has been read, at most its declared
+    ``Content-Length``. Any other response starts as the application asks.
+    """
+
+    __slots__ = (
+        "_parts",
+        "_write",
+        "environ",
+        "held",
+        "limit",
+        "mode",
+        "size",
+        "start_response",
+    )
+
+    def __init__(
+        self, mode: str, start_response: StartResponse, environ: Environ
+    ) -> None:
+        self.mode = mode
+        self.start_response = start_response
+        self.environ = environ
+        self.held: tuple[str, list[tuple[str, str]], ExcInfo | None] | None = None
+        self.limit = 0
+        self._parts: list[bytes] = []
+        self.size = 0
+        self._write: Callable[[bytes], Any] | None = None
+
+    def add(self, chunk: bytes) -> None:
+        self._parts.append(chunk)
+        self.size += len(chunk)
+
+    def take(self) -> list[bytes]:
+        """The buffered parts, which the caller now sends."""
+        parts, self._parts, self.size = self._parts, [], 0
+        return parts
+
+    def start(
+        self, status: str, headers: Any, exc_info: ExcInfo | None, code: int | None
+    ) -> Any:
+        if self._write is None:  # not started yet: an error page may replace it
+            if self.held is not None:
+                self.take()  # the replaced response's body is never sent
+            self.held = None
+            try:
+                limit = _page.eligible(
+                    code, headers, self.environ.get("REQUEST_METHOD")
+                )
+            except Exception as exc:  # noqa: BLE001  # never break the application
+                _core.fail(exc, "the page report")
+                limit = None
+            if limit is not None:
+                self.held, self.limit = (status, list(headers), exc_info), limit
+                return self.write
+        self._write = self._start(status, headers, exc_info)
+        return self._write
+
+    def _start(self, status: str, headers: Any, exc_info: ExcInfo | None) -> Any:
+        if exc_info is None:
+            return self.start_response(status, headers)
+        return self.start_response(status, headers, exc_info)
+
+    def write(self, data: bytes) -> None:
+        """The legacy ``write()``: the body is not ours to hold; start as sent."""
+        self.flush()
+        if self._write is not None:
+            for part in self.take():  # what the iterable yielded before
+                self._write(part)
+            self._write(data)
+
+    def flush(self) -> None:
+        held, self.held = self.held, None
+        if held is not None:
+            self._write = self._start(*held)
+
+    def finish(self, tracker: Tracker) -> bytes:
+        """Start the held response, with the report in its body when it has problems."""
+        held, self.held = self.held, None
+        assert held is not None
+        status, headers, exc_info = held
+        body = b"".join(self.take())
+        try:
+            report = tracker.preview()
+            new_body = None
+            if report is not None:
+                new_body = _page.inject(body, report, self.mode, headers)
+            if new_body is not None:
+                headers, body = _page.with_length(headers, len(new_body)), new_body
+        except Exception as exc:  # noqa: BLE001  # never break the application
+            _core.fail(exc, "the page report")
+        self._write = self._start(status, headers, exc_info)
+        return body
 
 
 def _log_raised(warning: Warning) -> None:

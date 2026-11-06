@@ -5,6 +5,7 @@ import glob
 import importlib.metadata
 import os
 import shlex
+import time
 import warnings as std_warnings
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass, replace
@@ -20,6 +21,7 @@ from . import (
     cartesian,
     catalog,
     eager,
+    fixpatch,
     hypopg,
     indexes,
     sarif,
@@ -37,10 +39,12 @@ from .detectors import (
     SCOPE_SESSION,
     SCOPE_TEST,
     SCOPES,
+    Detection,
     RelationshipFinding,
     detect,
 )
 from .events import CallSite, RelationshipLoadEvent, ScanEvent
+from .fileio import atomic_write_text
 from .findings import (
     KIND_CARTESIAN_LOAD,
     KIND_COLUMN_LOAD,
@@ -51,6 +55,7 @@ from .findings import (
     KIND_UNUSED_EAGER_LOAD,
     KIND_WRITE_LOOP,
     Finding,
+    SourceFix,
 )
 from .ignores import IgnoreRule, apply_rules, check_kind, parse_rules
 from .indexes import scan_key, select_findings
@@ -205,10 +210,24 @@ class _Settings:
         self.blocks_entered: dict[str, str] = {}
         self.blocks_used: set[str] = set()
         self.blocks_incomplete = False
+        # patches that add the loader option (queryguard_patch,
+        # --queryguard-write-patch); files modified after ``started`` get none
+        self.show_patch = False
+        self.patch_path: Path | None = None
+        self.started = time.time()
+        self.fixes: dict[SourceFix, None] = {}  # an ordered set
+        self.fixes_incomplete = False
+        self.patch_result: str | None = None
+        self.patch_failed: str | None = None
 
     @property
     def baselining(self) -> bool:
         return self.baseline_path is not None
+
+    @property
+    def fixing(self) -> bool:
+        """Whether findings get their source patch: shown, written or in SARIF."""
+        return self.show_patch or self.patch_path is not None or bool(self.sarif_path)
 
     @property
     def counting(self) -> bool:
@@ -320,6 +339,22 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "code scanning). Findings in the baseline are left out.",
     )
     group.addoption(
+        "--queryguard-patch",
+        dest="queryguard_patch",
+        action="store_true",
+        default=None,
+        help="Print a patch under each relationship-load finding whose parent "
+        "query line is certain (overrides queryguard_patch).",
+    )
+    group.addoption(
+        "--queryguard-write-patch",
+        dest="queryguard_write_patch",
+        default=None,
+        metavar="PATH",
+        help="Write the patches of this run's relationship-load findings to PATH "
+        "as one file for git apply (from the rootdir).",
+    )
+    group.addoption(
         "--queryguard-json",
         dest="queryguard_json",
         default=None,
@@ -406,6 +441,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "Raise NPlusOneDetected at the lazy load that makes an N+1 (the parent "
         "that reaches queryguard_relationship_threshold among those loaded at one "
         "line), instead of reporting it when the test ends",
+        type="bool",
+        default=False,
+    )
+    parser.addini(
+        "queryguard_patch",
+        "Print a patch under each relationship-load finding whose parent query "
+        "line is certain: the loader option added to its select() or query() call",
         type="bool",
         default=False,
     )
@@ -629,9 +671,13 @@ def _ignore_rules(config: pytest.Config) -> tuple[IgnoreRule, ...]:
 
 
 def _strict(config: pytest.Config) -> bool:
-    if config.getoption("queryguard_strict"):
+    return _flag(config, "queryguard_strict")
+
+
+def _flag(config: pytest.Config, name: str) -> bool:
+    """A bool ini option that its command-line flag (same dest) turns on."""
+    if config.getoption(name):
         return True
-    name = "queryguard_strict"
     try:
         raw: Any = config.getini(name)
     except (TypeError, ValueError) as exc:
@@ -810,6 +856,10 @@ def _json_path(config: pytest.Config) -> Path | None:
     return _output_path(config, "queryguard_json", "--queryguard-json")
 
 
+def _patch_path(config: pytest.Config) -> Path | None:
+    return _output_path(config, "queryguard_write_patch", "--queryguard-write-patch")
+
+
 def _read_settings(config: pytest.Config) -> _Settings:
     mode = _choice(config, "queryguard_mode", _MODES, flag="--queryguard-mode")
     repeat = _threshold(config, "queryguard_repeat_threshold")
@@ -863,6 +913,8 @@ def _read_settings(config: pytest.Config) -> _Settings:
     settings.baseline_previous_error = previous_error
     settings.rootpath = config.rootpath
     settings.json_path = _json_path(config)
+    settings.show_patch = _flag(config, "queryguard_patch")
+    settings.patch_path = _patch_path(config)
     settings.cartesian = _cartesian_mode(config)
     settings.unused_columns = _unused_columns(config)
     settings.strict = _strict(config)
@@ -1140,8 +1192,12 @@ def _analyse(
     try:
         root = item.config.rootpath
         rules = bool(settings.ignore or marker_rules)
-        findings = _findings(collector, settings, trackers, root, None)
-        if sieve is not None and _in_blocks(collector, trackers):
+        blocked = sieve is not None and _in_blocks(collector, trackers)
+        # with blocks, the first set only matches the patterns: no patches
+        findings = _findings(
+            collector, settings, trackers, root, None, fixes=not blocked
+        )
+        if blocked:
             # The patterns and markers are matched against what the test found
             # without the blocks, so one that a block also covers is not stale.
             if rules:
@@ -1160,8 +1216,12 @@ def _analyse(
         if collector.truncated and settings.max_events is not None:
             note = "\n\n" + format_truncation(settings.max_events)
         return (
-            format_findings(failing, cwd=root) + note if failing else None,
-            format_findings(warning, cwd=root) + note if warning else None,
+            format_findings(failing, cwd=root, patches=settings.show_patch) + note
+            if failing
+            else None,
+            format_findings(warning, cwd=root, patches=settings.show_patch) + note
+            if warning
+            else None,
         )
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "N+1 analysis")
@@ -1174,21 +1234,30 @@ def _findings(
     trackers: _Trackers,
     root: Path,
     sieve: blocks.Sieve | None,
+    *,
+    fixes: bool = True,
 ) -> list[Finding]:
-    """The N+1 findings of the test; with a sieve, minus those of ignore() blocks."""
-    findings = make_findings(
-        detect(
-            collector,
-            relationship_threshold=settings.relationship,
-            repeat_threshold=settings.repeat,
-            column_load_threshold=settings.column_load,
-            small_repeat_threshold=settings.small_repeat,
-            write_loop_threshold=settings.write_loop,
-            scope=settings.repeat_scope,
-            sieve=sieve,
-        ),
-        cwd=root,
+    """The N+1 findings of the test; with a sieve, minus those of ignore() blocks.
+
+    With ``fixes`` (and a patch or SARIF asked for), relationship-load
+    findings get the patch of their parent query when it is certain.
+    """
+    detections = detect(
+        collector,
+        relationship_threshold=settings.relationship,
+        repeat_threshold=settings.repeat,
+        column_load_threshold=settings.column_load,
+        small_repeat_threshold=settings.small_repeat,
+        write_loop_threshold=settings.write_loop,
+        scope=settings.repeat_scope,
+        sieve=sieve,
     )
+    findings = make_findings(detections, cwd=root)
+    if fixes and settings.fixing:
+        findings = [
+            _with_fix(finding, detection, root, settings.started)
+            for finding, detection in zip(findings, detections, strict=True)
+        ]
     if trackers.eager is not None:
         findings.extend(eager.findings(trackers.eager, cwd=root, sieve=sieve))
     if trackers.columns is not None:
@@ -1198,6 +1267,20 @@ def _findings(
     if settings.cartesian != "off" and collector.cartesian_loads:
         findings.extend(cartesian.findings(collector, cwd=root, sieve=sieve))
     return findings
+
+
+def _with_fix(
+    finding: Finding, detection: Detection, root: Path, started: float
+) -> Finding:
+    """The finding with the patch of its parent query, when one is certain."""
+    if not isinstance(detection, RelationshipFinding):
+        return finding
+    try:
+        fix = fixpatch.make(detection, root, started)
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        record_error(exc, "making a patch")
+        return finding
+    return finding if fix is None else replace(finding, fix=fix)
 
 
 def _in_blocks(collector: QueryCollector, trackers: _Trackers) -> bool:
@@ -1265,6 +1348,10 @@ def _apply_baseline(
             findings = []
         else:
             findings = baselines.split(findings, settings.baseline or frozenset())[0]
+    if settings.patch_path is not None:
+        for finding in findings:
+            if finding.fix is not None:
+                settings.fixes[finding.fix] = None
     if settings.sarif_path is not None:
         for finding in findings:
             level = (
@@ -1711,6 +1798,21 @@ def pytest_testnodedown(node: Any, error: object) -> None:
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             settings.json_incomplete = True
             record_error(exc, "merging the results of a pytest-xdist worker")
+    if settings.patch_path is not None:
+        try:
+            if (
+                error is not None
+                or "queryguard_fixes" not in output
+                or output.get("queryguard_fixes_incomplete", True)
+            ):
+                settings.fixes_incomplete = True
+            for raw in output.get("queryguard_fixes", []):
+                fix = fixpatch.from_wire(raw)
+                if fix is not None:
+                    settings.fixes[fix] = None
+        except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+            settings.fixes_incomplete = True
+            record_error(exc, "merging the results of a pytest-xdist worker")
     try:
         finding_groups.merge_wire(settings.groups, output.get("queryguard_groups", []))
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
@@ -1876,6 +1978,11 @@ def pytest_sessionfinish(
                 "used": sorted(settings.blocks_used),
                 "incomplete": internal_error() is not None,
             }
+            if settings.patch_path is not None:
+                output["queryguard_fixes"] = [
+                    fixpatch.to_wire(fix) for fix in settings.fixes
+                ]
+                output["queryguard_fixes_incomplete"] = internal_error() is not None
             if settings.counting:
                 output["queryguard_tests"] = settings.tests
                 output["queryguard_deselected"] = settings.deselected
@@ -1884,6 +1991,8 @@ def pytest_sessionfinish(
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "sending the results to the pytest-xdist controller")
     elif settings is not None:
+        if settings.patch_path is not None:
+            _write_patch(settings)
         if settings.json_path is not None:
             _write_json(session, settings, exitstatus)
         if settings.update_budgets:
@@ -1973,6 +2082,34 @@ def _write_sarif(settings: _Settings) -> None:
     if omitted:
         text += f" ({omitted} left out: no location inside the rootdir)"
     settings.sarif_result = text
+
+
+def _write_patch(settings: _Settings) -> None:
+    """Write every fix of the run as one patch, empty when there is none."""
+    path = settings.patch_path
+    root = settings.rootpath
+    if path is None or root is None:
+        return
+    try:
+        text, files, changed = fixpatch.combine(settings.fixes, root, settings.started)
+        atomic_write_text(path, text)
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        settings.patch_failed = f"could not write {path}: {exc}"
+        return
+    if files:
+        noun = "file" if files == 1 else "files"
+        settings.patch_result = (
+            f"{path}: changes {files} {noun}; apply it from {root} with git apply"
+        )
+    else:
+        settings.patch_result = (
+            f"{path}: empty, no finding had a parent query line certain enough "
+            "for a patch"
+        )
+    if changed:
+        settings.patch_result += (
+            f"\nleft out, modified after the session started: {', '.join(changed)}"
+        )
 
 
 def _counts_complete(
@@ -2205,6 +2342,22 @@ def _write_sarif_summary(
             )
 
 
+def _write_patch_summary(
+    terminalreporter: pytest.TerminalReporter, settings: _Settings
+) -> None:
+    if settings.patch_failed is not None:
+        terminalreporter.write_sep("=", "queryguard: patch", red=True)
+        terminalreporter.write_line(f"queryguard patch {settings.patch_failed}")
+    elif settings.patch_result is not None:
+        terminalreporter.write_sep("=", "queryguard: patch written")
+        terminalreporter.write_line(settings.patch_result)
+        if settings.fixes_incomplete or internal_error() is not None:
+            terminalreporter.write_line(
+                "incomplete: measurement stopped in this process or in a "
+                "pytest-xdist worker, so fixes may be missing"
+            )
+
+
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     config = terminalreporter.config
     settings = config.stash.get(_settings, None)
@@ -2242,6 +2395,10 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
         _write_sarif_summary(terminalreporter, settings)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "SARIF summary")
+    try:
+        _write_patch_summary(terminalreporter, settings)
+    except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+        record_error(exc, "patch summary")
     try:
         _write_json_summary(terminalreporter, settings)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
