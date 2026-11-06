@@ -155,17 +155,26 @@ def _loader(scalar: bool) -> str:
     return "joinedload" if scalar else "selectinload"
 
 
+def loader_query(root: str, path: Sequence[tuple[str, bool]]) -> str:
+    """``select(root).options(...)`` loading each ``(label, scalar)`` step.
+
+    ``joinedload`` for a many-to-one or one-to-one step, ``selectinload`` for
+    a collection; the fix line of a ``relationship-load`` finding, also used
+    by the static check (``pytest_queryguard.lint``).
+    """
+    steps = ".".join(f"{_loader(scalar)}({label})" for label, scalar in path)
+    return f"select({root}).options({steps})"
+
+
 def _parent_query(finding: RelationshipFinding) -> str:
     """The parent query with the loader, through the chain that loaded the parents.
 
     Without a known chain, the query of the relationship's own class.
     """
-    loader = f"{_loader(finding.scalar)}({finding.relationship})"
+    step = (finding.relationship, finding.scalar)
     if finding.parent_root is None:
-        parent = finding.relationship.split(".", 1)[0]
-        return f"select({parent}).options({loader})"
-    steps = [f"{_loader(scalar)}({label})" for label, scalar in finding.parent_path]
-    return f"select({finding.parent_root}).options({'.'.join([*steps, loader])})"
+        return loader_query(finding.relationship.split(".", 1)[0], [step])
+    return loader_query(finding.parent_root, [*finding.parent_path, step])
 
 
 def _relationship_block(

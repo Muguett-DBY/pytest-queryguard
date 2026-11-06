@@ -120,6 +120,10 @@ defaults, labels or messages, or remove them, with a changelog entry under
   `internal_error`, `opentelemetry_reporter`, `sentry_reporter`) and the
   panel's JSON. See
   [In-application mode](in-app.md).
+- The static check, `python -m pytest_queryguard.lint`: its options, what it
+  reports, its text output, and the rule `queryguard/static-relationship-load`
+  in its SARIF output. Its JSON output has a `format` key; a change to the
+  documented keys increments it. See [Static check](static-check.md).
 
 Everything else listed under "What is public" follows the deprecation policy.
 `tests/test_public_api.py` still snapshots the experimental ini options and
