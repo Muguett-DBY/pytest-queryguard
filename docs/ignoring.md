@@ -68,6 +68,17 @@ queryguard_ignore = [
 ]
 ```
 
+In `pytest.ini` (or `tox.ini`, `setup.cfg`), the option is a list of lines:
+write one pattern per indented line under it, without quotes:
+
+```ini
+[pytest]
+queryguard_ignore =
+    relationship-load Order.customer
+    repeated-statement SELECT * FROM settings*
+    missing-index public.audit_log
+```
+
 Every finding in the report has a line such as
 `kind: relationship-load  label: Order.customer`; write the kind, a space and
 the label as the pattern. The kinds are `relationship-load` (the label is the relationship, as in
@@ -76,7 +87,9 @@ the label as the pattern. The kinds are `relationship-load` (the label is the re
 the class and the cause for expired attributes, as in `Book (expired)`),
 `write-loop` (the normalized `INSERT`, `UPDATE` or `DELETE`),
 `unused-eager-load` (the relationship, as in `Order.customer`),
-`unused-columns` (the class, as in `Account`) and
+`unused-columns` (the class, as in `Account`),
+`cartesian-load` (the two collections, as in
+`Customer.notes + Customer.orders`) and
 `missing-index` (the table, with its schema as in the report; see below for
 the spellings a table name accepts). `file` is
 relative to pytest's rootdir, with forward slashes. Findings that no longer
@@ -212,7 +225,7 @@ thread or the asyncio task that entered it, and the tasks created inside it
 - a task or a thread that already existed, such as the server thread of a
   live-server test: the block of the test does not reach the requests it
   serves. Put the block in the code that handles the request instead, or use
-  the marker or `queryguard_ignore`;
+  the marker or `queryguard_ignore`.
 
 For the missing-index check, every run of the statement in the test counts,
 although it is explained only at its first run: a statement run inside the

@@ -5,6 +5,11 @@ plugin runs an `async def` test: pytest-asyncio, anyio and others all work.
 The failures people hit are configuration errors of the async plugin, and they
 look like problems of the database layer. Run with pytest-asyncio 1.4.0, pytest
 9.1.1, aiosqlite, and asyncpg 0.31 against PostgreSQL 17 for the last pitfall.
+The working setup needs:
+
+```console
+pip install pytest-queryguard pytest-asyncio aiosqlite "sqlalchemy[asyncio]"
+```
 
 ## A working setup
 
@@ -115,6 +120,8 @@ queryguard: N+1 detected
 
   Order.customer was lazy-loaded 5 times
   first at app/orders.py:11 in customer_names
+    called from tests/test_orders.py:5 in test_customer_names
+  parents loaded at app/orders.py:10 in customer_names
   kind: relationship-load  label: Order.customer
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
@@ -220,6 +227,8 @@ queryguard: N+1 detected
 
   Order.customer was lazy-loaded 5 times
   first at app/orders.py:11 in customer_names
+    called from tests/test_orders.py:5 in test_customer_names
+  parents loaded at app/orders.py:10 in customer_names
   kind: relationship-load  label: Order.customer
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = $1::INTEGER

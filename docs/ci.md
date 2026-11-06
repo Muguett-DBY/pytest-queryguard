@@ -31,14 +31,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[test]"        # your project and its test dependencies
-      - uses: MaciejZiel/pytest-queryguard/action@COMMIT_SHA   # pin a release tag or a commit SHA
+      - uses: MaciejZiel/pytest-queryguard/action@v0.7.0   # a release tag, or a commit SHA
         with:
-          pytest-args: -x tests/
+          pytest-args: tests/   # no -x: see below
           # baseline: queryguard-baseline.json   # add once the file exists, see below
 ```
 
 The `push` trigger is limited to `main` so that a pull request does not run
 the workflow twice, once for the push and once for the pull request.
+
+`pytest-args` has no `-x`. A run that stops at the first failure writes a
+JSON file with `"complete": false`, which the comparison with the base branch
+cannot fully use (see [Query counts as JSON](#query-counts-as-json)), and it
+keeps `--queryguard-update-baseline` and the budget file update from writing
+(see [baseline.md](baseline.md)).
 
 The example has no `baseline` input on purpose. A `baseline` path that does
 not exist makes pytest stop with `baseline file ... does not exist; create it
@@ -241,22 +247,23 @@ tests started running more queries before anything fails.
 ```json
 {
   "format": 1,
-  "tool": {"name": "pytest-queryguard", "version": "0.6.0"},
+  "tool": {"name": "pytest-queryguard", "version": "0.7.0"},
   "complete": true,
   "tests": {
     "tests/test_orders.py::test_list_orders": {
       "statements": 51,
       "by_verb": {"select": 51},
-      "db_time": 0.0003,
+      "db_time": 0.0007,
       "truncated": false,
       "findings": [
         {"kind": "relationship-load", "label": "Order.customer", "count": 50,
-         "file": "app/orders.py", "function": "list_orders", "line": 12,
+         "file": "app/orders.py", "function": "list_orders", "line": 10,
          "stack": [{"file": "tests/test_orders.py", "function": "test_list_orders",
                     "line": 7}],
          "baselined": false,
-         "message": "Order.customer was lazy-loaded 50 times\nfirst at app/orders.py:12 in list_orders\n..."}
-      ]
+         "message": "Order.customer was lazy-loaded 50 times\nfirst at app/orders.py:10 in list_orders\n..."}
+      ],
+      "max_queries_marker": false
     }
   }
 }

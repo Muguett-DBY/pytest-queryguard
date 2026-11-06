@@ -10,7 +10,7 @@ fix at once. A baseline file records them, so that:
 
 The baseline applies to the pytest plugin and to every finding kind
 (`relationship-load`, `repeated-statement`, `column-load`, `write-loop`,
-`unused-eager-load`, `unused-columns` and `missing-index`). `QueryLog.assert_no_nplusone()` does not read it.
+`unused-eager-load`, `unused-columns`, `cartesian-load` and `missing-index`). `QueryLog.assert_no_nplusone()` does not read it.
 
 ## Create it
 
@@ -58,11 +58,12 @@ queryguard-baseline.json: 3 entries (0 added, 0 removed)
 this run did not cover the whole suite: 2 entries kept because their tests did not run
 ```
 
-A test is identified by the file and function of the entry, so the rule
-applies to an entry whose call site is inside a test function that ran. An
-entry for code outside a test (a helper or application module, or an entry
-with no file) is kept on a partial run unless a finding of the same identity
-shows up again; a full run prunes it. The same holds for a deleted or renamed
+An entry's `file` and `function` are the call site of its finding, usually
+in application code (`app/orders.py`, `list_orders`). The rule above applies
+only to an entry whose call site is inside a test function, which ties it to
+that test. An entry for code outside a test (a helper or application module,
+or an entry with no file) is kept on a partial run unless a finding of the
+same identity shows up again; a full run prunes it. The same holds for a deleted or renamed
 test: a partial run cannot tell it from one that did not run, so its entry is
 removed on the next full run. Tests skipped before their call phase count as
 not run. If the summary of your usual full run says it did not cover the whole

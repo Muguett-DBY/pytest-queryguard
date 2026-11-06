@@ -103,9 +103,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outputs and artifact name as public, and says what a change of their format
   number means. The fix patch, the query-count trend and the static check are
   listed as experimental.
+- Fixes from a new-user walkthrough: the FastAPI recipe shows every file it
+  needs (`app/db.py`, `app/models.py` with `AsyncAttrs`, `pytest.ini`,
+  `tests/test_orders_fixed.py`) and its install line; the other recipes have
+  install lines too, and their sample reports are regenerated (`called from`,
+  `parents loaded at`). docs/budgets.md no longer says that a `TestClient`
+  needs the `max_queries()` function: its requests count in a block of the
+  `queryguard` fixture. `cartesian-load` is in the kind lists of
+  docs/ignoring.md and docs/baseline.md, docs/ignoring.md shows
+  `queryguard_ignore` in `pytest.ini`, and docs/ci.md pins the action to a
+  tag and drops `-x` from `pytest-args`.
 
 ### Internal
 
+- tests/test_doc_examples.py checks that each report a page with a project
+  shows is, line for line, in the output of that project, and runs the
+  FastAPI recipe from its own files only.
 - Every private SQLAlchemy attribute, execution option, frame and code object
   the plugin and the in-app mode read is named in one module,
   `pytest_queryguard._compat`, with the versions it is known for, and

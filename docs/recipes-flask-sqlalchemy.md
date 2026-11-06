@@ -3,7 +3,11 @@
 Flask-SQLAlchemy sits on SQLAlchemy 2, so the plugin needs no setup. The
 queries of a request made with `app.test_client()` run on `db.session` and are
 counted. The code and output on this page were run with Flask 3.1.3 and
-Flask-SQLAlchemy 3.1.1.
+Flask-SQLAlchemy 3.1.1, installed with:
+
+```console
+pip install pytest-queryguard flask flask-sqlalchemy
+```
 
 The layout is `app/__init__.py`, `tests/conftest.py` and `tests/test_orders.py`.
 
@@ -116,6 +120,8 @@ queryguard: N+1 detected
 
   Order.customer was lazy-loaded 5 times
   first at app/__init__.py:38 in list_orders
+    called from tests/test_orders.py:2 in test_orders
+  parents loaded at app/__init__.py:38 in list_orders
   kind: relationship-load  label: Order.customer
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?

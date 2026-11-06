@@ -163,8 +163,9 @@ def test_rename_customers(session):
 ```
 
 All three tests pass without the plugin. With it installed,
-`pytest --queryguard-report` gives the output below (Python 3.13, SQLAlchemy
-2.1). Older versions print slightly different SQL, for example column aliases
+`pytest tests/test_orders.py --queryguard-report` gives the output below
+(Python 3.13, SQLAlchemy 2.1; a plain `pytest` also runs the fixed tests of
+the next section, if you have created them). Older versions print slightly different SQL, for example column aliases
 (`customer.id AS customer_id`) on SQLAlchemy 2.0, and the timing numbers differ
 from run to run.
 

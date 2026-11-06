@@ -31,8 +31,8 @@ was started from.
 - The location is the file and the line of the first occurrence; the function
   is a logical location. See "Paths and the repository root" below for what
   the path is relative to.
-- A `relationship-load` result whose parent query line is certain has a
-  `fixes` entry: the loader option and its import as insertions (an empty
+- Since 0.8.0: a `relationship-load` result whose parent query line is
+  certain has a `fixes` entry: the loader option and its import as insertions (an empty
   `deletedRegion` with `insertedContent`), the same change as
   `--queryguard-write-patch`, see
   [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query).

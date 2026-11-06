@@ -4,7 +4,11 @@ Litestar's `TestClient` runs the application on an anyio portal in another
 thread, as FastAPI's does; the queries of the request are counted. This page
 uses a plain async session dependency (`Provide`), not Litestar's SQLAlchemy
 plugin from advanced-alchemy, which was not run. Versions: Litestar 2.24.0,
-SQLAlchemy 2.1.4, aiosqlite.
+SQLAlchemy 2.1.4, aiosqlite, installed with:
+
+```console
+pip install pytest-queryguard litestar aiosqlite "sqlalchemy[asyncio]"
+```
 
 The layout is `app/__init__.py` (an empty file), `app/models.py`,
 `app/main.py`, `tests/conftest.py` and `tests/test_orders.py`.
@@ -153,6 +157,7 @@ queryguard: N+1 detected
 
   Order.customer was lazy-loaded 5 times
   first at app/main.py:27 in list_orders
+  parents loaded at app/main.py:26 in list_orders
   kind: relationship-load  label: Order.customer
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
   sql: SELECT customer.id, customer.name FROM customer WHERE customer.id = ?
