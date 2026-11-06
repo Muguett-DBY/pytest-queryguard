@@ -96,6 +96,7 @@ def _broke(exc: Exception, where: str) -> None:
     global _broken, _warned
     _broken = True
     readhook.reads = None
+    readhook.reads_failed = None
     if not _warned:
         _warned = True
         warn_internal(
@@ -104,6 +105,10 @@ def _broke(exc: Exception, where: str) -> None:
                 f"internal error in {where}: {exc!r}"
             )
         )
+
+
+def _read_failed(exc: Exception) -> None:
+    _broke(exc, "the attribute read hook")
 
 
 def loader_paths(options: Any) -> Iterator[tuple[tuple[Any, ...], str | None]]:
@@ -184,6 +189,7 @@ def enable() -> None:
     if _enabled > 1:
         return
     readhook.install()
+    readhook.reads_failed = _read_failed
     event.listen(Session, "do_orm_execute", _on_orm_execute)
     event.listen(Session, "before_flush", _on_before_flush)
 
@@ -198,6 +204,7 @@ def disable() -> None:
         return
     _current = None
     readhook.reads = None
+    readhook.reads_failed = None
     readhook.uninstall()
     event.remove(Session, "do_orm_execute", _on_orm_execute)
     event.remove(Session, "before_flush", _on_before_flush)

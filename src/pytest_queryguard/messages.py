@@ -342,6 +342,9 @@ def format_strict(finding: Finding, parents: int) -> str:
     )
 
 
+_UNUSED_KINDS = (KIND_UNUSED_EAGER_LOAD, KIND_UNUSED_COLUMNS)
+
+
 def format_findings(
     findings: Sequence[Finding | Detection], *, cwd: Path | None = None
 ) -> str:
@@ -351,6 +354,8 @@ def format_findings(
         lines = ["queryguard: unused eager load detected (experimental)"]
     elif made and all(f.kind == KIND_UNUSED_COLUMNS for f in made):
         lines = ["queryguard: unused columns detected (experimental)"]
+    elif made and all(f.kind in _UNUSED_KINDS for f in made):
+        lines = ["queryguard: unused eager loads and columns detected (experimental)"]
     elif made and all(f.kind == KIND_CARTESIAN_LOAD for f in made):
         lines = ["queryguard: cartesian join detected"]
     else:

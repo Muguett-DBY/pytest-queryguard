@@ -12,18 +12,26 @@ checks set only while a test body is measured.
 
 * ``reads``: a set that gets ``(class, attribute name)`` of each read
   (the unused eager-load check), or None;
-* ``instances``: ``id(instance)`` -> a set that gets the attribute name of
-  each read of that instance (the unused-columns check), or None.
+* ``instances``: ``id(instance)`` -> ``(InstanceState, set)``; the set gets
+  the attribute name of each read of that instance (the unused-columns
+  check), or None. The state is compared with the instance's own, so an
+  ``id()`` that a new object reuses after the instance is gone never matches.
+
+An error in either step calls ``reads_failed`` or ``instances_failed`` (set by
+the check that owns it, to turn itself off) and the read goes on.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import InstrumentedAttribute
 
 reads: set[tuple[type, str]] | None = None
-instances: dict[int, set[str]] | None = None
+instances: dict[int, tuple[Any, set[str]]] | None = None
+reads_failed: Callable[[Exception], None] | None = None
+instances_failed: Callable[[Exception], None] | None = None
 _users = 0
 _original: Any = None
 
@@ -31,12 +39,26 @@ _original: Any = None
 def _tracked_get(self: Any, instance: Any, owner: Any) -> Any:
     if instance is not None:
         if reads is not None:
-            reads.add((type(instance), self.key))
+            try:
+                reads.add((type(instance), self.key))
+            except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+                _failed(reads_failed, exc)
         if instances is not None:
-            names = instances.get(id(instance))
-            if names is not None:
-                names.add(self.key)
+            try:
+                entry = instances.get(id(instance))
+                if entry is not None and entry[0] is instance._sa_instance_state:
+                    entry[1].add(self.key)
+            except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+                _failed(instances_failed, exc)
     return _original(self, instance, owner)
+
+
+def _failed(callback: Callable[[Exception], None] | None, exc: Exception) -> None:
+    try:
+        if callback is not None:
+            callback(exc)
+    except Exception:  # noqa: BLE001, S110  # never let the report of an error raise
+        pass
 
 
 def install() -> None:
@@ -57,7 +79,3 @@ def uninstall() -> None:
     if _users == 0:
         InstrumentedAttribute.__get__ = _original  # type: ignore[method-assign]
         _original = None
-
-
-def is_installed() -> bool:
-    return _users > 0

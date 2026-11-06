@@ -1111,7 +1111,7 @@ def _analyse(
     item: pytest.Item,
     collector: QueryCollector,
     settings: _Settings,
-    trackers: _Trackers | None = None,
+    trackers: _Trackers,
     sieve: blocks.Sieve | None = None,
 ) -> tuple[str | None, str | None]:
     """(report of the failing kinds, report of the others) for the finished test.
@@ -1126,8 +1126,6 @@ def _analyse(
     try:
         root = item.config.rootpath
         rules = bool(settings.ignore or marker_rules)
-        if trackers is None:
-            trackers = _Trackers()
         findings = _findings(collector, settings, trackers, root, None)
         if sieve is not None and _in_blocks(collector, trackers):
             # The patterns and markers are matched against what the test found

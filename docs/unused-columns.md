@@ -84,7 +84,8 @@ The thresholds are constants, not options, while the check is experimental.
 
 Objects the test creates itself are never grouped: they are not loaded. An
 object the Session already has, expired (after `commit()` or `expire()`),
-that a query loads again is grouped like a new one. `session.refresh(obj)`
+that a query loads again is grouped like a new one, with only the columns
+that query populated (those it had before do not count as loaded). `session.refresh(obj)`
 and the reload of one expired attribute are not queries of rows and are not
 grouped.
 
@@ -96,12 +97,13 @@ grouped.
 | Inspect `InstanceState` (`unloaded`, `dict`) at the end | Shows what is loaded, not what was read. |
 | Wrap `InstrumentedAttribute.__get__` while enabled (chosen) | One dictionary lookup per read, only while a test body runs; the same for sync and async sessions. The wrapper is shared with the [unused eager-load check](unused-eager-load.md), applied only when one of the two options is on and removed at the end of the session. |
 
-Instances are noted by `id()` in a dictionary that lives for one test body,
-not on the instance: a read then costs one lookup. An `id()` that Python
-reuses for another object after an instance is gone can only add reads to a
-group, which hides a finding and never makes one. A test body that loads more
-than 100,000 instances (`MAX_INSTANCES`) gives no verdict for the groups past
-that point.
+Instances are noted by `id()`, with their `InstanceState`, in a dictionary
+that lives for one test body, not on the instance: a read then costs one
+lookup and one comparison of the state, so an `id()` that Python reuses for
+another object after an instance is gone is not taken for it. A test body
+that loads more than 100,000 instances (`MAX_INSTANCES`) gives no verdict for
+the groups past that point. An error inside the wrapper turns the check off,
+with a warning, and the read goes on.
 
 Measured with `scripts/bench_columns_overhead.py` (CPython 3.13, SQLAlchemy
 2.1, SQLite in memory, 12-column class, the plugin's listeners on in all three

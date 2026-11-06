@@ -366,6 +366,25 @@ def test_it():
     reported(run(pytester, body, *ON))
 
 
+def test_columns_an_instance_had_before_do_not_count(
+    pytester: pytest.Pytester,
+) -> None:
+    # the query populates only Account.name: the other 9 columns were set by
+    # the test, and the query with load_only() is not to blame for them
+    body = """
+def test_it():
+    session = make_sync_session()
+    account = Account(id=9, name="new")
+    session.add(account)
+    session.flush()
+    session.expire(account, ["name"])
+    stmt = select(Account).where(Account.id == 9).options(load_only(Account.name))
+    (found,) = session.scalars(stmt).all()
+    assert found.name == "new"
+"""
+    run(pytester, body, *ON).assert_outcomes(passed=1)
+
+
 def test_async_session(pytester: pytest.Pytester) -> None:
     pytest.importorskip("greenlet")
     pytester.makepyfile(qgmodels=MODELS)
@@ -474,7 +493,7 @@ def test_it():
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(
         [
-            "*queryguard: N+1 detected*",
+            "*queryguard: unused eager loads and columns detected (experimental)*",
             "*Account.owner was loaded with selectinload and never read*",
             "*Account: 10 columns loaded, 7 never read*",
         ]
@@ -616,3 +635,64 @@ def test_xdist_workers_report_it(pytester: pytest.Pytester) -> None:
     document = json.loads((pytester.path / "out.sarif").read_text())
     results = document["runs"][0]["results"]
     assert [r["ruleId"] for r in results] == ["queryguard/unused-columns"]
+
+
+# ------------------------------------------------------------- the read hook
+
+
+def _account() -> object:
+    from tests.models import Customer
+
+    return Customer(id=1, name="x")
+
+
+def test_a_reused_id_is_not_taken_for_the_instance() -> None:
+    unused_columns.enable()
+    tracker = unused_columns.start()
+    try:
+        customer = _account()
+        names: set[str] = set()
+        # an entry for this id whose state is another object's
+        tracker.instances[id(customer)] = (object(), names)
+        assert customer.name == "x"  # type: ignore[attr-defined]
+        assert names == set()
+        state = customer._sa_instance_state  # type: ignore[attr-defined]
+        tracker.instances[id(customer)] = (state, names)
+        assert customer.name == "x"  # type: ignore[attr-defined]
+        assert names == {"name"}
+    finally:
+        unused_columns.stop(tracker)
+        unused_columns.disable()
+
+
+def test_an_error_in_the_read_hook_turns_only_the_check_off() -> None:
+    class Broken(dict[int, object]):
+        def get(self, key: object, default: object = None) -> object:
+            raise RuntimeError("boom")
+
+    unused_columns.enable()
+    tracker = unused_columns.start()
+    try:
+        readhook.instances = Broken()  # type: ignore[assignment]
+        customer = _account()
+        with pytest.warns(UserWarning, match="unused-columns check.*read hook"):
+            assert customer.name == "x"  # type: ignore[attr-defined]
+        assert unused_columns._broken
+        assert readhook.instances is None
+        assert customer.name == "x"  # type: ignore[attr-defined]
+    finally:
+        unused_columns.stop(tracker)
+        unused_columns.disable()
+
+
+def test_mixed_unused_kinds_have_their_own_heading() -> None:
+    from pytest_queryguard.findings import Finding
+    from pytest_queryguard.messages import format_findings
+
+    made = [
+        Finding(kind=kind, label="X", file=None, function=None, message="  m")
+        for kind in ("unused-eager-load", "unused-columns")
+    ]
+    assert format_findings(made).splitlines()[0] == (
+        "queryguard: unused eager loads and columns detected (experimental)"
+    )

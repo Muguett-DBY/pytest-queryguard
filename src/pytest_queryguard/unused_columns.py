@@ -10,15 +10,16 @@ How it works (see docs/unused-columns.md):
   a query's rows. The plugin's own listeners (listeners.py) have already
   noted the query's call site and load path on the instance; only instances
   of the query's own entities count (load path of length one), not those of
-  relationship loads. The loaded columns are the mapped column attributes in
-  the instance's ``__dict__``, worked out once per query and class. The
-  instance is noted by ``id()`` with its group: (class, file and function
-  of the query).
+  relationship loads. The loaded columns are, for a new instance, the mapped
+  column attributes in its ``__dict__``, worked out once per query and
+  class; for an instance the Session had, those the ``refresh`` event says
+  the query populated. The instance is noted by ``id()``, with its state,
+  in its group: (class, file and function of the query).
 * Which columns were read: ``InstrumentedAttribute.__get__`` is wrapped
   (``readhook``, shared with the unused eager-load check) while a test body
   is measured, and each read of a noted instance adds the attribute's name to
-  its group. An ``id()`` reused by another object after the instance is gone
-  can only add reads, which hides findings and never makes one.
+  its group. The state is compared on each read, so an ``id()`` that another
+  object reuses after the instance is gone is not taken for it.
 
 A group is reported when its class loaded at least ``MIN_LOADED`` columns and
 at most ``MAX_READ_SHARE`` of them were read, counting the columns the ORM
@@ -80,12 +81,14 @@ class Tracker:
     """What one test body loaded and read."""
 
     groups: dict[tuple[type, str, str], Group] = field(default_factory=dict)
-    # id(instance) -> the reads of its group (readhook.instances)
-    instances: dict[int, set[str]] = field(default_factory=dict)
+    # id(instance) -> (its state, the reads of its group): readhook.instances
+    instances: dict[int, tuple[Any, set[str]]] = field(default_factory=dict)
     # the query whose rows are being turned into instances, and the group of
     # each class among them, so the work is done once per query and class
     run: Any = None
     run_groups: dict[type, Group] = field(default_factory=dict)
+    # the classes whose new instances in this query were looked at
+    run_fresh: set[type] = field(default_factory=set)
     previous: Tracker | None = None
 
 
@@ -135,6 +138,7 @@ def _broke(exc: Exception, where: str) -> None:
     global _broken, _warned
     _broken = True
     readhook.instances = None
+    readhook.instances_failed = None
     if not _warned:
         _warned = True
         warn_internal(
@@ -143,6 +147,10 @@ def _broke(exc: Exception, where: str) -> None:
                 f"internal error in {where}: {exc!r}"
             )
         )
+
+
+def _read_failed(exc: Exception) -> None:
+    _broke(exc, "the attribute read hook")
 
 
 def _columns_of(mapper: Any) -> _Columns:
@@ -161,13 +169,19 @@ def _group(tracker: Tracker, state: Any, site: CallSite) -> Group:
     if group is None:
         group = Group(owner, state.mapper, site)
         tracker.groups[key] = group
-    loaded = state.dict
-    group.loaded.update(k for k in _columns_of(state.mapper).keys if k in loaded)
     group.ignores[blocks.current()] = None
     return group
 
 
-def _note(state: Any, context: Any) -> None:
+def _note_loaded(group: Group, state: Any, attrs: Any) -> None:
+    """Add the columns the query populated on ``state`` (``attrs``: all in
+    ``__dict__`` when None) to the group."""
+    keys = _columns_of(state.mapper).keys
+    populated = state.dict if attrs is None else attrs
+    group.loaded.update(k for k in keys if k in populated)
+
+
+def _note(state: Any, context: Any, attrs: Any, fresh: bool) -> None:
     tracker = _current
     if tracker is None or _broken:
         return
@@ -189,30 +203,40 @@ def _note(state: Any, context: Any) -> None:
         if tracker.run != run:
             tracker.run = run
             tracker.run_groups = {}
+            tracker.run_fresh = set()
         owner = state.class_
         group = tracker.run_groups.get(owner)
         if group is None:
             group = tracker.run_groups[owner] = _group(tracker, state, site)
+        if fresh:
+            if owner not in tracker.run_fresh:
+                # every new instance of the query has the same columns
+                tracker.run_fresh.add(owner)
+                _note_loaded(group, state, None)
+        else:
+            # it may hold columns set or loaded before: only what this query
+            # populated counts
+            _note_loaded(group, state, attrs)
         instances = tracker.instances
         if len(instances) >= MAX_INSTANCES:
             group.incomplete = True
             return
         instance = state.obj()
         if instance is not None:
-            instances[id(instance)] = group.reads
+            instances[id(instance)] = (state, group.reads)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         _broke(exc, "the load listener")
 
 
 def _on_load(state: Any, context: Any) -> None:
-    _note(state, context)
+    _note(state, context, None, True)
 
 
 def _on_refresh(state: Any, context: Any, attrs: Any) -> None:
     # a query's rows for instances the Session had (expired), not a refresh
     # of one instance (an expired attribute, session.refresh())
     if isinstance(context, QueryContext) and context.refresh_state is None:
-        _note(state, context)
+        _note(state, context, attrs, False)
 
 
 def enable() -> None:
@@ -225,6 +249,7 @@ def enable() -> None:
     # once per process, so before these
     listeners.install()
     readhook.install()
+    readhook.instances_failed = _read_failed
     event.listen(Mapper, "load", _on_load, raw=True)
     event.listen(Mapper, "refresh", _on_refresh, raw=True)
 
@@ -239,6 +264,7 @@ def disable() -> None:
         return
     _current = None
     readhook.instances = None
+    readhook.instances_failed = None
     readhook.uninstall()
     event.remove(Mapper, "load", _on_load)
     event.remove(Mapper, "refresh", _on_refresh)
@@ -300,11 +326,8 @@ def unused(tracker: Tracker, sieve: blocks.Sieve | None = None) -> list[Unused]:
         used = {k for k in loaded if k in group.reads or k in columns.needed}
         if len(used) > len(loaded) * MAX_READ_SHARE:
             continue
-        if sieve is not None:
-            covering = blocks.covering_tags(group.ignores, KIND_UNUSED_COLUMNS)
-            sieve.note(covering)
-            if covering:
-                continue
+        if sieve is not None and sieve.drops_tags(group.ignores, KIND_UNUSED_COLUMNS):
+            continue
         found.append(
             Unused(
                 group,
