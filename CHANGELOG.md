@@ -79,6 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Python 3.10 and 3.11 a query in a list, dict or set comprehension was
+  reported "first at … in <listcomp>" with an extra "called from" line for
+  the same place. Reports now name the function the comprehension is
+  written in, as on 3.12 and later.
 - In-application mode: on SQLAlchemy 2.0.20 to 2.0.49 an application's
   `yield_per` or `autoflush=False` query with `selectinload()` now works
   while the engine is watched (SQLAlchemy issue 13301) (#289).
