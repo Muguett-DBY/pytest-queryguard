@@ -39,7 +39,10 @@ class Order(Base):
 
 def names(session: Session) -> list[str]:
     orders = session.scalars(select(Order)).all()
-    return [order.customer.name for order in orders]
+    result = []
+    for order in orders:  # a loop: a comprehension is <listcomp> before 3.12
+        result.append(order.customer.name)
+    return result
 """
 
 TEST = """\
