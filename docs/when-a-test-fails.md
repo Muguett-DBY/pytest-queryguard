@@ -195,9 +195,11 @@ rows = session.scalars(select(Customer).where(Customer.id.in_(ids))).all()
 
 ### A patch for the parent query
 
+Since 0.8.0; experimental (see [Stability](stability.md#experimental)).
+
 For a `relationship-load` finding, pytest-queryguard can write that change for
-you. `--queryguard-patch` (or `queryguard_patch = true`) prints a unified diff
-under the finding, and `--queryguard-write-patch=PATH` writes the diffs of the
+you. `--queryguard-show-patch` (or `queryguard_show_patch = true`) prints a
+unified diff under the finding, and `--queryguard-write-patch=PATH` writes the diffs of the
 whole run to one file:
 
 ```

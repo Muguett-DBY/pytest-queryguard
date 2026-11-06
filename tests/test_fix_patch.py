@@ -697,7 +697,7 @@ def test_the_report_prints_the_patch_only_when_asked(project: pytest.Pytester) -
     plain = project.runpytest("-k", "test_orders")
     plain.assert_outcomes(failed=1)
     assert "patch (git apply" not in plain.stdout.str()
-    shown = project.runpytest("-k", "test_orders", "--queryguard-patch")
+    shown = project.runpytest("-k", "test_orders", "--queryguard-show-patch")
     shown.assert_outcomes(failed=1)
     shown.stdout.fnmatch_lines(
         [
@@ -714,7 +714,7 @@ def test_the_report_prints_the_patch_only_when_asked(project: pytest.Pytester) -
 
 
 def test_the_ini_option_prints_the_patch(project: pytest.Pytester) -> None:
-    project.makeini("[pytest]\nqueryguard_patch = true\n")
+    project.makeini("[pytest]\nqueryguard_show_patch = true\n")
     result = project.runpytest("-k", "test_orders")
     result.stdout.fnmatch_lines(["  patch (git apply from the rootdir*"])
 

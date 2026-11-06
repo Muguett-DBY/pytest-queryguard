@@ -103,8 +103,8 @@ says how. Before 1.0 it may be on by default (see the pre-1.0 clause above).
 Options, finding kinds and markers listed here are public to use but exempt
 from the deprecation policy: a minor release may change their values,
 defaults, labels or messages, or remove them, with a changelog entry under
-"Changed" or "Removed" and no deprecation period. The ini option is marked
-`EXPERIMENTAL` in `pytest --help`.
+"Changed" or "Removed" and no deprecation period. Their ini options and
+command-line flags are marked `EXPERIMENTAL` in `pytest --help`.
 
 - `queryguard_unused_eager_load` and the `unused-eager-load` finding kind
   (rule `queryguard/unused-eager-load` in SARIF). See
@@ -120,6 +120,10 @@ defaults, labels or messages, or remove them, with a changelog entry under
   `internal_error`, `opentelemetry_reporter`, `sentry_reporter`) and the
   panel's JSON. See
   [In-application mode](in-app.md).
+- The fix patch (since 0.8.0): `queryguard_show_patch`,
+  `--queryguard-show-patch`, `--queryguard-write-patch`, which findings get a
+  patch, the content of the diff, and the `fixes` entries of the SARIF file.
+  See [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query).
 - The static check, `python -m pytest_queryguard.lint`: its options, what it
   reports, its text output, and the rule `queryguard/static-relationship-load`
   in its SARIF output. Its JSON output has a `format` key; a change to the

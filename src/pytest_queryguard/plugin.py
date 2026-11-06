@@ -210,7 +210,7 @@ class _Settings:
         self.blocks_entered: dict[str, str] = {}
         self.blocks_used: set[str] = set()
         self.blocks_incomplete = False
-        # patches that add the loader option (queryguard_patch,
+        # patches that add the loader option (queryguard_show_patch,
         # --queryguard-write-patch); files modified after ``started`` get none
         self.show_patch = False
         self.patch_path: Path | None = None
@@ -339,20 +339,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "code scanning). Findings in the baseline are left out.",
     )
     group.addoption(
-        "--queryguard-patch",
-        dest="queryguard_patch",
+        "--queryguard-show-patch",
+        dest="queryguard_show_patch",
         action="store_true",
         default=None,
-        help="Print a patch under each relationship-load finding whose parent "
-        "query line is certain (overrides queryguard_patch).",
+        help="EXPERIMENTAL: print a patch under each relationship-load finding "
+        "whose parent query line is certain (overrides queryguard_show_patch).",
     )
     group.addoption(
         "--queryguard-write-patch",
         dest="queryguard_write_patch",
         default=None,
         metavar="PATH",
-        help="Write the patches of this run's relationship-load findings to PATH "
-        "as one file for git apply (from the rootdir).",
+        help="EXPERIMENTAL: write the patches of this run's relationship-load "
+        "findings to PATH as one file for git apply (from the rootdir).",
     )
     group.addoption(
         "--queryguard-json",
@@ -446,9 +446,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
     )
     parser.addini(
-        "queryguard_patch",
-        "Print a patch under each relationship-load finding whose parent query "
-        "line is certain: the loader option added to its select() or query() call",
+        "queryguard_show_patch",
+        "EXPERIMENTAL: print a patch under each relationship-load finding whose "
+        "parent query line is certain: the loader option added to its select() "
+        "or query() call",
         type="bool",
         default=False,
     )
@@ -914,7 +915,7 @@ def _read_settings(config: pytest.Config) -> _Settings:
     settings.baseline_previous_error = previous_error
     settings.rootpath = config.rootpath
     settings.json_path = _json_path(config)
-    settings.show_patch = _flag(config, "queryguard_patch")
+    settings.show_patch = _flag(config, "queryguard_show_patch")
     settings.patch_path = _patch_path(config)
     settings.cartesian = _cartesian_mode(config)
     settings.unused_columns = _unused_columns(config)
