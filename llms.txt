@@ -143,7 +143,7 @@ Ini options, read from `[tool.pytest.ini_options]`, pytest 9's `[tool.pytest]`, 
 | `queryguard_write_loop_threshold` | `0` or integer >= 2 | `0` (off) |
 | `queryguard_unused_eager_load` | `off`, `warn`, `fail` | `off` |
 | `queryguard_unused_columns` | `off`, `warn`, `fail` | `off` |
-| `queryguard_fail_on` | finding kinds (`fnmatch`) per line; other kinds only warn | empty (all kinds fail) |
+| `queryguard_fail_on` | finding kinds (`fnmatch`) per line; other kinds only warn | empty (every kind fails, except `cartesian-load`, `unused-eager-load` and `unused-columns` unless their own option is `fail`) |
 | `queryguard_max_events` | integer >= 0 (`0`: no limit) | `10000` |
 | `queryguard_ignore` | `KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB]` per line (`stack`: any reported frame, `file` or `file:function`, up to `queryguard_stack_depth` callers) | empty |
 | `queryguard_baseline` | path relative to the rootdir | empty |

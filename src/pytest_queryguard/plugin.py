@@ -402,7 +402,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addini(
         "queryguard_fail_on",
         "Finding kinds that fail a test in fail mode, one per line (fnmatch "
-        "patterns); the other kinds only warn. Empty: all kinds fail",
+        "patterns); the other kinds only warn. Empty: every kind fails, except "
+        "cartesian-load and the unused-* kinds unless their own option is fail",
         type="linelist",
         default=[],
     )
