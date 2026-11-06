@@ -20,12 +20,14 @@ inputs:
   package:
     description: >-
       What to pip install for the plugin: a requirement such as
-      "pytest-queryguard>=0.4" or a path to a checkout. Empty (the default):
+      "pytest-queryguard>=0.6" or a path to a checkout. Empty (the default):
       install the plugin from the checkout of this action, so the plugin
-      version is the one the action's own ref ships (the action passes
-      --queryguard-sarif, which older plugin versions reject). pytest and
-      SQLAlchemy come with it. Your own project and its test dependencies must
-      be installed before this action runs.
+      version is the one the action's own ref ships. The action needs 0.6.0
+      or newer (it passes --queryguard-sarif and --queryguard-json and runs
+      python -m pytest_queryguard.compare, which older plugin versions lack),
+      and 0.8.0 or newer for the trend input. pytest and SQLAlchemy come with
+      it. Your own project and its test dependencies must be installed before
+      this action runs.
     required: false
     default: ""
   baseline:
