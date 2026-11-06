@@ -79,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With `--queryguard-show-patch`, the error strict mode raises at the access
+  has the patch under the finding: it replaces the report, which was the only
+  place the patch was shown.
 - Strict mode no longer reports an `unused-eager-load` or `unused-columns`
   finding for a test it stopped at the access: the relationship or the
   columns the test would have read after the N+1 loop were reported as never

@@ -331,6 +331,7 @@ class Combo:
     patch: bool = False
     fail_on: tuple[str, ...] = ()
     default_budget: int | None = None
+    show_patch: bool = False
 
     def own_option(self, kind: str) -> str | None:
         return {
@@ -395,7 +396,7 @@ COMBOS = [
         patch=True,
         default_budget=500,
     ),
-    Combo("strict-warn-patch", strict=True, mode="warn", patch=True),
+    Combo("strict-warn-patch", strict=True, mode="warn", patch=True, show_patch=True),
     Combo(
         "strict-warn-experimental-baseline",
         strict=True,
@@ -422,6 +423,7 @@ COMBOS = [
         patch=True,
         fail_on=("relationship-load", "unused-*"),
         default_budget=500,
+        show_patch=True,
     ),
     Combo(
         "xdist-strict-experimental",
@@ -557,6 +559,8 @@ def _run(pytester: pytest.Pytester, combo: Combo, *, xdist: bool) -> Run:
     ]
     if combo.patch:
         args.append(f"--queryguard-write-patch=out-{tag}.patch")
+    if combo.show_patch:
+        args.append("--queryguard-show-patch")
     if xdist:
         args += ["-p", "xdist", "-n", "2"]
     result = pytester.runpytest_subprocess(*args)
@@ -757,6 +761,12 @@ def _check_patch(run: Run, combo: Combo, pytester: pytest.Pytester) -> None:
         for match in _LOADER.finditer(line)
     }
     assert added - removed == reported_rel, run.patch
+    if combo.show_patch:
+        # under its finding, also in the error strict mode raises at the access
+        shown = {re.sub(r"^E\s", "", line).strip() for line in run.stdout.splitlines()}
+        for line in run.patch.splitlines():
+            if line.startswith(("+", "-")):
+                assert line.strip() in shown, (line, run.stdout)
     if _GIT is None:
         return
     patch = pytester.path / "check.patch"
@@ -902,3 +912,26 @@ def test_strict_reports_no_unused_load_the_test_never_reached(
 def _results_of(sarif: dict[str, Any]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = sarif["runs"][0]["results"]
     return results
+
+
+def test_strict_error_shows_the_patch(pytester: pytest.Pytester) -> None:
+    """The error strict mode raises replaces the report, so it has the patch."""
+    _write_project(pytester, Combo("strict-patch"))
+    result = pytester.runpytest_subprocess(
+        "-p",
+        "no:cacheprovider",
+        "--queryguard-strict",
+        "--queryguard-show-patch",
+        "-k",
+        "test_nplusone",
+    )
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "E*NPlusOneDetected: queryguard strict: Order.customer*",
+            "E*patch (git apply from the rootdir*",
+            "E*+++ b/app/queries.py",
+            "E*+*select(Order).options(joinedload(Order.customer)).order_by(*",
+            "E*(queryguard_strict raises at the lazy load*",
+        ]
+    )

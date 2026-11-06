@@ -352,8 +352,11 @@ def make_findings(
     return [make_finding(d, cwd=cwd) for d in detections]
 
 
-def format_strict(finding: Finding, parents: int) -> str:
-    """The text of the exception queryguard_strict raises at the access."""
+def format_strict(finding: Finding, parents: int, *, patch: bool = False) -> str:
+    """The text of the exception queryguard_strict raises at the access.
+
+    With ``patch`` (queryguard_show_patch), the finding's fix follows it.
+    """
     return "\n".join(
         [
             (
@@ -362,6 +365,7 @@ def format_strict(finding: Finding, parents: int) -> str:
             ),
             "",
             finding.message,
+            *(patch_lines(finding.fix) if patch and finding.fix is not None else ()),
             "",
             "  (queryguard_strict raises at the lazy load; allow_nplusone,",
             "  queryguard_ignore or an ignore() block lets it pass, as for the report)",

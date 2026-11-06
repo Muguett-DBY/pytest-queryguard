@@ -715,24 +715,27 @@ def _strict_hook(
         # the finding the report would make: located at the group's first lazy
         # load, so ignore patterns and baseline entries match it the same way
         parent = load.parent
-        finding = make_finding(
-            RelationshipFinding(
-                load.relationship,
-                parents,
-                first,
-                None,
-                scalar=load.scalar,
-                parent_site=None if parent is None else parent.callsite,
-                parent_root=None if parent is None else parent.root,
-                parent_path=() if parent is None else parent.path,
-            ),
-            cwd=root,
+        detection = RelationshipFinding(
+            load.relationship,
+            parents,
+            first,
+            None,
+            scalar=load.scalar,
+            parent_site=None if parent is None else parent.callsite,
+            parent_root=None if parent is None else parent.root,
+            parent_path=() if parent is None else parent.path,
         )
+        finding = make_finding(detection, cwd=root)
         if rules and not apply_rules([finding], rules)[0]:
             return None
         if settings.baseline and not baselines.split([finding], settings.baseline)[0]:
             return None
-        error = NPlusOneDetected(format_strict(finding, parents))
+        if settings.show_patch:
+            # the exception replaces the report, so it carries the patch too
+            finding = _with_fix(finding, detection, root, settings.started)
+        error = NPlusOneDetected(
+            format_strict(finding, parents, patch=settings.show_patch)
+        )
         error.queryguard_strict = True  # type: ignore[attr-defined]
         return error
 
