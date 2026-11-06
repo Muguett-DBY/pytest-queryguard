@@ -7,6 +7,9 @@ A scenario module defines:
 * ``KNOWN``: optional ``{config: reason}``. In those configurations the plugin
   is known to disagree with the verdict, a documented limitation or an open
   bug; the corpus test is then an ``xfail(strict=True)``;
+* ``PATCH``: optional, ``True`` when ``--queryguard-write-patch`` is expected
+  to write a patch for its relationship-load that removes it
+  (``test_fix_patches.py``); without it, no patch is expected;
 * ``setup(ctx)``: create the schema and seed rows; not measured;
 * ``run(ctx)``: the code under test; measured. It may be ``async``.
 """
@@ -30,6 +33,8 @@ REPEAT = "repeated-statement"
 COLUMN = "column-load"
 WRITE = "write-loop"
 UNUSED = "unused-eager-load"
+CARTESIAN = "cartesian-load"
+COLUMNS = "unused-columns"
 
 # Set to a SQLAlchemy URL of a PostgreSQL server (pg8000 driver) to run the
 # corpus there instead of on SQLite files.
