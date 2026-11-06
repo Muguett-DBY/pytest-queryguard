@@ -22,7 +22,7 @@ pull request's copy of the gate.
 | 5 | Upgrade: the newest earlier final release from PyPI is installed, the new wheel is installed over it, and the tiny project runs before and after. | `release_gate.py upgrade` |
 | 6 | Overhead: the per-statement overhead of the measurement is at most 125 % of `scripts/bench_baseline.json` (Core and ORM loops), measured as in [How the overhead is measured](#how-the-overhead-is-measured). | `release_gate.py bench` |
 | 7 | The wheel has `py.typed`, `LICENSE`, the entry point and only the package; no tests, docs, scripts, caches or scratch files. The sdist has the license, README, changelog, `pyproject.toml` and sources and no scratch files. | `release_gate.py contents` |
-| 8 | `__version__`, the top entry of `CHANGELOG.md`, its date (a valid date, not in the future, not older than the entry below it) and the link references at the bottom (`[Unreleased]` compares the newest tag with `HEAD`, each entry compares the previous tag with itself) agree. | `release_gate.py consistency` |
+| 8 | `__version__`, the top entry of `CHANGELOG.md`, its date (a valid date, not in the future, not older than the entry below it) and the link references at the bottom (`[Unreleased]` compares the newest tag with `HEAD`, each entry compares the previous tag with itself) agree, and so does the version the documentation says it describes (`docs/index.md`, `docs/getting-started.md`, `llms.txt`). | `release_gate.py consistency` |
 
 ## Running it
 
@@ -49,7 +49,10 @@ projects (only Litestar, pytest-asyncio and SQLModel may be missing).
 ## Steps of a release
 
 1. A pull request bumps `__version__`, dates the changelog entry and fixes the
-   link references. The gate runs on it.
+   link references. It also updates the version the documentation describes
+   (`docs/index.md`, `docs/getting-started.md`, `llms.txt`) and drops the
+   sentence there that says the "since X" parts are not on PyPI yet. The gate
+   runs on it.
 2. After it is merged, run the gate on `main` and wait for it to be green.
 3. Tag that commit `vX.Y.Z` and push the tag; `release.yml` checks that a
    gate run on `main` at that commit succeeded, then builds and publishes.

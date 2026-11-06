@@ -51,7 +51,7 @@ a command line and an MCP server for AI coding agents. Its `nplusone` command
 looks for N+1 patterns in the code; it does not run tests or watch the
 statements a test sends, so it is not in the matrix below. Read from its PyPI
 description on 2026-11-05, not run. pytest-queryguard has an experimental
-[static check](static-check.md) of its own (unreleased), which reads the
+[static check](static-check.md) of its own (since 0.8.0), which reads the
 mappers by importing your model modules and reports only lazy relationships
 read in a loop over a query inside one function; it has no MCP server. The
 two static checks were not compared.

@@ -124,7 +124,7 @@ command-line flags are marked `EXPERIMENTAL` in `pytest --help`.
   `--queryguard-show-patch`, `--queryguard-write-patch`, which findings get a
   patch, the content of the diff, and the `fixes` entries of the SARIF file.
   See [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query).
-- The static check, `python -m pytest_queryguard.lint`: its options, what it
+- The static check (since 0.8.0), `python -m pytest_queryguard.lint`: its options, what it
   reports, its text output, and the rule `queryguard/static-relationship-load`
   in its SARIF output. Its JSON output has a `format` key; a change to the
   documented keys increments it. See [Static check](static-check.md).

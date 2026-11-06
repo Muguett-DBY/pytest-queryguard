@@ -82,6 +82,32 @@ def test_a_bad_changelog_fails(
     assert any(expected in problem for problem in problems), problems
 
 
+DOCS = {
+    "docs/index.md": "Nothing to configure. These pages\ndescribe 1.2.0, see Install.",
+    "docs/getting-started.md": "`pytest -VV` lists it\n(`pytest-queryguard-1.2.0`).",
+    "llms.txt": "This file describes the repository.\nThis file describes 1.2.0. Needs",
+}
+
+
+def test_the_docs_describe_the_version(gate: ModuleType) -> None:
+    assert gate.check_doc_versions("1.2.0", DOCS) == []
+    assert gate.check_doc_versions(gate.package_version()) == []
+
+
+@pytest.mark.parametrize("path", sorted(DOCS))
+def test_docs_that_describe_another_version_fail(gate: ModuleType, path: str) -> None:
+    texts = {**DOCS, path: DOCS[path].replace("1.2.0", "1.1.0")}
+    problems = gate.check_doc_versions("1.2.0", texts)
+    assert problems == [f"{path} describes 1.1.0, __version__ is 1.2.0"]
+
+
+@pytest.mark.parametrize("path", sorted(DOCS))
+def test_docs_without_a_version_fail(gate: ModuleType, path: str) -> None:
+    texts = {**DOCS, path: DOCS[path].replace("1.2.0", "the next release")}
+    problems = gate.check_doc_versions("1.2.0", texts)
+    assert problems == [f"{path} does not say which version it describes"]
+
+
 def test_the_accuracy_thresholds_are_recorded_in_the_docs() -> None:
     thresholds = json.loads(
         (ROOT / "scripts" / "accuracy_thresholds.json").read_text(encoding="utf-8")

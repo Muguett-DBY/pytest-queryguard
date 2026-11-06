@@ -62,12 +62,47 @@ def package_version() -> str:
     return match.group(1)
 
 
+# Where the documentation names the release it describes: file, pattern with
+# one group for the version.
+DOC_VERSIONS: dict[str, str] = {
+    "docs/index.md": rf"These pages\s+describe\s+({VERSION})\b",
+    "docs/getting-started.md": rf"`pytest-queryguard-({VERSION})`",
+    "llms.txt": rf"This file describes ({VERSION})\b",
+}
+
+
+def check_doc_versions(version: str, texts: dict[str, str] | None = None) -> list[str]:
+    """The version that docs/index.md, getting-started.md and llms.txt describe.
+
+    ``texts`` maps the paths of ``DOC_VERSIONS`` to their content; by default
+    the files of the repository are read.
+    """
+    problems = Problems()
+    for path, pattern in DOC_VERSIONS.items():
+        text = (
+            texts[path]
+            if texts is not None
+            else (ROOT / path).read_text(encoding="utf-8")
+        )
+        found = re.findall(pattern, text)
+        if problems.check(found, f"{path} does not say which version it describes"):
+            for named in sorted(set(found) - {version}):
+                problems.append(f"{path} describes {named}, __version__ is {version}")
+    return problems
+
+
 def check_consistency(
     changelog: str | None = None, version: str | None = None
 ) -> list[str]:
-    """The version, the top changelog entry, its date and the link references."""
+    """The version, the top changelog entry, its date and the link references.
+
+    Without ``changelog`` the repository is checked, and then also the version
+    its documentation describes (``check_doc_versions``).
+    """
     problems = Problems()
     version = version or package_version()
+    if changelog is None:
+        problems.extend(check_doc_versions(version))
     text = (
         changelog
         if changelog is not None
@@ -540,7 +575,7 @@ def check_bench() -> list[str]:
 
 
 CHECKS: dict[str, str] = {
-    "consistency": "version, changelog entry, date and links agree",
+    "consistency": "version, changelog entry, date, links and docs version agree",
     "accuracy": "accuracy corpus precision and recall are at least the recorded minimums",
     "contents": "wheel and sdist contain what they should and nothing else",
     "install": "wheel and sdist install into clean environments and work",
