@@ -190,6 +190,71 @@ customers = select(Customer).options(selectinload(Customer.orders))
 rows = session.scalars(select(Customer).where(Customer.id.in_(ids))).all()
 ```
 
+### A patch for the parent query
+
+For a `relationship-load` finding, pytest-queryguard can write that change for
+you. `--queryguard-patch` (or `queryguard_patch = true`) prints a unified diff
+under the finding, and `--queryguard-write-patch=PATH` writes the diffs of the
+whole run to one file:
+
+```
+pytest --queryguard-write-patch=queryguard.patch
+git apply queryguard.patch      # from the rootdir
+```
+
+```diff
+--- a/app/orders.py
++++ b/app/orders.py
+@@ -1,9 +1,9 @@
+ from sqlalchemy import select
+-from sqlalchemy.orm import Session
++from sqlalchemy.orm import Session, joinedload
+ 
+ from app.models import Order
+ 
+ 
+ def list_orders(session: Session) -> list[Order]:
+-    orders = session.scalars(select(Order)).all()
++    orders = session.scalars(select(Order).options(joinedload(Order.customer))).all()
+     return [order.customer.name for order in orders]
+```
+
+The option goes on the `select(Order)` or `session.query(Order)` call of the
+line in `parents loaded at`: as `.options(...)` right after the call, or as
+one more argument of the `.options(...)` already in its chain. The loader is
+`joinedload` or `selectinload`, the same as in the `fix:` hint, chained
+through the relationships that reached the parents. A loader the module does
+not import yet is added to its `from sqlalchemy.orm import` line, or on a new
+line after the imports at the top of the file.
+
+A wrong patch is worse than none, so a finding gets one only when the line is
+certain, and otherwise only the `fix:` hint:
+
+- every parent was loaded by one query line, and the plugin knows the class it
+  selected;
+- that line is one statement with exactly one `select(...)` call, or
+  `.query(...)` on something named like a session, with that class as its
+  only argument, and the statement runs nothing else. A query built on
+  another line (`statement = select(Order)` and then
+  `session.scalars(statement)`), a `session.get()`, a subquery, or a choice
+  between queries (`a if c else b`, `or`, a comprehension) gets no patch;
+- `select` is imported from SQLAlchemy or SQLModel, the classes are imported
+  (or defined) in the module under their own names, the function does not
+  rebind them, and an `.options(...)` already in the chain lists only loader
+  calls, none of them for the relationship (not `*options` or a variable);
+- the file is inside the rootdir, UTF-8 with `\n` line ends, and was not
+  modified after the session started, so it is the code that ran.
+
+The diff paths are relative to the rootdir (`a/app/orders.py`). When the
+rootdir is a subdirectory of the git repository, apply it with
+`git apply --directory=<subdirectory>`, or with `patch -p1` from the rootdir.
+Fixes of the same file are merged into one diff; two relationships of one
+query become two `.options(...)` calls, which SQLAlchemy accepts. Findings
+left out by an ignore or the baseline get no patch. The patch is made when the
+test's findings are reported, from its source file: no cost per statement.
+Read it before you apply it, as any generated change: `joinedload` of a
+collection or a large row can cost more than the lazy loads it replaces.
+
 To keep the fix from regressing, put a [budget](budgets.md) on the test:
 `@pytest.mark.max_queries(2)` fails it the day the count goes up again.
 
