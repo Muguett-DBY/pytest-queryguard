@@ -51,8 +51,9 @@ projects (only Litestar, pytest-asyncio and SQLModel may be missing).
 1. A pull request bumps `__version__`, dates the changelog entry and fixes the
    link references. It also updates the version the documentation describes
    (`docs/index.md`, `docs/getting-started.md`, `llms.txt`) and drops the
-   sentence there that says the "since X" parts are not on PyPI yet. The gate
-   runs on it.
+   sentence there that says the "since X" parts are not on PyPI yet; for a
+   pre-release (`X.Y.Zrc1`) both may stay as they are, since pip still
+   installs the last final release. The gate runs on it.
 2. After it is merged, run the gate on `main` and wait for it to be green.
 3. Tag that commit `vX.Y.Z` and push the tag; `release.yml` checks that a
    gate run on `main` at that commit succeeded, then builds and publishes.
