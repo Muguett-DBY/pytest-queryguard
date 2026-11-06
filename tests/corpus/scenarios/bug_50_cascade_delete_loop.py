@@ -13,6 +13,7 @@ from ..kit import BUG, REL, WRITE, Ctx
 
 VERDICT = BUG
 KINDS = frozenset({REL, WRITE})
+PATCH = True
 
 
 class Base(DeclarativeBase):

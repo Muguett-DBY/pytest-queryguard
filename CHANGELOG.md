@@ -94,6 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A statement run outside an `ignore("missing-index")` block, then again
   inside it after DDL made the check explain it again, is reported: the block
   no longer leaves the missing-index finding out (#284).
+- The patch of `--queryguard-write-patch` no longer adds an option twice
+  when one query has two relationship-load findings, a relationship and a
+  chain through it: `.options(selectinload(A.b)).options(selectinload(A.b)
+  .joinedload(B.c))` is now `.options(selectinload(A.b).joinedload(B.c))`.
 
 ### Documentation
 
@@ -105,6 +109,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed as experimental.
 
 ### Internal
+
+- The accuracy corpus has 50 more scenarios (197) and measures
+  `cartesian-load` (it warns by default, and warnings are now measured),
+  `unused-columns`, strict mode, `ignore()` blocks and fixtures; a new test
+  applies the patch of `--queryguard-write-patch` to the corpus and checks
+  that the N+1 is gone. The release gate's relationship-load minimum
+  precision is 90% (a CLEAN scenario the rule reports by design) and
+  `cartesian-load` has minimums. See docs/accuracy.md.
 
 - Every private SQLAlchemy attribute, execution option, frame and code object
   the plugin and the in-app mode read is named in one module,
