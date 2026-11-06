@@ -25,8 +25,8 @@ it saw.
    rules below. A test stores at most `queryguard_max_events` statements;
    past that they are only counted, and the report says so.
 
-The findings are then filtered by `queryguard_ignore`, the
-`allow_nplusone` marker and the [baseline](baseline.md), and reported as a
+The findings are then filtered by the `queryguard_ignore` option, the
+`queryguard_ignore` marker and the [baseline](baseline.md), and reported as a
 failure, a `QueryGuardWarning` or a line in the [SARIF file](sarif.md),
 depending on `queryguard_mode` and `queryguard_fail_on`.
 
@@ -292,7 +292,7 @@ detection is updated.
 ### What the count rules count together
 
 The relationship, repeated-statement, column-load and write-loop rules count
-over a scope. By default (`queryguard_repeat_scope = test`) the scope is the
+over a scope. By default (`queryguard_scope = test`) the scope is the
 whole test. With `session`, each SQLAlchemy `Session`, or each connection
 checkout for statements no `Session` ran, is counted on its own, and a finding
 needs one scope to reach the threshold. See [Tests with several sessions or

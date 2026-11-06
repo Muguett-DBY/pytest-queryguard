@@ -19,10 +19,11 @@ changes by accident.
   (`pytest_queryguard.NPlusOneDetected`, not the submodule it lives in).
 - The pytest integration: the ini options (`queryguard_*`), the command-line
   flags (`--queryguard-*`, `--no-queryguard-*`), their defaults and accepted
-  values, the markers (`max_queries`, `max_db_time`, `allow_nplusone`,
+  values, the markers (`max_queries`, `max_db_time`, `queryguard_max_queries`,
+  `queryguard_max_db_time`, `queryguard_ignore` and its alias `allow_nplusone`,
   `allow_missing_index`) and the `queryguard` fixture.
 - The meaning of the finding kinds and of the labels and patterns used by
-  `queryguard_ignore` and `allow_nplusone`, so that an existing ignore keeps
+  the `queryguard_ignore` option and marker, so that an existing ignore keeps
   matching the same finding.
 - The pytest entry point name (`queryguard`).
 - The files the plugin writes and reads, and the command-line tools and the

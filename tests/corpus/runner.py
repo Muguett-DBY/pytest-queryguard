@@ -43,7 +43,7 @@ CONFIGS: dict[str, tuple[str, frozenset[str]]] = {
         frozenset({kit.COLUMNS}),
     ),
     # Counts the repeat, relationship and column-load rules per Session.
-    "session-scope": ("queryguard_repeat_scope = session\n", frozenset()),
+    "session-scope": ("queryguard_scope = session\n", frozenset()),
     # Raises at the lazy load that makes an N+1, inside the scenario's code.
     "strict": ("queryguard_strict = true\n", frozenset()),
     # Every opt-in rule at once: what a project that turned them all on sees.

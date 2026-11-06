@@ -64,8 +64,8 @@ def _scope_hint(finding: Detection) -> list[str]:
         return []
     return [
         "  note: if each belongs to a separate request or unit of work, this is not a",
-        "  loop; set queryguard_repeat_scope = session to count each Session on its",
-        "  own (QueryLog.assert_no_nplusone: repeat_scope='session')",
+        "  loop; set queryguard_scope = session to count each Session on its",
+        "  own (QueryLog.assert_no_nplusone: scope='session')",
     ]
 
 
@@ -367,8 +367,8 @@ def format_strict(finding: Finding, parents: int, *, patch: bool = False) -> str
             finding.message,
             *(patch_lines(finding.fix) if patch and finding.fix is not None else ()),
             "",
-            "  (queryguard_strict raises at the lazy load; allow_nplusone,",
-            "  queryguard_ignore or an ignore() block lets it pass, as for the report)",
+            "  (queryguard_strict raises at the lazy load; a queryguard_ignore marker",
+            "  or pattern, or an ignore() block lets it pass, as for the report)",
         ]
     )
 
@@ -694,20 +694,24 @@ def format_failure(failure: Failure) -> list[str]:
 
 def format_stale_ignores(
     patterns: Sequence[object],
-    markers: Sequence[tuple[str, object]],
+    markers: Sequence[tuple[str, object, str]],
     blocks: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
     """The session summary lines for ignores that matched no finding.
 
-    ``blocks`` are ignore() blocks as ("file:line", "ignore('kind')").
+    ``markers`` are (test, rule, marker name): queryguard_ignore or its alias
+    allow_nplusone, as the test spells it. ``blocks`` are ignore() blocks as
+    ("file:line", "ignore('kind')").
     """
     lines: list[str] = []
     if patterns:
         lines.append("queryguard_ignore patterns that matched no finding in this run:")
         lines.extend(f"  {pattern}" for pattern in patterns)
-    if markers:
-        lines.append("allow_nplusone patterns that matched no finding in their test:")
-        lines.extend(f"  {nodeid}: {rule}" for nodeid, rule in markers)
+    for marker in dict.fromkeys(name for _, _, name in markers):
+        lines.append(f"{marker} marker patterns that matched no finding in their test:")
+        lines.extend(
+            f"  {nodeid}: {rule}" for nodeid, rule, name in markers if name == marker
+        )
     if blocks:
         lines.append("ignore() blocks that left out no finding in this run:")
         lines.extend(f"  {where}: {text}" for where, text in blocks)

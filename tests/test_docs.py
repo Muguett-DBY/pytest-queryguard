@@ -42,9 +42,19 @@ def test_every_flag_is_in_the_reference(pytester: pytest.Pytester) -> None:
 def test_every_marker_is_in_the_reference(pytester: pytest.Pytester) -> None:
     reference = (DOCS / "configuration.md").read_text(encoding="utf-8")
     markers = set(
-        re.findall(r"@pytest\.mark\.((?:allow|max)_\w+)", _help(pytester, "--markers"))
+        re.findall(
+            r"@pytest\.mark\.((?:allow|max|queryguard)_\w+)",
+            _help(pytester, "--markers"),
+        )
     )
-    assert markers >= {"max_queries", "max_db_time", "allow_nplusone"}, markers
+    assert markers >= {
+        "max_queries",
+        "max_db_time",
+        "allow_nplusone",
+        "queryguard_ignore",
+        "queryguard_max_queries",
+        "queryguard_max_db_time",
+    }, markers
     missing = sorted(m for m in markers if f"`{m}" not in reference)
     assert not missing, f"docs/configuration.md does not document {missing}"
 

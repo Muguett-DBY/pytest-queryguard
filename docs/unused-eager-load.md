@@ -27,10 +27,10 @@ the query that eager-loaded it.
 The kind works with the usual mechanisms:
 
 ```python
-@pytest.mark.allow_nplusone(kind="unused-eager-load")
+@pytest.mark.queryguard_ignore(kind="unused-eager-load")
 def test_export(session): ...
 
-@pytest.mark.allow_nplusone("Customer.orders")  # one relationship
+@pytest.mark.queryguard_ignore("Customer.orders")  # one relationship
 def test_report(session): ...
 ```
 

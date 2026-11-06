@@ -316,9 +316,7 @@ def test_ignore_rules_match_the_first_lazy_load_as_in_the_report(
 
 
 def test_session_scope_counts_each_session_on_its_own(split: pytest.Pytester) -> None:
-    split.makeini(
-        "[pytest]\nqueryguard_strict = true\nqueryguard_repeat_scope = session\n"
-    )
+    split.makeini("[pytest]\nqueryguard_strict = true\nqueryguard_scope = session\n")
     _run(split, "-k", "two_sessions").assert_outcomes(passed=1)
     split.makeini("[pytest]\nqueryguard_strict = true\n")
     result = _run(split, "-k", "two_sessions")
