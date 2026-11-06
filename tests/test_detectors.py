@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from pytest_queryguard.blocks import IgnoreBlock, Sieve
 from pytest_queryguard.collector import QueryCollector
 from pytest_queryguard.detectors import (
     ColumnLoadFinding,
@@ -870,9 +871,113 @@ def test_parents_of_two_queries_give_the_first_site_and_count_the_other() -> Non
         _with_parent(1, ParentLoad(SITE, "Order", CHAIN)),
         _with_parent(2, ParentLoad(OTHER, "Order", CHAIN)),
         _with_parent(3, ParentLoad(SITE, "Order", CHAIN)),
+        _with_parent(4, ParentLoad(OTHER, "Order", CHAIN)),
     )
     assert (f.parent_site, f.other_parent_sites) == (SITE, 1)
+    assert f.count == 4
     assert f.parent_root == "Order"
+
+
+def test_parents_of_one_query_each_are_not_an_n_plus_one() -> None:
+    # #307: two single-object lookups that each read the relationship
+    c = QueryCollector()
+    c.relationship_loads.extend(
+        (
+            _with_parent(1, ParentLoad(SITE, "Order", CHAIN)),
+            _with_parent(2, ParentLoad(OTHER, "Order", CHAIN)),
+        )
+    )
+    assert detect(c, relationship_threshold=2, repeat_threshold=5) == []
+
+
+def test_a_single_lookup_next_to_a_loop_is_left_out_of_the_finding() -> None:
+    f = _found(
+        _with_parent(1, ParentLoad(OTHER, "Order", CHAIN)),
+        _with_parent(2, ParentLoad(SITE, "Order", CHAIN)),
+        _with_parent(3, ParentLoad(SITE, "Order", CHAIN)),
+    )
+    assert (f.parent_site, f.other_parent_sites, f.count) == (SITE, 0, 2)
+
+
+def test_the_threshold_counts_the_parents_of_one_query_line() -> None:
+    c = QueryCollector()
+    c.relationship_loads.extend(
+        _with_parent(k, ParentLoad(SITE if k % 2 else OTHER, "Order", CHAIN))
+        for k in range(4)
+    )
+    assert detect(c, relationship_threshold=3, repeat_threshold=5) == []
+    c.relationship_loads.append(_with_parent(5, ParentLoad(SITE, "Order", CHAIN)))
+    [f] = detect(c, relationship_threshold=3, repeat_threshold=5)
+    assert isinstance(f, RelationshipFinding)
+    assert (f.parent_site, f.other_parent_sites, f.count) == (SITE, 0, 3)
+
+
+def test_parents_of_unknown_origin_count_together_with_every_parent() -> None:
+    # an object the test made, or loaded before the test body, may belong to
+    # any query: all the parents of the relationship count as one group
+    f = _found(
+        _with_parent(1, ParentLoad(SITE, "Order", CHAIN)),
+        _with_parent(2, ParentLoad(OTHER, "Order", CHAIN)),
+        _with_parent(3, ParentLoad(None, "Order", CHAIN)),
+    )
+    assert (f.parent_site, f.other_parent_sites, f.count) == (None, 0, 3)
+    f = _found(_with_parent(1, None), _with_parent(2, None))
+    assert f.count == 2
+
+
+def test_a_parent_of_unknown_origin_counts_for_each_query_line_alone() -> None:
+    # it may belong to either line, not to both: one line and it make 2
+    c = QueryCollector()
+    c.relationship_loads.extend(
+        (
+            _with_parent(1, ParentLoad(SITE, "Order", CHAIN)),
+            _with_parent(2, ParentLoad(OTHER, "Order", CHAIN)),
+            _with_parent(3, None),
+        )
+    )
+    assert detect(c, relationship_threshold=3, repeat_threshold=5) == []
+    c.relationship_loads.append(_with_parent(4, ParentLoad(SITE, "Order", CHAIN)))
+    [f] = detect(c, relationship_threshold=3, repeat_threshold=5)
+    assert isinstance(f, RelationshipFinding)
+    assert (f.count, f.parent_site) == (3, None)
+
+
+def test_a_query_line_inside_an_ignore_block_is_left_out_of_the_finding() -> None:
+    block = IgnoreBlock(("relationship-load",), None, None)
+
+    def load(
+        key: int, site: CallSite, ignores: tuple[IgnoreBlock, ...]
+    ) -> RelationshipLoadEvent:
+        return RelationshipLoadEvent(
+            "Order.customer", key, SITE, True, None, ParentLoad(site, None), ignores
+        )
+
+    c = QueryCollector()
+    c.relationship_loads.extend(load(k, OTHER, (block,)) for k in (1, 2))
+    sieve = Sieve()
+    assert detect(c, relationship_threshold=2, repeat_threshold=5, sieve=sieve) == []
+    assert list(sieve.used) == [block]
+    c.relationship_loads.extend(load(k, SITE, ()) for k in (3, 4))
+    sieve = Sieve()
+    [f] = detect(c, relationship_threshold=2, repeat_threshold=5, sieve=sieve)
+    assert isinstance(f, RelationshipFinding)
+    assert (f.count, f.parent_site, f.other_parent_sites) == (2, SITE, 0)
+    assert list(sieve.used) == [block]
+
+
+def test_per_session_the_parents_of_one_query_line_count() -> None:
+    def load(key: int, site: CallSite, scope: int) -> RelationshipLoadEvent:
+        return RelationshipLoadEvent(
+            "Customer.country", key, SITE, True, scope, ParentLoad(site, None)
+        )
+
+    c = QueryCollector()
+    c.relationship_loads.extend(
+        (load(1, SITE, 1), load(2, OTHER, 1), load(3, SITE, 2), load(4, SITE, 2))
+    )
+    [f] = detect(c, relationship_threshold=2, repeat_threshold=5, scope="session")
+    assert isinstance(f, RelationshipFinding)
+    assert (f.count, f.parent_site, f.scoped) == (2, SITE, True)
 
 
 def test_one_parent_of_unknown_origin_drops_the_site_and_chain() -> None:

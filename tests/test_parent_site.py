@@ -314,15 +314,88 @@ def test_parents_from_two_queries_name_the_first_and_count_the_other(
     engine: Engine, rec: collector.QueryCollector
 ) -> None:
     with Session(engine) as session:
+        _seed(session, first=4)
+        session.commit()
         first = session.scalars(select(Order).where(Order.id < 3)).all()  # two-1
-        second = session.scalars(select(Order).where(Order.id == 3)).all()
+        second = session.scalars(select(Order).where(Order.id > 3)).all()
         for order in [*first, *second]:
             _ = order.customer
     finding = _finding(rec, "Order.customer")
+    assert finding.count == 5
     assert finding.parent_site is not None
     assert finding.parent_site.lineno == _line("two-1")
     assert finding.other_parent_sites == 1
     assert "and 1 other place\n" in format_findings([finding]) + "\n"
+
+
+def _relationship_findings(rec: collector.QueryCollector) -> list[RelationshipFinding]:
+    found = detect(rec, relationship_threshold=2, repeat_threshold=99)
+    return [f for f in found if isinstance(f, RelationshipFinding)]
+
+
+def test_two_single_object_lookups_are_not_an_n_plus_one(
+    engine: Engine, rec: collector.QueryCollector
+) -> None:
+    # #307: one parent per query, no loop over rows
+    with Session(engine) as session:
+        left = session.get(Order, 1)
+        right = session.scalars(select(Order).where(Order.id == 2)).one()
+        assert left is not None
+        _ = left.customer, right.customer
+    assert rec.relationship_load_count == 2
+    assert _relationship_findings(rec) == []
+
+
+def test_a_loop_next_to_a_single_lookup_counts_the_loop_only(
+    engine: Engine, rec: collector.QueryCollector
+) -> None:
+    with Session(engine) as session:
+        single = session.scalars(select(Order).where(Order.id == 1)).one()
+        _ = single.customer
+        for order in session.scalars(select(Order).where(Order.id > 1)):  # loop
+            _ = order.customer
+    finding = _finding(rec, "Order.customer")
+    assert finding.count == 2
+    assert finding.parent_site is not None
+    assert finding.parent_site.lineno == _line("loop")
+    assert finding.other_parent_sites == 0
+
+
+def test_a_parent_of_unknown_origin_counts_with_every_other_parent(
+    engine: Engine, rec: collector.QueryCollector
+) -> None:
+    # One order the test made (no query read its row) and one loaded by a
+    # query: which query the made one belongs to cannot be told, so the two
+    # count together, as the loop over them is an N+1.
+    with Session(engine) as session:
+        made = Order(id=10, customer_id=2)  # kept: the identity map is weak
+        session.add(made)
+        session.flush()
+        loaded = session.get(Order, 1)
+        for order in (made, loaded):
+            _ = order.customer
+        session.rollback()
+    finding = _finding(rec, "Order.customer")
+    assert finding.count == 2
+    assert finding.parent_site is None
+
+
+def test_objects_made_in_the_test_and_looked_up_one_by_one_are_reported(
+    engine: Engine, rec: collector.QueryCollector
+) -> None:
+    # session.get() finds them in the identity map: no query, no origin
+    with Session(engine) as session:
+        made = [Order(id=20 + i, customer_id=i + 1) for i in range(3)]
+        session.add_all(made)
+        session.flush()
+        first = session.get(Order, 20)
+        second = session.get(Order, 21)
+        assert first is not None and second is not None
+        _ = first.customer, second.customer
+        session.rollback()
+    finding = _finding(rec, "Order.customer")
+    assert finding.count == 2
+    assert finding.parent_site is None
 
 
 def test_async_session_names_the_awaiting_line() -> None:

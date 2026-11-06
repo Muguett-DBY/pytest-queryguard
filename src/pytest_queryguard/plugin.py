@@ -365,7 +365,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addini("queryguard_mode", "fail, warn or off", default="fail")
     parser.addini(
         "queryguard_relationship_threshold",
-        "Lazy loads of one relationship treated as N+1 (integer >= 2)",
+        "Parents of one query line whose lazy loads of one relationship are an N+1 (integer >= 2)",
         default=2 if _NATIVE_INT else "2",
         **_INT_TYPE,
     )
