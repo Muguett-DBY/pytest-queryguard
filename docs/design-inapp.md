@@ -65,7 +65,7 @@ with queryguard.track("nightly-job") as report:  # any unit of work
 | `track(name, *, settings)` | Everything watched that runs in this context is one unit, reported when it ends: a `with`/`async with` block (yields a live `RequestReport`), a decorator (one unit per call; coroutine and generator functions included), or `start()`/`stop()` for hooks that begin and end a unit separately. |
 | `QueryGuardASGI(app, ...)` | Pure ASGI middleware: one `track()` per `http` request. |
 | `QueryGuardWSGI(app, ...)` | WSGI middleware: the same for WSGI. |
-| `Settings` | Thresholds, `repeat_scope`, `budgets`, `default_budget`, `report`, `max_events`, `sample_rate`, `min_db_time`. |
+| `Settings` | Thresholds, `repeat_scope`, `budgets`, `default_budget`, `report`, `max_events`, `sample_rate`, `min_db_time`, `page_report`. |
 | `opentelemetry_reporter()`, `sentry_reporter()` | Ready-made `report` callables: events on the current OpenTelemetry span, Sentry messages fingerprinted by the finding's identity. |
 | `RequestReport` | Method, path, route, status, statements (`Query`), times, findings (`Finding`), budget. |
 | `set_route(template)` | Names the route of the current request for budgets (Flask). |
@@ -137,6 +137,39 @@ with queryguard.track("nightly-job") as report:  # any unit of work
   appears in a request URL or a server log. A header, not a cookie, so
   another site cannot make the browser send it (no CSRF). Bound parameters
   are never stored in the panel.
+
+- **Page report.** `page_report` (`"off"`, `"footer"`, `"console"`; a
+  `Settings` field, ignored by `track()`) adds the findings to the request's
+  own HTML response (`app/_page.py`). The verdict needs the whole request,
+  so the middleware holds back only a response it can rewrite safely and
+  decides from the start message's headers alone: `text/html` in an
+  ASCII-compatible charset, 2xx except 204/205/206, not `HEAD`, a
+  `Content-Length` of at most 4 MiB, no `Content-Encoding`, `Content-Range`
+  or trailers. Everything else passes through with no buffering, a streamed
+  body of unknown length included. When the body is complete,
+  `Tracker.preview()` runs the detectors on a copy of the report without
+  ending or reporting the unit (statements of a later background task still
+  count for the usual report), so detection runs twice for such responses.
+  With problems, the report goes before the last `</body>` (else at the
+  end), `Content-Length` is rewritten and `ETag` and digest headers
+  dropped; a body starting with a UTF-16/32 byte order mark is left alone;
+  without problems, the held
+  messages are sent unchanged. WSGI defers `start_response` until the body
+  iterable has been read, replaces a held start (and drops its buffered
+  parts) on a later `exc_info` call, and gives up when the application uses
+  `write()`: it starts as asked and sends the buffered parts before the
+  written data. A held response that fails is recorded with status 500,
+  which the server answers. No loopback check or token: like the panel it
+  is a development aid, and the docs say never to enable it in production.
+  Escaping: `html.escape()` plus `xmlcharrefreplace` for the footer, JSON
+  with `<`, `>`, `&` as `\u` escapes for the script. Console mode is an
+  inline script, which a CSP without `'unsafe-inline'` blocks; adding its
+  hash to the application's `script-src` would mean parsing and rewriting a
+  policy the application owns (and a `default-src` fallback, nonces,
+  `strict-dynamic`, report-only and `<meta>` policies), so with any CSP
+  header or `<meta>` policy the middleware writes the footer instead,
+  without `style` attributes. An internal error there calls `fail()` and
+  sends the original response.
 
 - **Memory.** `max_events` (default 1000) caps the statements kept per
   request; past it they are only counted, as in the plugin.

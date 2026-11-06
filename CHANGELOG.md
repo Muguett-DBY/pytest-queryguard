@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- In-application mode: `page_report="footer"` or `"console"` adds a
+  request's findings to its own HTML page, as an `<aside>` before
+  `</body>` or as a `console.warn()` script, like Bullet in Rails. Only
+  for complete, uncompressed `text/html` responses with a `Content-Length`;
+  `Content-Length` is updated, and a page with a Content-Security-Policy
+  gets the footer instead of the script. Off by default (#280).
 - A patch for a `relationship-load` finding whose parent query line is
   certain: the loader option of the `fix:` hint added to the `select(...)` or
   `session.query(...)` call of that line, or to its `.options(...)`, with
