@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import tokenize
+import warnings
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -69,6 +70,7 @@ _FILTERS = frozenset(
 # Methods of a Result that return the same rows or objects.
 _RESULT_METHODS = frozenset(("all", "unique", "fetchall", "yield_per"))
 _MAX_DEPTH = 50
+_MAX_GENERATORS = 20  # "for" clauses of one comprehension that are followed
 _LIBRARIES = frozenset(("sqlalchemy", "sqlmodel"))
 _IGNORE = re.compile(r"#\s*queryguard:\s*ignore\b")
 _SKIP_DIRS = frozenset(
@@ -256,18 +258,33 @@ _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
 
 def _children(node: ast.AST) -> Iterator[ast.AST]:
-    """The nodes of a scope, without nested functions, lambdas and classes."""
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, _SCOPES):
-            continue
-        yield child
-        yield from _children(child)
+    """The nodes of a scope, without nested functions, lambdas and classes.
+
+    In source order, depth first; without recursion, so that code nested
+    deeper than the recursion limit (a long ``a + b + ...``) is no problem.
+    """
+    stack = [ast.iter_child_nodes(node)]
+    while stack:
+        for child in stack[-1]:
+            if isinstance(child, _SCOPES):
+                continue
+            yield child
+            stack.append(ast.iter_child_nodes(child))
+            break
+        else:
+            stack.pop()
 
 
 def _comprehension_loops(
     node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp,
 ) -> list[_Loop]:
-    """One loop per generator; each sees the later generators as loops inside it."""
+    """One loop per generator; each sees the later generators as loops inside it.
+
+    No loops for more than ``_MAX_GENERATORS``: following them costs the square
+    of their number, and real code does not have that many.
+    """
+    if len(node.generators) > _MAX_GENERATORS:
+        return []
     elts: tuple[ast.AST, ...] = (
         (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
     )
@@ -361,7 +378,10 @@ class _File:
     def __init__(self, path: str, source: str, models: Models) -> None:
         self.path = path
         self.models = models
-        self.tree = ast.parse(source, filename=path)
+        # the code's own warnings (an invalid escape) are not the check's
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.tree = ast.parse(source, filename=path)
         self.ignored = _ignored_lines(source)
         self.parents: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(self.tree):
@@ -387,7 +407,9 @@ class _File:
             for name, full in [*self.module_imports.items(), *self.from_imports.items()]
             if full.split(".")[0] in _LIBRARIES
         ) | frozenset(self._flask_sqlalchemy())
-        self.lines = source.splitlines()
+        # the lines as ast numbers them: not str.splitlines, which also splits
+        # at a form feed or a line separator inside a string or a comment
+        self.lines = re.split(r"\r\n|\r|\n", source)
         self.findings: dict[tuple[int, tuple[str, ...]], Finding] = {}
         self.loaded: dict[str, int] = {}
         self.suppressed: set[tuple[int, tuple[str, ...]]] = set()
@@ -701,16 +723,22 @@ class _File:
 
 
 def _functions(node: ast.AST, prefix: str) -> Iterator[tuple[ast.AST, str]]:
-    """Every function below ``node`` with its qualified name."""
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            name = prefix + child.name
-            yield child, name
-            yield from _functions(child, f"{name}.<locals>.")
-        elif isinstance(child, ast.ClassDef):
-            yield from _functions(child, f"{prefix}{child.name}.")
+    """Every function below ``node`` with its qualified name, in source order."""
+    stack = [(ast.iter_child_nodes(node), prefix)]
+    while stack:
+        children, prefix = stack[-1]
+        for child in children:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = prefix + child.name
+                yield child, name
+                stack.append((ast.iter_child_nodes(child), f"{name}.<locals>."))
+            elif isinstance(child, ast.ClassDef):
+                stack.append((ast.iter_child_nodes(child), f"{prefix}{child.name}."))
+            else:
+                stack.append((ast.iter_child_nodes(child), prefix))
+            break
         else:
-            yield from _functions(child, prefix)
+            stack.pop()
 
 
 def _target(loop: _Loop) -> tuple[str | None, ast.expr | None]:
@@ -733,14 +761,46 @@ def _target(loop: _Loop) -> tuple[str | None, ast.expr | None]:
 
 
 def _reassigned(body: Iterable[ast.AST], var: str) -> bool:
-    for node in body:
-        for child in [node, *_children(node)]:
-            if (
-                isinstance(child, ast.Name)
-                and child.id == var
-                and isinstance(child.ctx, (ast.Store, ast.Del))
+    """Whether the loop body binds ``var`` again, in any way.
+
+    A nested def or class binds its own name here, and rebinds ``var`` from
+    its body only through ``nonlocal``; other bindings in its body are its
+    own. A comprehension's target still counts (conservative).
+    """
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _SCOPES):
+            if _binds(node, var) or any(
+                isinstance(inner, ast.Nonlocal) and var in inner.names
+                for inner in ast.walk(node)
             ):
                 return True
+            continue
+        if _binds(node, var):
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def _binds(node: ast.AST, var: str) -> bool:
+    """Whether a node binds (or deletes) the name ``var``."""
+    if isinstance(node, ast.Name):
+        return node.id == var and isinstance(node.ctx, (ast.Store, ast.Del))
+    if isinstance(
+        node,
+        (ast.MatchAs, ast.MatchStar, ast.ExceptHandler, ast.FunctionDef,
+         ast.AsyncFunctionDef, ast.ClassDef),
+    ):  # fmt: skip
+        return node.name == var
+    if isinstance(node, ast.MatchMapping):
+        return node.rest == var
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return any(
+            (alias.asname or alias.name.split(".")[0]) == var for alias in node.names
+        )
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return var in node.names
     return False
 
 
@@ -756,12 +816,19 @@ def _ends(block: Sequence[ast.stmt], nested_loop: bool) -> bool:
             stmt.orelse, nested_loop
         ):
             return True
-        if (
-            isinstance(stmt, ast.If)
-            and _ends(stmt.body, nested_loop)
-            and _ends(stmt.orelse, nested_loop)
-        ):
+        if isinstance(stmt, ast.If) and _if_ends(stmt, nested_loop):
             return True
+    return False
+
+
+def _if_ends(stmt: ast.If, nested_loop: bool) -> bool:
+    """Whether every branch of an if (and its elif chain) leaves the loop."""
+    while _ends(stmt.body, nested_loop):
+        orelse = stmt.orelse
+        if len(orelse) == 1 and isinstance(orelse[0], ast.If):
+            stmt = orelse[0]  # an elif: a loop, not one call per branch
+            continue
+        return _ends(orelse, nested_loop)
     return False
 
 
@@ -773,30 +840,39 @@ def _collect(
     names: list[ast.Name],
     inner: list[_Loop],
 ) -> None:
-    """Uses of ``var`` that run once per iteration, and the loops inside."""
-    if isinstance(node, _SCOPES):
-        return
-    if isinstance(node, ast.Name):
-        if node.id == var and isinstance(node.ctx, ast.Load) and not ends:
-            names.append(node)
-        return
-    if not ends:
-        inner.extend(_loops(node))
-    is_loop = isinstance(node, (ast.For, ast.AsyncFor, ast.While))
-    for name, value in ast.iter_fields(node):
-        if isinstance(value, list):
-            if value and isinstance(value[0], ast.stmt):
-                # a break in a nested loop's body leaves only that loop
-                nested = nested_loop or (is_loop and name == "body")
-                block_ends = ends or _ends(value, nested)
-                for item in value:
-                    _collect(item, var, nested, block_ends, names, inner)
-            else:
-                for item in value:
-                    if isinstance(item, ast.AST):
-                        _collect(item, var, nested_loop, ends, names, inner)
-        elif isinstance(value, ast.AST):
-            _collect(value, var, nested_loop, ends, names, inner)
+    """Uses of ``var`` that run once per iteration, and the loops inside.
+
+    In source order, without recursion (see ``_children``).
+    """
+    stack = [(node, nested_loop, ends)]
+    while stack:
+        node, nested_loop, ends = stack.pop()
+        if isinstance(node, _SCOPES):
+            continue
+        if isinstance(node, ast.Name):
+            if node.id == var and isinstance(node.ctx, ast.Load) and not ends:
+                names.append(node)
+            continue
+        if not ends:
+            inner.extend(_loops(node))
+        is_loop = isinstance(node, (ast.For, ast.AsyncFor, ast.While))
+        later: list[tuple[ast.AST, bool, bool]] = []
+        for name, value in ast.iter_fields(node):
+            if isinstance(value, list):
+                if value and isinstance(value[0], ast.stmt):
+                    # a break in a nested loop's body leaves only that loop
+                    nested = nested_loop or (is_loop and name == "body")
+                    block_ends = ends or _ends(value, nested)
+                    later += [(item, nested, block_ends) for item in value]
+                else:
+                    later += [
+                        (item, nested_loop, ends)
+                        for item in value
+                        if isinstance(item, ast.AST)
+                    ]
+            elif isinstance(value, ast.AST):
+                later.append((value, nested_loop, ends))
+        stack.extend(reversed(later))
 
 
 @dataclass(frozen=True, slots=True)
@@ -851,7 +927,7 @@ def _key(node: ast.expr) -> str | None:
 
 
 def _option(
-    node: ast.expr, namespaces: frozenset[str]
+    node: ast.expr, namespaces: frozenset[str], depth: int = 0
 ) -> tuple[_Chain, list[_Chain]] | None:
     """(the current path, every path an option sets), or None if not understood.
 
@@ -859,7 +935,7 @@ def _option(
     ``orm.selectinload``); a method of anything else (``opt.joinedload``, with
     ``opt`` a variable) is not understood.
     """
-    if not isinstance(node, ast.Call):
+    if not isinstance(node, ast.Call) or depth > _MAX_DEPTH:
         return None
     func = node.func
     receiver: ast.expr | None = None
@@ -889,7 +965,7 @@ def _option(
             first: _Chain = ((key, name),)
             return first, [first]
         return None
-    parsed = _option(receiver, namespaces)
+    parsed = _option(receiver, namespaces, depth + 1)
     if parsed is None:
         return None
     current, chains = parsed
@@ -906,7 +982,7 @@ def _option(
     if name == "options":
         found = list(chains)
         for arg in node.args:
-            sub = _option(arg, namespaces)
+            sub = _option(arg, namespaces, depth + 1)
             if sub is None:
                 return None
             found += [(*current, *chain) for chain in sub[1]]
@@ -959,7 +1035,11 @@ class Report:
 
 
 def lint_source(source: str, path: str, models: Models) -> list[Finding]:
-    """The findings in one file's source; raises SyntaxError if it does not parse."""
+    """The findings in one file's source.
+
+    Raises SyntaxError if it does not parse, and RecursionError when it is
+    nested too deeply for :func:`ast.parse`.
+    """
     file = _File(path, source, models)
     file.scan()
     return sorted(file.results(), key=lambda f: (f.line, f.column, f.path))

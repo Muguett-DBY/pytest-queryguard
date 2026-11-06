@@ -32,7 +32,9 @@ import ast
 import difflib
 import functools
 import os
-from collections.abc import Iterable, Mapping
+import re
+import warnings
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -146,8 +148,11 @@ def _parse(path: str, mtime_ns: int, size: int) -> _Module | None:
     if len(data) != size or source.startswith("\ufeff") or lone_cr:
         return None
     try:
-        tree = ast.parse(source, filename=path)
-    except (SyntaxError, ValueError):
+        # the user's code may warn (an invalid escape): not this plugin's warning
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source, filename=path)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
     return _Module(source, tree)
 
@@ -224,26 +229,65 @@ def _module_names(tree: ast.Module) -> dict[str, str] | None:
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names[stmt.name] = "class" if isinstance(stmt, ast.ClassDef) else ""
         else:
-            # anything bound under an if, try or with: its origin is unknown
+            # anything bound under an if, try, with or match: its origin is unknown
             for node in ast.walk(stmt):
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-                    names[node.id] = ""
-                elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                    for alias in node.names:
-                        if alias.name == "*":
-                            return None
-                        names[alias.asname or alias.name.split(".", 1)[0]] = ""
-                elif isinstance(node, _SCOPES):
-                    names[node.name] = ""
+                if isinstance(node, ast.ImportFrom) and any(
+                    alias.name == "*" for alias in node.names
+                ):
+                    return None
+                names.update(dict.fromkeys(_bound(node), ""))
+    # a function that declares a module name global may rebind it
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Global):
+            names.update(dict.fromkeys(node.names, ""))
     return names
 
 
+def _bound(node: ast.AST) -> list[str]:
+    """The names a node binds in its scope."""
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return [node.id]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [alias.asname or alias.name.split(".", 1)[0] for alias in node.names]
+    if isinstance(node, _NAMED) and node.name:
+        # a def or class, except ... as name, a match capture
+        return [node.name]
+    if isinstance(node, ast.MatchMapping) and node.rest:
+        return [node.rest]
+    return []
+
+
+def _walk_scope(node: ast.AST) -> Iterator[ast.AST]:
+    """``node`` and the nodes below it, without the bodies of nested scopes.
+
+    A nested def or class still binds its own name.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if not isinstance(current, (*_SCOPES, ast.Lambda)):
+            stack.extend(ast.iter_child_nodes(current))
+
+
 def _local_names(module: _Module, node: ast.AST) -> set[str]:
-    """Names bound in the functions (and lambdas) around ``node``."""
+    """Names bound in the functions (and lambdas) around ``node``.
+
+    With the type parameters (PEP 695) of the functions and classes around
+    it, and the names a class body binds when ``node`` is in that body.
+    """
     names: set[str] = set()
     scope: ast.AST | None = module.parents.get(node)
+    in_function = False
     while scope is not None:
+        for param in getattr(scope, "type_params", None) or ():
+            names.add(param.name)
+        if isinstance(scope, ast.ClassDef) and not in_function:
+            for stmt in scope.body:
+                for inner in _walk_scope(stmt):
+                    names.update(_bound(inner))
         if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            in_function = True
             args = scope.args
             for arg in (
                 *args.posonlyargs,
@@ -256,19 +300,8 @@ def _local_names(module: _Module, node: ast.AST) -> set[str]:
             for inner in ast.walk(scope):
                 if inner is scope:
                     continue
-                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
-                    names.add(inner.id)
-                elif isinstance(inner, _NAMED) and inner.name:
-                    # a nested def or class, except ... as name, a match capture
-                    names.add(inner.name)
-                elif isinstance(inner, ast.MatchMapping) and inner.rest:
-                    names.add(inner.rest)
-                elif isinstance(inner, (ast.Import, ast.ImportFrom)):
-                    names.update(
-                        alias.asname or alias.name.split(".", 1)[0]
-                        for alias in inner.names
-                    )
-                elif isinstance(inner, (ast.Global, ast.Nonlocal)):
+                names.update(_bound(inner))
+                if isinstance(inner, (ast.Global, ast.Nonlocal)):
                     names.update(inner.names)
         scope = module.parents.get(scope)
     return names
@@ -436,7 +469,29 @@ def _option_edit(
         # an option for the same relationship already: adding one would conflict
         if isinstance(node, ast.Attribute) and node.attr in attributes:
             return None
-    return module.after(options.args[-1], f", {option}")
+    last = options.args[-1]
+    # ", option" after "(a)" in ".options((a))" would make a tuple of them
+    if _between(module, last, options) not in (")", ",)"):
+        return None
+    return module.after(last, f", {option}")
+
+
+def _between(module: _Module, first: ast.expr, outer: ast.expr) -> str:
+    """The code from the end of ``first`` to the end of ``outer``, which contains it.
+
+    Without whitespace, comments and line continuations: between two nodes
+    there is no string, so a "#" starts a comment.
+    """
+    assert first.end_lineno is not None and first.end_col_offset is not None
+    assert outer.end_lineno is not None and outer.end_col_offset is not None
+    start = module.column(first.end_lineno, first.end_col_offset)
+    end = module.column(outer.end_lineno, outer.end_col_offset)
+    lines = module.lines[first.end_lineno - 1 : outer.end_lineno]
+    if len(lines) == 1:
+        text = lines[0][start:end]
+    else:
+        text = lines[0][start:] + "".join(lines[1:-1]) + lines[-1][:end]
+    return re.sub(r"#[^\n]*|\\\r?\n|\s", "", text)
 
 
 def _ordered(insertions: Iterable[Insertion]) -> list[Insertion]:

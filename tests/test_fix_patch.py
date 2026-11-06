@@ -6,14 +6,17 @@ it is not gives none.
 
 from __future__ import annotations
 
+import ast
 import json
 import ntpath
 import os
 import posixpath
 import shutil
 import subprocess
+import sys
 import textwrap
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -100,9 +103,15 @@ def _git_apply(tmp_path: Path, patch: Path, file: str) -> str:
     if _GIT is None:
         pytest.skip("git is not installed")
     env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path.parent)}
+    # Windows runners set core.autocrlf, which would rewrite the line ends
+    plain = ["-c", "core.autocrlf=false", "-c", "core.safecrlf=false"]
     for args in (["apply", "--check", str(patch)], ["apply", str(patch)]):
         subprocess.run(
-            [_GIT, *args], cwd=tmp_path, check=True, env=env, capture_output=True
+            [_GIT, *plain, *args],
+            cwd=tmp_path,
+            check=True,
+            env=env,
+            capture_output=True,
         )
     return (tmp_path / file).read_text(encoding="utf-8")
 
@@ -423,6 +432,57 @@ def test_columns_count_characters_and_utf16_units(tmp_path: Path) -> None:
             HEADER.replace("import Customer, Order", "import Customer, Item as Order"),
             id="class-imported-under-another-name",
         ),
+        pytest.param(
+            """\
+            def load(session):
+                return session.scalars(select(Order).options((selectinload(Order.items)))).all()  # parents
+            """,
+            HEADER,
+            id="an-option-in-parentheses-of-its-own",
+        ),
+        pytest.param(
+            """\
+            match 1:
+                case Order:
+                    pass
+
+
+            def load(session):
+                return session.scalars(select(Order)).all()  # parents
+            """,
+            HEADER,
+            id="class-rebound-by-a-module-level-match",
+        ),
+        pytest.param(
+            """\
+            def reset():
+                global Order
+                Order = None
+
+
+            def load(session):
+                return session.scalars(select(Order)).all()  # parents
+            """,
+            HEADER,
+            id="class-rebound-through-a-global-statement",
+        ),
+        pytest.param(
+            """\
+            class load:
+                joinedload = staticmethod(print)
+                rows = session.scalars(select(Order)).all()  # parents
+            """,
+            HEADER,
+            id="loader-bound-in-the-class-body",
+        ),
+        pytest.param(
+            """\
+            def load[Order](session):
+                return session.scalars(select(Order)).all()  # parents
+            """,
+            HEADER,
+            id="class-is-a-type-parameter",
+        ),
     ],
 )
 def test_no_patch_when_the_line_is_not_certain(
@@ -430,6 +490,65 @@ def test_no_patch_when_the_line_is_not_certain(
 ) -> None:
     file = _write(tmp_path, body, header=header)
     assert _make(tmp_path, _finding(file)) is None
+
+
+def test_options_over_several_lines_with_a_comment(tmp_path: Path) -> None:
+    file = _write(
+        tmp_path,
+        """\
+        def load(session):
+            return session.scalars(select(Order).options(  # parents
+                selectinload(Order.items),  # the items
+            )).all()
+        """,
+        header=HEADER.replace("import Session", "import Session, selectinload"),
+    )
+    fix = _make(tmp_path, _finding(file))
+    assert fix is not None
+    after = _patched(tmp_path, fix)
+    assert (
+        "        selectinload(Order.items), joinedload(Order.customer),  # the items\n"
+    ) in after
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" and sys.version_info < (3, 12),
+    reason="the parser of Python < 3.12 on Windows overflows the C stack (crash)",
+)
+def test_code_too_deep_for_ast_gives_no_patch(tmp_path: Path) -> None:
+    file = _write(
+        tmp_path,
+        """\
+        def load(session):
+            return session.scalars(select(Order)).all()  # parents
+        """,
+        header=HEADER + "X = " + " + ".join(["1"] * 100_000) + "\n",
+    )
+    try:
+        ast.parse(file.read_text())
+    except (RecursionError, MemoryError):
+        assert _make(tmp_path, _finding(file)) is None
+    else:  # pragma: no cover - a parser that takes it
+        pytest.skip("this Python parses it")
+
+
+def test_warnings_of_the_parsed_code_are_not_shown(tmp_path: Path) -> None:
+    file = _write(
+        tmp_path,
+        """\
+        PATTERN = "\\d+"
+
+
+        def load(session):
+            return session.scalars(select(Order)).all()  # parents
+        """,
+    )
+    assert '"\\d+"' in file.read_text()  # an invalid escape
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fix = _make(tmp_path, _finding(file))
+    assert fix is not None
+    assert caught == []
 
 
 def test_no_patch_for_a_chain_class_the_module_does_not_name(tmp_path: Path) -> None:
