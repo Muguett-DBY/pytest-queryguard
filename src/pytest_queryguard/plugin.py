@@ -1396,12 +1396,13 @@ def _note_blocks(
     item: pytest.Item,
     settings: _Settings,
     sieve: blocks.Sieve,
-    entered: blocks.Entered,
+    collector: QueryCollector,
     kinds: tuple[str, ...],
 ) -> None:
     """Note the ignore() blocks of the test, for the stale-block report.
 
-    A block is stale when no test that entered it left out a finding with it.
+    A block is stale when no test that entered it left out a finding with it,
+    in the plugin's analysis or in a check run in the test (``blocks_used``).
     Not noted: blocks of a test whose analysis did not run (an internal error,
     a bare allow_nplusone marker) or stopped storing events, and blocks for
     kinds the test did not look for (``kinds``): they could not have left
@@ -1410,13 +1411,13 @@ def _note_blocks(
     if internal_error() is not None or _nplusone_ignores(item)[0]:
         return
     root = item.config.rootpath
-    for block in list(entered.values()):
+    for block in list(collector.blocks_entered.values()):
         if not any(block.matches(kind) for kind in kinds):
             continue
         where = _block_site(block, root)
         if where is not None:
             settings.blocks_entered.setdefault(where, block.describe())
-    for block in sieve.used:
+    for block in (*sieve.used, *list(collector.blocks_used)):
         where = _block_site(block, root)
         if where is not None:
             settings.blocks_used.add(where)
@@ -2304,7 +2305,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         collector.strict_threshold = settings.relationship
         collector.strict_by_scope = settings.repeat_scope == SCOPE_SESSION
     strict_error: NPlusOneDetected | None = None
-    recording = blocks.record_entered(collector.blocks_entered)
+    recording = blocks.record_entered(collector.blocks_entered, collector.blocks_used)
     try:
         result = yield
     except NPlusOneDetected as exc:
@@ -2534,7 +2535,7 @@ def _results(
         index = _analyse_indexes(item, collector, settings, exempt, sieve)
         try:
             kinds = _analysed_kinds(settings, collector, trackers)
-            _note_blocks(item, settings, sieve, collector.blocks_entered, kinds)
+            _note_blocks(item, settings, sieve, collector, kinds)
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "stale ignore() blocks")
         if index is not None:

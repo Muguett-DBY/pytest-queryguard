@@ -515,6 +515,81 @@ def test_assert_no_nplusone_leaves_out_the_block() -> None:
     log.assert_no_nplusone()
 
 
+def test_a_block_used_only_by_assert_no_nplusone_is_not_stale(
+    pytester: pytest.Pytester,
+) -> None:
+    # The plugin's threshold is too high to find the N+1, so only the
+    # assert_no_nplusone() call leaves out a finding with the block (#284).
+    _project(
+        pytester,
+        """
+def test_log():
+    session = make_sync_session()
+    with record_queries() as log, ignore("relationship-load"):
+        loop(session)
+    log.assert_no_nplusone(relationship_threshold=2)
+
+
+def test_log_in_a_thread():
+    # a check run in a copy of the test's context counts too
+    session = make_sync_session()
+    with record_queries() as log, ignore("repeated-statement"):
+        for _ in range(3):
+            session.query(Order).filter(Order.id == 1).all()
+    context = contextvars.copy_context()
+    thread = threading.Thread(
+        target=context.run,
+        args=(lambda: log.assert_no_nplusone(repeat_threshold=2),),
+    )
+    thread.start()
+    thread.join()
+""",
+    )
+    pytester.makeini(
+        """
+[pytest]
+queryguard_relationship_threshold = 50
+queryguard_repeat_threshold = 50
+"""
+    )
+    result = _run(pytester)
+    result.assert_outcomes(passed=2)
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_a_block_assert_no_nplusone_did_not_use_is_still_stale(
+    pytester: pytest.Pytester,
+) -> None:
+    _project(
+        pytester,
+        """
+def test_log():
+    session = make_sync_session()
+    with record_queries() as log, ignore("relationship-load"):
+        loop(session)
+    log.assert_no_nplusone(relationship_threshold=2)
+    with ignore("relationship-load"):
+        session.query(Order).all()
+""",
+    )
+    pytester.makeini(
+        """
+[pytest]
+queryguard_relationship_threshold = 50
+"""
+    )
+    result = _run(pytester)
+    result.assert_outcomes(passed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "*queryguard: stale ignores*",
+            "ignore() blocks that left out no finding in this run:",
+            "  test_suite.py:19: ignore('relationship-load')",
+        ]
+    )
+    result.stdout.no_fnmatch_line("*test_suite.py:16:*")
+
+
 # --- other kinds ---
 
 

@@ -51,6 +51,9 @@ class QueryCollector:
     # The ignore() blocks entered in the measured test's context, for the
     # stale-block report (see blocks.record_entered).
     blocks_entered: dict[tuple[str, int], IgnoreBlock] = field(default_factory=dict)
+    # The blocks that left out a finding in a check run in that context, such
+    # as QueryLog.assert_no_nplusone (an ordered set).
+    blocks_used: dict[IgnoreBlock, None] = field(default_factory=dict)
     explained: set[object] = field(default_factory=set)
     # A statement is explained at its first run only. For one first explained
     # inside an ignore() block: explain key -> the blocks of every run of it
