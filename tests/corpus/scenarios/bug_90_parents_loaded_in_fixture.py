@@ -19,6 +19,9 @@ STATE: dict[str, object] = {}
 
 
 def setup(ctx: Ctx) -> None:
+    leftover = STATE.pop("session", None)  # of a run that never started
+    if leftover is not None:
+        leftover.close()  # type: ignore[attr-defined]
     shop.setup(ctx)
     session = Session(ctx.engine())
     STATE["session"] = session

@@ -30,7 +30,8 @@ pytest.importorskip("flask_sqlalchemy")
 pytest.importorskip("factory")
 
 _GIT = shutil.which("git")
-_CHANGED = re.compile(r"^\+\+\+ b/tests/corpus/scenarios/(\w+)\.py$", re.MULTILINE)
+_FILES = re.compile(r"^\+\+\+ b/(\S+)$", re.MULTILINE)
+_SCENARIO = re.compile(r"tests/corpus/scenarios/(\w+)\.py")
 
 
 def _copy_corpus(directory: Path) -> None:
@@ -64,7 +65,7 @@ def test_patches_apply_and_remove_the_n_plus_one(tmp_path: Path) -> None:
     directory = tmp_path / "session"
     _copy_corpus(directory)
     # the copy, not the checkout, is what the session imports and patches
-    env = {"PYTHONPATH": str(directory)}
+    env = {"PYTHONPATH": f"{directory}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"}
     before = runner.run_subprocess(
         directory,
         names,
@@ -72,7 +73,12 @@ def test_patches_apply_and_remove_the_n_plus_one(tmp_path: Path) -> None:
         extra_env=env,
     )
     patch = (directory / "fix.patch").read_text(encoding="utf-8")
-    patched = set(_CHANGED.findall(patch))
+    patched = set()
+    for file in _FILES.findall(patch):
+        match = _SCENARIO.fullmatch(file)
+        # a shared module (a domain, kit.py) would change other scenarios too
+        assert match is not None, f"the patch changes {file}"
+        patched.add(match.group(1))
     expected = {s.name for s in scenarios if getattr(s.module, "PATCH", False)}
     assert patched == expected, (
         f"patched but not expected: {sorted(patched - expected)}; "
@@ -84,8 +90,11 @@ def test_patches_apply_and_remove_the_n_plus_one(tmp_path: Path) -> None:
     _git(directory, "apply", "--check", "fix.patch")
     _git(directory, "apply", "fix.patch")
     after = runner.run_subprocess(directory / "again", names, extra_env=env)
-    for name in sorted(patched):
+    for name in names:
         result = after[name]
         assert result.failed == bool(result.findings), name
-        assert kit.REL not in result.kinds, (name, result.findings)
-        assert result.kinds <= before[name].kinds, (name, result.findings)
+        if name in patched:
+            assert kit.REL not in result.kinds, (name, result.findings)
+            assert result.kinds <= before[name].kinds, (name, result.findings)
+        else:
+            assert result.kinds == before[name].kinds, (name, result.findings)
