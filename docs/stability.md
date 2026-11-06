@@ -120,6 +120,10 @@ defaults, labels or messages, or remove them, with a changelog entry under
   `internal_error`, `opentelemetry_reporter`, `sentry_reporter`) and the
   panel's JSON. See
   [In-application mode](in-app.md).
+- The static check, `python -m pytest_queryguard.lint`: its options, what it
+  reports, its text output, and the rule `queryguard/static-relationship-load`
+  in its SARIF output. Its JSON output has a `format` key; a change to the
+  documented keys increments it. See [Static check](static-check.md).
 - The MCP server, `python -m pytest_queryguard.mcp`: its tools, their
   arguments and the fields of their results. See
   [MCP server](mcp.md).

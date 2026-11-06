@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+<<<<<<< HEAD
 - An experimental MCP server for coding agents such as Claude Code and
   Cursor: `python -m pytest_queryguard.mcp` speaks the Model Context Protocol
   over stdio with the standard library only, no new dependency. Its tools
@@ -18,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON. See docs/mcp.md.
 - `--queryguard-json`: each finding has a `message`, its report text as the
   terminal shows it, without the indent (the wording is not stable).
+=======
+- An experimental static check, `python -m pytest_queryguard.lint --models
+  app.models PATHS...`, reports likely N+1 queries without running tests: a
+  loop or comprehension over an ORM query (`session.scalars(select(C))`,
+  `session.execute(...).scalars()`, `session.query(C)`, async sessions,
+  with the query in a variable of the same function) that reads a
+  `lazy="select"` relationship the query has no loader option for, along
+  chains and nested loops. It imports the `--models` modules to read the
+  mappers and only parses the code it checks. It is conservative and stays
+  inside one function. Output as text, JSON or SARIF (rule
+  `queryguard/static-relationship-load`), exit status 1 on findings,
+  `# queryguard: ignore` on the line to suppress. See docs/static-check.md.
+>>>>>>> origin/main
 - In-application mode: `page_report="footer"` or `"console"` adds a
   request's findings to its own HTML page, as an `<aside>` before
   `</body>` or as a `console.warn()` script, like Bullet in Rails. Only
