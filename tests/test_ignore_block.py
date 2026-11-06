@@ -515,6 +515,110 @@ def test_assert_no_nplusone_leaves_out_the_block() -> None:
     log.assert_no_nplusone()
 
 
+def test_a_block_used_only_by_assert_no_nplusone_is_not_stale(
+    pytester: pytest.Pytester,
+) -> None:
+    # The plugin's threshold is too high to find the N+1, so only the
+    # assert_no_nplusone() call leaves out a finding with the block (#284).
+    _project(
+        pytester,
+        """
+def test_log():
+    session = make_sync_session()
+    with record_queries() as log, ignore("relationship-load"):
+        loop(session)
+    log.assert_no_nplusone(relationship_threshold=2)
+
+
+def test_log_in_a_thread():
+    # a check run in a copy of the test's context counts too
+    session = make_sync_session()
+    with record_queries() as log, ignore("repeated-statement"):
+        for _ in range(3):
+            session.query(Order).filter(Order.id == 1).all()
+    context = contextvars.copy_context()
+    thread = threading.Thread(
+        target=context.run,
+        args=(lambda: log.assert_no_nplusone(repeat_threshold=2),),
+    )
+    thread.start()
+    thread.join()
+""",
+    )
+    pytester.makeini(
+        """
+[pytest]
+queryguard_relationship_threshold = 50
+queryguard_repeat_threshold = 50
+"""
+    )
+    result = _run(pytester)
+    result.assert_outcomes(passed=2)
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_a_block_used_in_a_test_with_a_bare_marker_is_not_stale(
+    pytester: pytest.Pytester,
+) -> None:
+    _project(
+        pytester,
+        """
+def helper(session, n_plus_one):
+    with ignore("relationship-load"):
+        if n_plus_one:
+            loop(session)
+
+
+@pytest.mark.allow_nplusone
+def test_marked():
+    session = make_sync_session()
+    with record_queries() as log:
+        helper(session, True)
+    log.assert_no_nplusone(relationship_threshold=2)
+
+
+def test_not_used():
+    helper(make_sync_session(), False)
+""",
+    )
+    result = _run(pytester)
+    result.assert_outcomes(passed=2)
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_a_block_assert_no_nplusone_did_not_use_is_still_stale(
+    pytester: pytest.Pytester,
+) -> None:
+    _project(
+        pytester,
+        """
+def test_log():
+    session = make_sync_session()
+    with record_queries() as log, ignore("relationship-load"):
+        loop(session)
+    log.assert_no_nplusone(relationship_threshold=2)
+    with ignore("relationship-load"):
+        session.query(Order).all()
+""",
+    )
+    pytester.makeini(
+        """
+[pytest]
+queryguard_relationship_threshold = 50
+"""
+    )
+    result = _run(pytester)
+    result.assert_outcomes(passed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "*queryguard: stale ignores*",
+            "ignore() blocks that left out no finding in this run:",
+            "  test_suite.py:19: ignore('relationship-load')",
+        ]
+    )
+    result.stdout.no_fnmatch_line("*test_suite.py:16:*")
+
+
 # --- other kinds ---
 
 
@@ -572,6 +676,73 @@ def test_scan_twice_inside():
     result = _run(pytester, "--queryguard-index-check")
     result.assert_outcomes(passed=1, failed=1)
     result.stdout.fnmatch_lines(["FAILED*test_scan_again*"])
+
+
+def test_a_run_outside_the_block_before_ddl_still_counts(
+    pytester: pytest.Pytester,
+) -> None:
+    # DDL makes the index check explain a statement again; the runs made
+    # before it outside the block must still count (#284).
+    _project(
+        pytester,
+        """
+from sqlalchemy import text
+
+
+def scan(session):
+    session.query(Order).filter(Order.customer_id == 1).count()
+
+
+def ddl(session):
+    session.execute(text("CREATE TABLE IF NOT EXISTS qg_extra (id INTEGER)"))
+
+
+def test_outside_then_ddl_then_inside():
+    session = make_sync_session()
+    scan(session)
+    ddl(session)
+    with ignore("missing-index"):
+        scan(session)
+
+
+def test_inside_outside_then_ddl_then_inside():
+    session = make_sync_session()
+    with ignore("missing-index"):
+        scan(session)
+    scan(session)
+    ddl(session)
+    with ignore("missing-index"):
+        scan(session)
+
+
+def test_inside_then_ddl_then_inside():
+    session = make_sync_session()
+    with ignore("missing-index"):
+        scan(session)
+    ddl(session)
+    with ignore("missing-index"):
+        scan(session)
+
+
+def test_inside_then_an_index_then_outside():
+    # the runs after the index do not scan: only the run inside did
+    session = make_sync_session()
+    with ignore("missing-index"):
+        scan(session)
+    session.execute(text("CREATE INDEX ix_orders_customer ON orders (customer_id)"))
+    for _ in range(3):
+        scan(session)
+""",
+    )
+    result = _run(pytester, "--queryguard-index-check")
+    result.assert_outcomes(passed=2, failed=2)
+    result.stdout.fnmatch_lines(
+        [
+            "FAILED*test_outside_then_ddl_then_inside*",
+            "FAILED*test_inside_outside_then_ddl_then_inside*",
+        ],
+        consecutive=False,
+    )
 
 
 def test_missing_index(pytester: pytest.Pytester) -> None:

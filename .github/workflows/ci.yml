@@ -312,8 +312,9 @@ jobs:
           tests/test_mysql_index_parameters.py
 
   # The GitHub Action in action/ on a tiny sample project (examples/action-sample)
-  # with one N+1 query: one run that reports it and does not fail, one that
-  # fails, one with the finding in a baseline.
+  # with one N+1 query: one run that reports it and does not fail (and shows
+  # the query-count trend of the last runs on main), one that fails, one with
+  # the finding in a baseline.
   # The upload step is skipped by the action on pull requests from forks and
   # for Dependabot. No step here uploads: a sample upload with no results
   # makes every pull request say "1 configuration not found" in its checks.
@@ -321,7 +322,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # the first run compares its query counts with main and comments them
+      # the first run compares its query counts with main and comments them,
+      # with the trend of the last runs on main
       actions: read
       pull-requests: write
     steps:
@@ -336,11 +338,21 @@ jobs:
           sarif-file: report.sarif
           fail: "false"
           upload: "false"
+          trend: "5"
       - name: Check the SARIF file and the outputs
         env:
           EXIT_CODE: ${{ steps.report.outputs.exit-code }}
           JSON_FILE: ${{ steps.report.outputs.json-file }}
+          TREND_REPORT: ${{ steps.report.outputs.trend-report }}
+          # the trend runs on pull requests and on pushes to main, and then
+          # always writes a report (with this run alone if nothing else)
+          TREND_EXPECTED: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: |
+          if [ "$TREND_EXPECTED" = "true" ]; then
+            test -n "$TREND_REPORT"
+            grep -q "query counts over the last" "$TREND_REPORT"
+            grep -q "(this run)" "$TREND_REPORT"
+          fi
           python - <<'PY'
           import json, os
 
