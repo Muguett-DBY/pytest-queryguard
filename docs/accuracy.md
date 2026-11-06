@@ -1,7 +1,7 @@
 # Accuracy on a corpus of realistic code
 
 How often does pytest-queryguard report code that is fine, and how often does it
-miss code that is not? This page measures that on a corpus of 143 small
+miss code that is not? This page measures that on a corpus of 197 small
 scenarios, publishes the numbers, and lists every disagreement. The scenarios
 were written by the author of the plugin, so read the numbers as a regression
 baseline and a list of known limits, not as a benchmark of how the plugin does on
@@ -9,10 +9,11 @@ your code.
 
 ## Method
 
-- The corpus is in `tests/corpus/scenarios`: one module per scenario, 68 marked
-  **BUG** (an N+1 or a row-by-row write that a reviewer would ask to fix) and 75
-  marked **CLEAN** (code that is fine, including the fixes: `selectinload`,
-  `joinedload`, `contains_eager`, bulk statements, pagination, caches). The
+- The corpus is in `tests/corpus/scenarios`: one module per scenario, 96 marked
+  **BUG** (an N+1, a row-by-row write, a cartesian load, an eager load or columns
+  loaded for nothing: what a reviewer would ask to fix) and 101 marked **CLEAN**
+  (code that is fine, including the fixes: `selectinload`, `joinedload`,
+  `contains_eager`, `load_only`, bulk statements, pagination, caches). The
   docstring of each module says which, and why. The verdict is mine, from reading
   the code; for a BUG the module also names the finding kinds a perfect tool
   would report.
@@ -28,14 +29,27 @@ your code.
   without `selectinload`, `with_for_update`, nested transactions, upserts
   (`ON CONFLICT DO UPDATE`), ORM bulk `INSERT` and `UPDATE` with a list of
   rows, and async versions (`AsyncSession`, `awaitable_attrs`, `run_sync`,
-  `stream_scalars`). Each scenario seeds a SQLite file in a setup step that is
+  `stream_scalars`). Since 2026-11-06 also: detail and export pages that
+  join two or three collections, `joinedload` chains, a collection next to a
+  many-to-one, `contains_eager` over a filtering join, `with_polymorphic` with a
+  collection per subclass, eager loads that nothing reads (a repository method
+  reused by a page that needs less, a chain whose second link is never read)
+  and eager loads that something does read (Pydantic, an `association_proxy`,
+  a delete cascade), wide rows of which a page reads two columns, `load_only`,
+  `deferred` columns and `column_property`, association objects, a
+  marshmallow-style nested schema, an `except Exception` around a view,
+  `ignore()` blocks (around a loop, as a decorator, around `asyncio.gather`,
+  and one that a later access escapes), and parents loaded in a fixture. Each scenario seeds a SQLite file in a setup step that is
   not measured; only `run()` is.
 - Every scenario runs as a test of a real pytest session with the plugin
   installed, once per configuration: the defaults, then each opt-in rule on its
   own (`queryguard_small_repeat_threshold = 2`, `queryguard_write_loop_threshold = 2`,
-  `queryguard_column_load_threshold = 2`, `queryguard_unused_eager_load = fail`),
-  then `queryguard_repeat_scope = session`, then all opt-in rules together.
-  The findings of each test are read back from the plugin.
+  `queryguard_column_load_threshold = 2`, `queryguard_unused_eager_load = fail`,
+  `queryguard_unused_columns = fail`), then `queryguard_repeat_scope = session`,
+  then `queryguard_strict = true`, then all opt-in rules together.
+  The findings of each test are read back from the plugin, those that fail the
+  test and those that only warn: `cartesian-load` warns by default, and a
+  warning is a finding the user sees, so it is measured in every configuration.
 - A scenario is a true positive for a kind when the kind is in its expected set
   and the plugin reports it; a false positive when the plugin reports a kind that
   is not expected; a false negative when an expected kind is not reported.
@@ -49,44 +63,63 @@ your code.
   limit is a strict `xfail` with its reason, so a change in the plugin's
   behaviour shows up as a failing test and the entry must be removed.
   `scripts/accuracy_report.py` prints the tables below.
+- `tests/corpus/test_fix_patches.py` runs every BUG scenario with a
+  relationship-load with `--queryguard-write-patch`, applies the patch with
+  `git apply` and runs the scenarios again (see
+  [The patch of `--queryguard-write-patch`](#the-patch-of-queryguard-write-patch)).
 
-Four scenarios about `session.refresh()` were added after the measurement
-below: `bug_69_lazy_select_next_to_refresh`, `bug_70_refresh_each_after_bulk_insert`,
-`clean_76_refresh_after_create_selectin` and `clean_77_refresh_after_each_create`
-(see "Refreshing an object with an eager relationship" and "Refresh after a
-write" in [How detection works](how-detection-works.md)). On the 145 scenarios
-(Python 3.12.13, SQLAlchemy 2.1.1, 2026-10-13), the default configuration flags
-61 of 64 BUG and 1 of 81 CLEAN scenarios: relationship-load 20 TP, 0 FP, 0 FN;
-column-load 5 TP, 0 FP, 1 FN; repeated-statement unchanged. Before the refresh
-fixes the same 145 gave 2 relationship-load and 1 column-load false positives
-(both new CLEAN scenarios) with no other difference. With the column-load
-threshold at 2, column-load is 6 TP, 1 FP (`clean_22`, documented below), 0 FN.
-The tables below are still the 141-scenario measurement.
-
-Measured on 2026-10-13 on Linux 7.0.0 (x86_64, 13th Gen Intel Core i5-13500H, 16
-threads), Python 3.14.4, SQLAlchemy 2.1.1, pytest 9.1.1, Flask-SQLAlchemy 3.1.1,
-FastAPI 0.141.1, pytest-queryguard 0.4.0rc2 at the head of `main`, with
-`uv run python scripts/accuracy_report.py --compare <python>`. SQLModel was not
-installed (it needs SQLAlchemy below 2.1 and is only installed in the SQLAlchemy
-2.0 CI job), so 141 of the 143 scenarios ran: 67 BUG and 74 CLEAN. All numbers on
-this page are for those 141 and SQLite. The same corpus on PostgreSQL 17 is in
-[On PostgreSQL](#on-postgresql).
+Measured on 2026-11-06 on Linux 7.0.0 (x86_64, 13th Gen Intel Core i5-13500H, 16
+threads), Python 3.13.18, SQLAlchemy 2.1.1, pytest 9.1.1, Flask-SQLAlchemy 3.1.1,
+FastAPI 0.141.1, pytest-queryguard 0.7.0 at `main` 14bf312 plus the corpus
+changes of its pull request, with `uv run python scripts/accuracy_report.py`.
+SQLModel was not installed (it needs SQLAlchemy below 2.1 and is only installed
+in the SQLAlchemy 2.0 CI job), so 195 of the 197 scenarios ran: 95 BUG and 100
+CLEAN. All numbers on this page are for those 195 and SQLite, except the
+comparison with other tools and the PostgreSQL run, which are the earlier
+141-scenario measurements and say so.
 
 ## Results, default configuration
 
-59 of the 62 BUG scenarios that the default rules can report are flagged (the other
-5 BUG scenarios are write loops and an unused eager load, which are opt-in), and 1 of
-the 79 scenarios without an expected default kind is flagged.
+77 of the 81 BUG scenarios that the default rules can report are flagged (the
+other 14 BUG scenarios are write loops, unused eager loads and unused columns,
+which are opt-in), and 3 of the 114 scenarios without an expected default kind
+are flagged.
 
 | kind | TP | FP | FN | precision | recall |
 |---|---|---|---|---|---|
-| relationship-load | 19 | 0 | 0 | 100% | 100% |
-| repeated-statement | 36 | 1 | 2 | 97% | 95% |
-| column-load | 4 | 0 | 1 | 100% | 80% |
+| relationship-load | 29 | 1 | 0 | 97% | 100% |
+| repeated-statement | 37 | 1 | 2 | 97% | 95% |
+| column-load | 6 | 0 | 1 | 100% | 86% |
+| cartesian-load | 6 | 1 | 1 | 86% | 86% |
 
-The small counts (19, 36, 4) mean that one scenario moves a percentage by several
-points. The relationship-load row is 19 scenarios, not a claim about every ORM
-pattern.
+The small counts (29, 37, 6, 7) mean that one scenario moves a percentage by
+several points. The relationship-load row is 30 scenarios, not a claim about
+every ORM pattern.
+
+### The newer kinds, before and after 2026-11-06
+
+Before 2026-11-06 the corpus had 147 scenarios (145 ran) and did not measure
+`cartesian-load`, `unused-columns` or strict mode at all; `unused-eager-load`
+was one BUG scenario. 50 scenarios were added for them. The plugin's findings
+did not change: the one fix of that change is to the patch file (see
+[The patch of `--queryguard-write-patch`](#the-patch-of-queryguard-write-patch)).
+
+| kind (configuration) | before: TP, FP, FN | after: TP, FP, FN | precision, recall after |
+|---|---|---|---|
+| `cartesian-load` (default, warns) | not measured | 6, 1, 1 | 86%, 86% |
+| `unused-eager-load` (`= fail`) | 1, 0, 0 | 5, 0, 0 | 100%, 100% |
+| `unused-columns` (`= fail`) | not measured | 8, 2, 1 | 80%, 89% |
+| `relationship-load` (strict) | not measured | 27, 1, 2 | 96%, 93% |
+| `repeated-statement` (strict) | not measured | 36, 1, 3 | 97%, 92% |
+| `relationship-load` (default) | 20, 0, 0 | 29, 1, 0 | 97%, 100% |
+| `repeated-statement` (default) | 36, 1, 2 | 37, 1, 2 | 97%, 95% |
+| `column-load` (default) | 5, 0, 1 | 6, 0, 1 | 100%, 86% |
+
+The "before" column for the default kinds is the 145-scenario run of
+2026-11-06 on the same machine and packages, before the new scenarios. The
+relationship-load false positive is a new CLEAN scenario,
+`clean_93_two_single_object_lookups`, that shows a choice of the rule, not a
+change of the plugin (see the disagreements below).
 
 The repeated-statement precision went from 83% to 89% when 13 BUG and 10 CLEAN
 scenarios were added on 2026-10-13, with the plugin unchanged: the same 4 false
@@ -133,20 +166,29 @@ reported by the small-repeat rule either.
 
 | configuration | kind | TP | FP | FN | precision | recall |
 |---|---|---|---|---|---|---|
-| small-repeat = 2 | repeated-statement | 38 | 2 | 0 | 95% | 100% |
-| write-loop = 2 | write-loop | 7 | 2 | 0 | 78% | 100% |
-| column-load threshold 2 | column-load | 5 | 1 | 0 | 83% | 100% |
-| unused-eager-load = fail | unused-eager-load | 1 | 0 | 0 | 100% | 100% |
-| repeat scope `session` | repeated-statement | 32 | 1 | 6 | 97% | 84% |
-| all four rules | repeated-statement | 38 | 2 | 0 | 95% | 100% |
-| all four rules | column-load | 5 | 1 | 0 | 83% | 100% |
-| all four rules | write-loop | 7 | 2 | 0 | 78% | 100% |
-| all four rules | unused-eager-load | 1 | 0 | 0 | 100% | 100% |
+| small-repeat = 2 | repeated-statement | 39 | 2 | 0 | 95% | 100% |
+| write-loop = 2 | write-loop | 7 | 3 | 0 | 70% | 100% |
+| column-load threshold 2 | column-load | 7 | 1 | 0 | 88% | 100% |
+| unused-eager-load = fail | unused-eager-load | 5 | 0 | 0 | 100% | 100% |
+| unused-columns = fail | unused-columns | 8 | 2 | 1 | 80% | 89% |
+| repeat scope `session` | repeated-statement | 33 | 1 | 6 | 97% | 85% |
+| strict = true | relationship-load | 27 | 1 | 2 | 96% | 93% |
+| strict = true | repeated-statement | 36 | 1 | 3 | 97% | 92% |
+| all five rules | repeated-statement | 39 | 2 | 0 | 95% | 100% |
+| all five rules | column-load | 7 | 1 | 0 | 88% | 100% |
+| all five rules | write-loop | 7 | 3 | 0 | 70% | 100% |
+| all five rules | unused-eager-load | 5 | 0 | 0 | 100% | 100% |
+| all five rules | unused-columns | 8 | 2 | 1 | 80% | 89% |
 
-`relationship-load` stays at 19 TP, 0 FP, 0 FN in every configuration. The
-unused-eager-load row is one BUG scenario and nothing else, so it says only that
-the rule works on its textbook case. With all rules on, every BUG scenario is
-flagged, and 5 of 74 CLEAN scenarios are.
+`relationship-load` stays at 29 TP, 1 FP, 0 FN and `cartesian-load` at 6 TP,
+1 FP, 1 FN in every configuration but strict. The unused-eager-load row is
+five BUG scenarios (a joined many-to-one of which only the foreign key is
+read, the unread second link of a `selectinload` chain, a repository method
+reused by a page that needs less, an async handler) against CLEAN scenarios
+where the eager load is read by some rows only, by Pydantic, by an
+`association_proxy`, or by a delete cascade: no false positive. With all
+rules on, 93 of 95 BUG scenarios are flagged, and 9 of 100 CLEAN scenarios
+are.
 
 **Effect of `queryguard_repeat_scope = session`** (added after the first run of this
 corpus): the scenarios that run each lookup in its own `Session`
@@ -167,12 +209,20 @@ rules report is the polling loop, which repeats one statement inside one `Sessio
 | `clean_16_polling_loop` | CLEAN: polling a status on purpose | `repeated-statement` | Every run has the same parameters, like the loop-invariant query of `bug_55_loop_invariant_query`, which is a bug. The statements cannot tell them apart. Use `allow_nplusone`. |
 | `clean_20_cached_lookup` | CLEAN | `repeated-statement` with small-repeat on | Two statements of one shape from one line are what the rule reports. |
 | `clean_22_expire_on_commit_two_objects` | CLEAN | `column-load` with threshold 2 | Two reloads after a commit are the threshold. |
-| `clean_18_factory_boy_seed_in_body`, `clean_30_savepoint_per_row_insert` | CLEAN: seeding and per-row inserts with their own error handling | `write-loop` with the rule on | The rule cannot tell them from a write loop. |
+| `clean_18_factory_boy_seed_in_body`, `clean_30_savepoint_per_row_insert`, `clean_77_refresh_after_each_create` | CLEAN: seeding, per-row inserts with their own error handling, eight creates each refreshed | `write-loop` with the rule on | The rule cannot tell them from a write loop. |
 | `bug_47_session_per_item`, `bug_48_threadpool_lookups`, `bug_52_async_gather_session_per_task`, `bug_53_celery_task_per_id` | BUG | not reported with scope `session` | By design of the option. |
+| `clean_93_two_single_object_lookups` | CLEAN: one order from `session.get`, another from a `select`, each showing its customer | `relationship-load` in every configuration | The rule counts the distinct parents of a relationship wherever they were loaded, so two lookups that each read it once reach the threshold of 2. That is deliberate (`tests/test_strict.py` asserts it for the report); strict mode groups by the parents' query line and does not raise here. Raise `queryguard_relationship_threshold` or use `allow_nplusone` for such a test. |
+| `clean_82_two_small_collections_joined` | CLEAN: a user's two roles and two e-mail addresses joined in one login query | `cartesian-load` (a warning) | The rule reads the loader options, not how many rows the collections hold. A product of 2 x 2 rows is reported like one of 20 x 20. |
+| `bug_77_cartesian_mapping_lazy_joined` | BUG: two collections with `lazy="joined"` on the mapping | not reported | Loader strategies set on the mapping are not options of the query, and the rule reads only the query's options (documented in [How detection works](how-detection-works.md#cartesian-load)). |
+| `bug_76_cartesian_async_endpoint`, `clean_78_joined_collection_and_scalar` | the cartesian verdict, and no unused columns: a page for one article | `unused-columns` with the check on | The check has no minimum number of rows: one article whose page reads its title (and body) of twelve columns is reported, which no reviewer would ask to change for one row. |
+| `bug_86_unused_columns_via_selectinload` | BUG: `selectinload(Author.articles)`, only `title` read of each article | not reported by the unused-columns check | The check groups only the instances a query returns itself, not those loaded through a relationship (documented in [Unused columns](unused-columns.md)). |
+| `bug_04_pydantic_from_attributes`, `bug_06_fastapi_response_model` | BUG: Pydantic `from_attributes` and a FastAPI `response_model` over lazy relationships | no finding in strict mode; the test fails with Pydantic's or FastAPI's validation error | Pydantic catches the `NPlusOneDetected` that strict mode raises at the access and raises its own validation error, with the strict message inside, once per remaining item. The plugin sees that error, not its own, so the report at the end (and SARIF, `--queryguard-json`, the summary) does not run. The test still fails, with the N+1 in its message. |
+| `bug_88_strict_lazy_then_lookup_loop` | BUG: a lazy loop, then a `session.get` loop | only `relationship-load` in strict mode | Strict mode stops the test at the first N+1, so the second loop never runs. |
 
 The three BUG scenarios below the default thresholds, and the BUG scenarios that
-are only write loops or an unused eager load, are the "FN" column of the default
-tables or are outside their scope; they are listed here rather than hidden.
+are only write loops, unused eager loads or unused columns, are the "FN" column of
+the default tables or are outside their scope; they are listed here rather than
+hidden.
 
 Not shown because they agreed with the verdict: lazy-load loops through views,
 serializers, Pydantic, FastAPI (sync and async), Flask-SQLAlchemy, SQLModel,
@@ -197,32 +247,99 @@ and chunked loads: offset and keyset pages (also newest first, and the same walk
 twice), `IN` chunks of ids and of string keys, a DataLoader with a maximum batch
 size, and Celery-style tasks per chunk.
 
+Of the scenarios added on 2026-11-06, these agreed with the verdict in every
+configuration: two and three collections joined side by side (a detail page,
+an admin CSV export, the legacy `session.query()` API, an async endpoint),
+two joined collections inside the query of a `selectinload`, a many-to-one on
+the way to one of them; as CLEAN, a joined collection with a joined
+many-to-one, a `joinedload` chain, `joinedload` with `selectinload`,
+`contains_eager` over a filtering join, two `selectinload` chains in a
+FastAPI endpoint, one joined collection on a paginated query and a
+collection of each subclass under `with_polymorphic`; the unused-eager-load
+scenarios above; unused columns in a sitemap, a three-field Pydantic summary,
+an async background job and a paginated API, and, as CLEAN, `load_only`, a
+`to_dict` of every column, a select of three columns, an edit form that
+reads seven of twelve, and `deferred` columns with a `column_property`; in
+strict mode, a view whose `except Exception` swallows the strict error (the
+report at the end still fails the test); `ignore()` around a loop, as a
+decorator and around `asyncio.gather` (CLEAN), and one that a later access
+outside it escapes (reported in full); an N+1 in a fixture only (CLEAN) and
+a loop in the test over parents a fixture loaded (reported); an association
+object walked lazily, a marshmallow-style nested schema, a paginated API
+reading each author, a self-referential comment thread, a polymorphic list
+reading a subclass's collection and a deferred `column_property` read per row.
+
+## The patch of `--queryguard-write-patch`
+
+`tests/corpus/test_fix_patches.py` copies the corpus into the rootdir of a
+pytest session, runs the 29 BUG scenarios with a relationship-load with
+`--queryguard-write-patch`, applies the patch with `git apply --check` and
+`git apply`, and runs them again. A scenario module with `PATCH = True`
+expects a patch; every other one expects none, so a patch that appears or
+disappears fails the test.
+
+Measured on 2026-11-06: **7 of the 29 get a patch; every patch applies, and in
+all 7 the relationship-load is gone after it, with no new finding** (a
+`joinedload` next to another joined collection would be a cartesian-load).
+The other finding of `bug_88_strict_lazy_then_lookup_loop`, a
+repeated-statement, stays, as it should. The 22 without a patch, each a case
+where the patch cannot be certain of the change:
+
+| why no patch | scenarios |
+|---|---|
+| the class is reached through a module (`select(shop.Customer)`), not a name of the module | 14 (`bug_01`, `bug_02`, `bug_03`, `bug_04`, `bug_06`, `bug_11`, `bug_12`, `bug_14`, `bug_15`, `bug_16`, `bug_32`, `bug_37`, `bug_38`, `bug_43`) |
+| the statement is built on another line (`stmt = select(...)`, then `session.scalars(stmt)`) | 3 (`bug_41`, `bug_92`, `bug_95`) |
+| the query runs inside a comprehension | 2 (`bug_13`, `bug_19`) |
+| Flask-SQLAlchemy's `db.select(Author)` | 1 (`bug_07`) |
+| `select(with_polymorphic(...))` | 1 (`bug_96`) |
+| the parents were loaded by a fixture, before the measurement | 1 (`bug_90`) |
+
+The first two rows are the common way to write a query in real code, so on
+code like this corpus most findings come without a patch. The `fix:` line of
+the report still shows the option for each of them.
+
+**Fixed with this measurement:** when one query got two findings, a
+relationship and a chain through it (`Playlist.entries` and
+`PlaylistEntry.track` in `bug_91_association_object_loop`), the combined patch
+added both options as two `.options()` calls,
+`.options(selectinload(Playlist.entries)).options(selectinload(Playlist.entries).joinedload(PlaylistEntry.track))`.
+That ran and fixed the N+1, but the first call repeats the start of the
+second. The patch now keeps only the chain.
+
 ## Release thresholds
 
 A release does not go out when the corpus gets worse. The release gate
 (`scripts/release_gate.py accuracy`, see "Releasing" in `CONTRIBUTING.md`) runs
 the corpus with the default configuration and fails when the precision or the
 recall of a finding kind is below the minimum recorded in
-`scripts/accuracy_thresholds.json`, when fewer than 141 scenarios ran, or when a
+`scripts/accuracy_thresholds.json`, when fewer than 195 scenarios ran, or when a
 disagreement with a verdict is not documented in the scenario. The minimums are
-the values measured on 2026-10-13 (SQLAlchemy 2.1.1, pytest 9.1.1, SQLModel not
-installed, 141 of the 143 scenarios), rounded down to a multiple of 10%:
+the values measured on 2026-11-06 (SQLAlchemy 2.1.1, pytest 9.1.1, SQLModel not
+installed, 195 of the 197 scenarios), rounded down to a multiple of 10%:
 
 | kind | minimum precision | minimum recall | measured |
 |---|---|---|---|
-| `relationship-load` | 100% | 100% | 19 TP, 0 FP, 0 FN |
-| `repeated-statement` | 90% | 90% | 36 TP, 1 FP, 2 FN (97% and 95%) |
-| `column-load` | 100% | 80% | 4 TP, 0 FP, 1 FN |
+| `relationship-load` | 90% | 100% | 29 TP, 1 FP, 0 FN (97% and 100%) |
+| `repeated-statement` | 90% | 90% | 37 TP, 1 FP, 2 FN (97% and 95%) |
+| `column-load` | 100% | 80% | 6 TP, 0 FP, 1 FN (100% and 86%) |
+| `cartesian-load` | 80% | 80% | 6 TP, 1 FP, 1 FN (86% and 86%) |
 
 The repeated-statement minimum precision went from 80% to 90% with the rule for
-pagination and chunks, in the same change. The minimums
+pagination and chunks, in the same change. The relationship-load minimum
+precision went from 100% to 90% on 2026-11-06, when
+`clean_93_two_single_object_lookups` was added: the plugin did not change, the
+corpus now holds a CLEAN scenario that the rule reports by design (see the
+disagreements). Rounded down, 97% is 90%; a new relationship-load false
+positive would still have to stay above it. `cartesian-load` got its minimums
+in the same change, the first time it was measured. The minimums
 are a floor against regressions, not a goal. Raise one in the same pull request
 that improves the corpus result; lower one only with a reason in that pull
 request, because every lowered minimum is a release that detects less.
 
 ## Comparison with queryspy and pytest-querycount
 
-The same 141 scenarios, each tool with its defaults plus the switch that makes it
+Not run again on 2026-11-06: this section is the 141-scenario measurement of
+2026-10-13. The same 141 scenarios, each tool with its defaults plus the switch that makes it
 fail a test without a per-test marker (`--queryspy-strict`; the `no_n_plus_one` marker
 added to every scenario for pytest-querycount). A scenario counts as "flagged" when
 the test failed. Whether a tool reports the right kind is not compared.
@@ -262,7 +379,8 @@ pytest 9.1.1, the corpus's other dependencies at the versions above) and passed 
 
 ## On PostgreSQL
 
-The same 141 scenarios, every configuration, with the database on PostgreSQL
+Not run again on 2026-11-06: this section is the 141-scenario measurement of
+2026-10-13. The same 141 scenarios, every configuration, with the database on PostgreSQL
 instead of an SQLite file.
 
 - Method: `QUERYGUARD_CORPUS_PG_URL=postgresql+pg8000://.../qg_corpus uv run
@@ -317,7 +435,22 @@ See also [Limitations](limitations.md).
   lower them report legitimate code too (a cache, two objects after a commit).
 - The write-loop rule cannot tell seeding or per-row inserts with error handling
   from a write loop.
-- The corpus is small and written by one person; precision and recall from 143
-  scenarios have wide error bars. It ran on SQLite and on PostgreSQL 17 (pg8000
-  and asyncpg); other PostgreSQL versions, MySQL and other drivers were not run.
+- The relationship rule counts the parents of a relationship wherever they were
+  loaded: two objects from two lookups, each reading it once, are reported.
+- The cartesian-load rule reads the loader options: it reports two small
+  collections joined on purpose, and does not see `lazy="joined"` on the
+  mapping.
+- The unused-columns check (experimental) reports a single row as readily as
+  a thousand, and does not see instances loaded through a relationship.
+- In strict mode, a library that catches the exception at the access
+  (Pydantic, FastAPI's response validation) fails the test with its own error;
+  the N+1 is in its message but not in the report, SARIF or JSON. Strict mode
+  also stops the test at the first N+1, so later ones are not reported.
+- `--queryguard-write-patch` writes a patch only for a `select(Class)` written
+  on the line that ran it, with `Class` a name of the module: 7 of the 29
+  relationship-load BUG scenarios.
+- The corpus is small and written by one person; precision and recall from 197
+  scenarios have wide error bars. It ran on SQLite, and its first 141 scenarios
+  on PostgreSQL 17 (pg8000 and asyncpg); other PostgreSQL versions, MySQL and
+  other drivers were not run.
 - The SQLModel scenarios run only where SQLModel is installed.

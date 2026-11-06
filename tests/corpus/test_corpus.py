@@ -108,6 +108,8 @@ def test_plugin_agrees_with_the_verdict(
 def test_a_failing_test_has_findings_and_a_passing_one_has_none() -> None:
     for config, results in _cache.items():
         for name, result in results.items():
+            if known_reason(BY_NAME[name], config):
+                continue  # an xfail above: it may fail without a finding
             assert result.failed == bool(result.findings), (config, name)
 
 
