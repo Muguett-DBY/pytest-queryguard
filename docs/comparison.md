@@ -286,8 +286,10 @@ pytest-queryguard only.
   per-statement failure messages and an index check: pytest-queryguard is
   built for that, and it has a baseline and SARIF for adoption.
 - You also want N+1 findings in a running FastAPI, Starlette, Flask or WSGI
-  app: look at queryspy. I did not test running
-  it together with pytest-queryguard.
+  app: both pytest-queryguard (its [in-application mode](in-app.md),
+  experimental since 0.5.0) and queryspy have ASGI and WSGI middleware and a
+  request panel; the two were not compared on running apps. I did not test
+  running queryspy together with pytest-queryguard.
 - You use queryspy in tests and want to move: see
   [Migrating from queryspy](migrating-from-queryspy.md).
 - You want budgets written for you or one global ratchet: pytest-querycount
