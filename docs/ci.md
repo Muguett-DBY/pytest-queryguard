@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[test]"        # your project and its test dependencies
-      - uses: MaciejZiel/pytest-queryguard/action@v0.7.0   # a release tag, or a commit SHA
+      - uses: MaciejZiel/pytest-queryguard/action@v0.8.0   # a release tag, or a commit SHA
         with:
           pytest-args: tests/   # no -x: see below
           # baseline: queryguard-baseline.json   # add once the file exists, see below
