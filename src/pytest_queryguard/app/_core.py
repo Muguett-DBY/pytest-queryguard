@@ -7,6 +7,7 @@ Nothing here registers a listener or imports pytest. The listeners are in
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import functools
 import inspect
 import itertools
@@ -43,6 +44,7 @@ REPEAT_SCOPES = (SCOPE_REQUEST, SCOPE_SESSION)
 Reporter = Callable[["RequestReport"], object]
 ReportTarget = str | Reporter
 _TARGETS = ("log", "warn")
+PAGE_REPORTS = ("off", "footer", "console")
 _METHOD = re.compile(r"[A-Za-z][A-Za-z-]*")  # GET, M-SEARCH, VERSION-CONTROL
 
 
@@ -98,6 +100,11 @@ class Settings:
     out count for the enclosing unit). ``min_db_time`` (seconds) skips the
     N+1 rules for a request whose database time (``RequestReport.db_time``)
     is below it; budgets still apply.
+
+    ``page_report`` (``"off"``, ``"footer"`` or ``"console"``) makes the
+    middleware add a request's findings to its HTML response: as a footer
+    element, or as a ``console.warn`` script (a footer when the response has
+    a Content-Security-Policy). ``track()`` ignores it.
     """
 
     relationship_threshold: int = 2
@@ -112,6 +119,7 @@ class Settings:
     max_events: int | None = 1000
     sample_rate: float = 1.0
     min_db_time: float = 0.0
+    page_report: str = "off"
 
     def __post_init__(self) -> None:
         _check_threshold("relationship_threshold", self.relationship_threshold)
@@ -148,6 +156,11 @@ class Settings:
         if not _is_number(self.min_db_time) or not self.min_db_time >= 0:
             raise ValueError(
                 f"min_db_time must be a number of seconds >= 0, got {self.min_db_time!r}"
+            )
+        if self.page_report not in PAGE_REPORTS:
+            raise ValueError(
+                f"page_report must be one of {', '.join(PAGE_REPORTS)}, "
+                f"got {self.page_report!r}"
             )
         for target in self.targets:
             if not callable(target) and target not in _TARGETS:
@@ -461,55 +474,80 @@ class Tracker:
         self.warning = _emit(report, self.settings)
         return report
 
+    def preview(self, route: str | None = None) -> RequestReport | None:
+        """The report as it stands now, for the page report; None without problems.
+
+        The unit goes on: statements that run later (a background task) count
+        for the report ``finish()`` makes. Nothing is reported from here.
+        """
+        if self._done:
+            return None
+        report = dataclasses.replace(self.report, findings=(), budget=None)
+        if route is not None and report.route is None:
+            report.route = route
+        _check(report, self.settings, self.active.collector, statements=False)
+        return report if report.problems and report.error is None else None
+
     def _evaluate(self) -> None:
-        report, settings, collector = self.report, self.settings, self.active.collector
+        _check(self.report, self.settings, self.active.collector, statements=True)
+
+
+def _check(
+    report: RequestReport,
+    settings: Settings,
+    collector: QueryCollector,
+    *,
+    statements: bool,
+) -> None:
+    """Fill ``report`` from ``collector``: counts, budget, findings, message."""
+    if statements:
         report.statements = tuple(_to_query(e) for e in list(collector.statements))
-        report.statement_count = collector.statement_count
-        report.db_time = collector.db_time
-        error = internal_error()
-        if error is not None:
-            # The counts may be incomplete: no findings, no budget verdict.
-            report.error = f"{type(error).__name__}: {error}"
-            return
-        report.budget = settings.budget_for(report.method, report.route, report.path)
-        root = display_root()
-        scope = SCOPE_SESSION if settings.repeat_scope == SCOPE_SESSION else SCOPE_TEST
-        if report.db_time >= settings.min_db_time:
-            report.findings = tuple(
-                make_findings(
-                    detect(
-                        collector,
-                        relationship_threshold=settings.relationship_threshold,
-                        repeat_threshold=settings.repeat_threshold,
-                        column_load_threshold=settings.column_load_threshold,
-                        small_repeat_threshold=settings.small_repeat_threshold,
-                        write_loop_threshold=settings.write_loop_threshold,
-                        scope=scope,
-                        sieve=Sieve(),
-                    ),
-                    cwd=root,
-                )
+    report.statement_count = collector.statement_count
+    report.db_time = collector.db_time
+    error = internal_error()
+    if error is not None:
+        # The counts may be incomplete: no findings, no budget verdict.
+        report.error = f"{type(error).__name__}: {error}"
+        return
+    report.budget = settings.budget_for(report.method, report.route, report.path)
+    root = display_root()
+    scope = SCOPE_SESSION if settings.repeat_scope == SCOPE_SESSION else SCOPE_TEST
+    if report.db_time >= settings.min_db_time:
+        report.findings = tuple(
+            make_findings(
+                detect(
+                    collector,
+                    relationship_threshold=settings.relationship_threshold,
+                    repeat_threshold=settings.repeat_threshold,
+                    column_load_threshold=settings.column_load_threshold,
+                    small_repeat_threshold=settings.small_repeat_threshold,
+                    write_loop_threshold=settings.write_loop_threshold,
+                    scope=scope,
+                    sieve=Sieve(),
+                ),
+                cwd=root,
             )
-        if not report.problems:
-            return
-        parts = [f"queryguard: {report.name}"]
-        if report.route and report.route != report.path:
-            parts[0] += f" (route {report.route})"
-        parts[0] += f": {report.statement_count} statements"
-        if report.findings:
-            parts.append(format_findings(report.findings, cwd=root))
-        if report.over_budget:
-            assert report.budget is not None
-            parts.append(
-                format_budget(
-                    report.budget,
-                    list(collector.statements),
-                    cwd=root,
-                    total=report.statement_count,
-                    db_time=report.db_time,
-                )
+        )
+    if not report.problems:
+        return
+    parts = [f"queryguard: {report.name}"]
+    if report.route and report.route != report.path:
+        parts[0] += f" (route {report.route})"
+    parts[0] += f": {report.statement_count} statements"
+    if report.findings:
+        parts.append(format_findings(report.findings, cwd=root))
+    if report.over_budget:
+        assert report.budget is not None
+        parts.append(
+            format_budget(
+                report.budget,
+                list(collector.statements),
+                cwd=root,
+                total=report.statement_count,
+                db_time=report.db_time,
             )
-        report._message = "\n\n".join(parts)
+        )
+    report._message = "\n\n".join(parts)
 
 
 def _emit(report: RequestReport, settings: Settings) -> Warning | None:

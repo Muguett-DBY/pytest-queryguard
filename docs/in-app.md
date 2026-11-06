@@ -264,6 +264,7 @@ arguments, or one `queryguard.Settings(...)` object as `settings=`.
 | `max_events` | 1000 | Statements stored per request; more are counted, not stored |
 | `sample_rate` | 1.0 | Fraction of requests measured, from 0 to 1 |
 | `min_db_time` | 0.0 | Seconds of database time below which a request's N+1 rules do not run |
+| `page_report` | `"off"` | `"footer"` or `"console"`: add a request's findings to its own HTML page (see [Findings in the page](#findings-in-the-page)) |
 
 The rules are the plugin's; see [How detection works](how-detection-works.md).
 The missing-index check does not run in the application.
@@ -386,6 +387,65 @@ a `track()` unit) by method alone, with the path in the title and context.
 
 Both report only what the `report` targets get: requests with findings or
 over their budget.
+
+## Findings in the page
+
+Like Bullet in Rails, the middleware can put a request's findings into the
+HTML page it answers with, so they show up where you are already looking:
+
+```python
+app.add_middleware(queryguard.QueryGuardASGI, page_report="footer")
+app.wsgi_app = queryguard.QueryGuardWSGI(app.wsgi_app, page_report="console")
+```
+
+- `"footer"` adds an `<aside id="queryguard-page-report">` with a one-line
+  summary (`queryguard: 1 problem in GET /orders: 6 statements`) and, in a
+  `<details>` element, the same text the `log` report writes.
+- `"console"` adds a `<script>` that calls `console.warn()` with that text
+  and an object with the request, the statement count, the budget and each
+  finding's kind, label, file, line, function and count.
+
+The report goes before the page's last `</body>` (in any letter case), or at
+the end of a page without one, and `Content-Length` is set to the new
+length. Only requests that were measured (see `sample_rate`) and have
+findings or are over their budget get one; it reflects the statements run
+until the body was complete, and statements of a later background task
+count only for the usual report.
+
+Only a response the middleware can change safely gets a report. It must be
+`text/html` (any charset in which `</body>` is ASCII, so not UTF-16, nor a
+body that starts with a UTF-16 or UTF-32 byte order mark), a 2xx
+status other than 204, 205 and 206, an answer to a method other than `HEAD`,
+with a `Content-Length` of at most 4 MiB and without `Content-Encoding`
+(`gzip`, `br`: wrap a compressing middleware around queryguard's, in
+Starlette by adding `GZipMiddleware` after it, so queryguard sees the page
+before it is compressed) or `Content-Range`. A streamed response
+without `Content-Length` (`StreamingResponse`, a Flask generator) and a file
+sent with `wsgi.file_wrapper` pass through as they are. Every other response
+passes through untouched, and an HTML response the rules allow is held back
+only until its body is complete: ASGI holds its start message and body
+parts, WSGI calls `start_response` once the body iterable has been read (an
+application that uses the legacy `write()` callable is passed through; a
+later `start_response` call with `exc_info` replaces the held page, whose
+body is then not sent). A changed page loses its `ETag` and digest headers
+(`Content-MD5`, `Digest`, `Content-Digest`, `Repr-Digest`), which described
+the original bytes. For such a page the detectors run twice: once when its
+body is complete and once when the request ends.
+
+Every value is escaped: the footer's text with `html.escape()` and character
+references for non-ASCII characters, the script's data as JSON in which `<`,
+`>` and `&` are `\u` escapes, so SQL text, labels and paths cannot end the
+element or add markup. An inline script is blocked by a
+Content-Security-Policy without `'unsafe-inline'`, and queryguard does not
+edit the application's policy. When the response has a
+`Content-Security-Policy` or `Content-Security-Policy-Report-Only` header,
+or the page a `<meta http-equiv="Content-Security-Policy">` element,
+`"console"` falls back to the footer, and the footer has no `style`
+attributes, so nothing triggers a violation report.
+
+Like the panel, the page report is for development only: it shows SQL text,
+file names and line numbers to whoever loads the page, with no loopback
+check or token. Never enable it in production or on a server others reach.
 
 ## The panel
 
