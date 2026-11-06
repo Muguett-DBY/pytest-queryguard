@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An experimental MCP server for coding agents such as Claude Code and
+  Cursor: `python -m pytest_queryguard.mcp` speaks the Model Context Protocol
+  over stdio with the standard library only, no new dependency. Its tools
+  `run_tests` (runs pytest in the server's directory and returns each test's
+  findings with message, fix hint and stack, plus the patch of
+  `--queryguard-write-patch`), `explain_finding` and `compare` return bounded
+  JSON. See docs/mcp.md.
 - In-application mode: `page_report="footer"` or `"console"` adds a
   request's findings to its own HTML page, as an `<aside>` before
   `</body>` or as a `console.warn()` script, like Bullet in Rails. Only

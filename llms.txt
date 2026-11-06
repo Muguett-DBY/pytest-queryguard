@@ -125,6 +125,10 @@ flask_app.wsgi_app = queryguard.QueryGuardWSGI(flask_app.wsgi_app)
 - `panel=True` serves `/_queryguard/` (a self-contained HTML page) and `/_queryguard/requests.json` with the last 50 requests, to loopback clients by default. Off by default; never enable it in production.
 - Nothing is registered until `watch()`; an internal error logs once and switches the mode off without affecting the application or the pytest plugin. Experimental: listed under "Experimental" in docs/stability.md, so names may change in a minor release. See docs/in-app.md.
 
+## MCP server for coding agents (experimental)
+
+`python -m pytest_queryguard.mcp` is a Model Context Protocol server over stdio (JSON-RPC 2.0, one message per line, standard library only). Add it to Claude Code with `claude mcp add queryguard -- python -m pytest_queryguard.mcp`, or to Cursor's `mcp.json` with `"command": "python", "args": ["-m", "pytest_queryguard.mcp"]`, using the project's interpreter, from the project directory. Tools: `run_tests(args, paths, timeout)` runs `python -m pytest` there and returns each test's findings (kind, label, file, line, function, count, message, fix hint, stack), the totals and the patch for `git apply`, all size-capped; `explain_finding(kind)`; `compare(base_json, head_json)` over two `--queryguard-json` files. It runs only pytest, without a shell. Experimental; see docs/mcp.md.
+
 ## Configuration
 
 Ini options, read from `[tool.pytest.ini_options]`, pytest 9's `[tool.pytest]`, `pytest.ini` or `setup.cfg`. Any invalid value stops pytest with a usage error.
@@ -201,7 +205,7 @@ Findings follow `queryguard_mode`. Exclude small lookup tables with `queryguard_
 ## Docs
 
 - [README](https://github.com/MaciejZiel/pytest-queryguard/blob/main/README.md): overview and a first example
-- [Documentation pages](https://github.com/MaciejZiel/pytest-queryguard/tree/main/docs): getting started, how detection works, configuration reference, budgets, in-application mode, ignoring, baseline, CI and SARIF, index check (PostgreSQL, SQLite, MySQL and MariaDB), index advisor, unused eager loads, unused columns, limitations, FAQ, comparison with other tools, migration from nplusone, stability policy
+- [Documentation pages](https://github.com/MaciejZiel/pytest-queryguard/tree/main/docs): getting started, how detection works, configuration reference, budgets, in-application mode, MCP server, ignoring, baseline, CI and SARIF, index check (PostgreSQL, SQLite, MySQL and MariaDB), index advisor, unused eager loads, unused columns, limitations, FAQ, comparison with other tools, migration from nplusone, stability policy
 - [Examples](https://github.com/MaciejZiel/pytest-queryguard/tree/main/examples): runnable projects
 - [CHANGELOG](https://github.com/MaciejZiel/pytest-queryguard/blob/main/CHANGELOG.md): changes per release
 - [PyPI](https://pypi.org/project/pytest-queryguard/): released versions

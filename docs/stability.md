@@ -120,6 +120,9 @@ defaults, labels or messages, or remove them, with a changelog entry under
   `internal_error`, `opentelemetry_reporter`, `sentry_reporter`) and the
   panel's JSON. See
   [In-application mode](in-app.md).
+- The MCP server, `python -m pytest_queryguard.mcp`: its tools, their
+  arguments and the fields of their results. See
+  [MCP server](mcp.md).
 
 Everything else listed under "What is public" follows the deprecation policy.
 `tests/test_public_api.py` still snapshots the experimental ini options and

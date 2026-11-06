@@ -50,7 +50,9 @@ syntax tree, with no database and without starting the application), and has
 a command line and an MCP server for AI coding agents. Its `nplusone` command
 looks for N+1 patterns in the code; it does not run tests or watch the
 statements a test sends, so it is not in the matrix below. Read from its PyPI
-description on 2026-11-05, not run.
+description on 2026-11-05, not run. pytest-queryguard also has an experimental
+[MCP server](mcp.md); its tools run the test suite and return the findings the
+tests produce, so the two answer different questions for an agent.
 
 pytest-capquery's PyPI metadata has no license field. Its README badge and the
 `LICENSE` file in its GitHub repository are Creative Commons
