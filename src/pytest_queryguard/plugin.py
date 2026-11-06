@@ -2496,6 +2496,11 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
             # no collector on the stack and no tracker behind
             _discard(collector, trackers)
             raise
+    if strict_error is not None:
+        # The test stopped at the access, so what it would have read later
+        # is unknown: an eager load or a column it reads after the loop is
+        # not unused. The checks of what a test never reads do not apply.
+        trackers = _Trackers()
     try:
         parts, warn_texts = _results(
             item, collector, settings, trackers, limit, time_limit, exempt, source

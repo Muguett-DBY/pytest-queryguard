@@ -79,6 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Strict mode no longer reports an `unused-eager-load` or `unused-columns`
+  finding for a test it stopped at the access: the relationship or the
+  columns the test would have read after the N+1 loop were reported as never
+  read in the JSON and SARIF files and the summary.
 - In-application mode: on SQLAlchemy 2.0.20 to 2.0.49 an application's
   `yield_per` or `autoflush=False` query with `selectinload()` now works
   while the engine is watched (SQLAlchemy issue 13301) (#289).

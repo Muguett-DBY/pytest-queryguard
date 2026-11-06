@@ -842,3 +842,63 @@ def test_outputs_agree(pytester: pytest.Pytester, combo: Combo) -> None:
     parallel = _run(pytester, combo, xdist=True)
     _check_run(parallel, combo, pytester, xdist=True)
     _check_same(serial, parallel)
+
+
+STOPPED = """\
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+from app.models import Account, Order, make_session
+
+
+def test_reads_after_the_n_plus_one():
+    session = make_session()
+    orders = session.scalars(select(Order).options(selectinload(Order.items))).all()
+    accounts = session.scalars(select(Account)).all()
+    assert accounts[0].name
+    names = [order.customer.name for order in orders]  # strict raises here
+    assert [len(order.items) for order in orders] == [2] * 6
+    assert {(a.email, a.phone, a.street, a.city, a.country, a.notes, a.bio)
+            for a in accounts}
+    assert names
+"""
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["report", "strict"])
+def test_strict_reports_no_unused_load_the_test_never_reached(
+    pytester: pytest.Pytester, strict: bool
+) -> None:
+    """A test strict mode stopped never read what it would have read later.
+
+    The eager load and the columns are read after the loop that raises, so
+    only the relationship load is a finding, with and without strict mode.
+    """
+    _write_project(pytester, Combo("stopped"))
+    (pytester.path / "tests" / "test_app.py").write_text(STOPPED)
+    args = [
+        "-p",
+        "no:cacheprovider",
+        "-o",
+        "queryguard_unused_eager_load=fail",
+        "-o",
+        "queryguard_unused_columns=fail",
+        "--queryguard-json=out.json",
+        "--queryguard-sarif=out.sarif",
+    ]
+    if strict:
+        args.append("--queryguard-strict")
+    result = pytester.runpytest_subprocess(*args)
+    result.assert_outcomes(failed=1)
+    if strict:
+        result.stdout.fnmatch_lines(["*NPlusOneDetected*"])
+    doc = json.loads((pytester.path / "out.json").read_text())
+    (entry,) = doc["tests"].values()
+    assert [(f["kind"], f["label"]) for f in entry["findings"]] == [CUSTOMER]
+    sarif = json.loads((pytester.path / "out.sarif").read_text())
+    assert [r["ruleId"] for r in _results_of(sarif)] == [f"queryguard/{REL}"]
+    assert "kind: unused" not in result.stdout.str()
+
+
+def _results_of(sarif: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = sarif["runs"][0]["results"]
+    return results
