@@ -63,10 +63,9 @@ class QueryCollector:
     )
     # The runs of the scans recorded before a catalog change, which makes the
     # statements be explained again (see freeze_index_runs): id(scan) -> its
-    # runs, None for a statement not followed (its own run is all).
-    frozen_runs: dict[int, dict[tuple[IgnoreBlock, ...], None] | None] = field(
-        default_factory=dict
-    )
+    # runs, None for a statement not followed (its own run is all). None until
+    # the first change: most tests run no DDL.
+    frozen_runs: dict[int, dict[tuple[IgnoreBlock, ...], None] | None] | None = None
     frozen_scans: int = 0  # how many of scans have their runs in frozen_runs
     scans: list[ScanEvent] = field(default_factory=list)
     index_notices: dict[str, None] = field(default_factory=dict)  # ordered set
@@ -219,15 +218,20 @@ class QueryCollector:
         belong to that explain, and do not count for the scans before it.
         """
         scans = self.scans[self.frozen_scans :]
-        for scan in scans:
-            self.frozen_runs[id(scan)] = self.index_runs.get(scan.key)
-        self.frozen_scans += len(scans)
-        self.index_runs = {}
+        if scans:
+            if self.frozen_runs is None:
+                self.frozen_runs = {}
+            for scan in scans:
+                self.frozen_runs[id(scan)] = self.index_runs.get(scan.key)
+            self.frozen_scans += len(scans)
+        if self.index_runs:
+            self.index_runs = {}
 
     def runs_of(self, scan: ScanEvent) -> dict[tuple[IgnoreBlock, ...], None] | None:
         """The blocks of every run of ``scan``'s statement, or None if not followed."""
-        if id(scan) in self.frozen_runs:
-            return self.frozen_runs[id(scan)]
+        frozen = self.frozen_runs
+        if frozen is not None and id(scan) in frozen:
+            return frozen[id(scan)]
         return self.index_runs.get(scan.key)
 
     def note_index_run(self, key: object, tags: tuple[IgnoreBlock, ...]) -> None:
