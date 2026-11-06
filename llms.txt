@@ -1,6 +1,6 @@
 # pytest-queryguard
 
-> A pytest plugin that fails tests with N+1 queries and enforces query budgets for SQLAlchemy 2, in sync, async and FastAPI code. On PostgreSQL 16 and newer, SQLite, MySQL and MariaDB it can also fail tests whose queries have no index to use. MIT license. This file describes the repository; `CHANGELOG.md` says what is in which release (the latest release is on PyPI).
+> A pytest plugin that fails tests with N+1 queries and enforces query budgets for SQLAlchemy 2, in sync, async and FastAPI code. On PostgreSQL 16 and newer, SQLite, MySQL and MariaDB it can also fail tests whose queries have no index to use. MIT license. This file sums up the documentation of the release named below; `CHANGELOG.md` says what is in which release (the latest release is on PyPI).
 
 It watches the SQL each test function body sends (fixture setup and teardown are not measured) and points to the application line that caused a finding, even when the test database has only a few rows.
 

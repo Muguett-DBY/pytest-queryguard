@@ -69,25 +69,52 @@ DOC_VERSIONS: dict[str, str] = {
     "docs/getting-started.md": rf"`pytest-queryguard-({VERSION})`",
     "llms.txt": rf"This file describes ({VERSION})\b",
 }
+# The note that the parts marked "since X" are not released yet; X must be
+# newer than the release.
+PENDING = rf'"since ({VERSION})"[^.]*?not\s+on\s+PyPI\s+yet'
+FINAL = r"\d+\.\d+\.\d+"
+
+
+def _release(version: str) -> tuple[int, ...]:
+    """(major, minor, micro) of a version, without its pre-release suffix."""
+    match = re.match(FINAL, version)
+    return _key(match.group(0)) if match else ()
 
 
 def check_doc_versions(version: str, texts: dict[str, str] | None = None) -> list[str]:
     """The version that docs/index.md, getting-started.md and llms.txt describe.
 
+    It is ``__version__``; during a pre-release (``1.2.0rc1``) it may also be
+    an older final release, since pip installs that one by default. A note
+    that the parts marked "since X" are not on PyPI yet must not name a
+    release that is not newer than ``__version__``.
+
     ``texts`` maps the paths of ``DOC_VERSIONS`` to their content; by default
     the files of the repository are read.
     """
     problems = Problems()
+    final = re.fullmatch(FINAL, version) is not None
     for path, pattern in DOC_VERSIONS.items():
         text = (
-            texts[path]
+            texts.get(path, "")
             if texts is not None
             else (ROOT / path).read_text(encoding="utf-8")
         )
         found = re.findall(pattern, text)
         if problems.check(found, f"{path} does not say which version it describes"):
             for named in sorted(set(found) - {version}):
-                problems.append(f"{path} describes {named}, __version__ is {version}")
+                older_final = re.fullmatch(FINAL, named) and _key(named) < _release(
+                    version
+                )
+                if final or not older_final:
+                    problems.append(
+                        f"{path} describes {named}, __version__ is {version}"
+                    )
+        for pending in sorted(set(re.findall(PENDING, text))):
+            if final and _release(pending) <= _release(version):
+                problems.append(
+                    f"{path} says {pending} is not on PyPI yet, __version__ is {version}"
+                )
     return problems
 
 
