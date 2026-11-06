@@ -15,13 +15,15 @@ pull-request comment), plain text or JSON. The sparklines use the Unicode
 blocks; ``--ascii`` uses ASCII characters instead, and so does the console
 output when the console's encoding has no blocks (a Windows console with
 cp1252, the reason ``compare`` prints only ASCII). The exit status is 0
-unless a file cannot be read or the arguments are wrong (2).
+unless a file cannot be read (2; ``--skip-unreadable`` leaves such a file
+out instead) or the arguments are wrong (2).
 """
 
 from __future__ import annotations
 
 import argparse
 import fnmatch
+import html
 import json
 import sys
 from dataclasses import dataclass, field
@@ -139,9 +141,14 @@ def trend(
     present = [set(_findings(doc["tests"], baselined=True)) for doc in docs]
     for row in pair.new:
         key = (row.kind, row.label, row.file, row.function)
+        # the earliest run of the unbroken stretch up to the newest run; a run
+        # that stopped early without it may just not have run its test
         since = len(docs) - 1
-        while since > 0 and key in present[since - 1]:
-            since -= 1
+        for index in range(len(docs) - 2, -1, -1):
+            if key in present[index]:
+                since = index
+            elif result.runs[index].complete:
+                break
         result.new.append(FindingTrend(row, since))
     result.gone = pair.fixed
     return result
@@ -207,7 +214,7 @@ def markdown(
     if key:
         title += f" ({key})"
     lines = (
-        [f"<details><summary>{title}</summary>", ""]
+        [f"<details><summary>{html.escape(title)}</summary>", ""]
         if details
         else [f"### {title}", ""]
     )
@@ -398,6 +405,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Markdown folded into a <details> block (for a pull-request comment)",
     )
+    parser.add_argument(
+        "--skip-unreadable",
+        action="store_true",
+        help="leave out a file that cannot be read instead of stopping (exit 2)",
+    )
     parser.add_argument("--output", type=Path, help="write the report here too")
     args = parser.parse_args(argv)
     if args.label and len(args.label) != len(args.runs):
@@ -405,11 +417,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.top < 1:
         parser.error("--top must be at least 1")
     labels = args.label or default_labels(args.runs)
-    try:
-        result = trend([load(path) for path in args.runs], labels, test=args.test)
-    except CompareError as exc:
-        print(f"pytest-queryguard trend: {exc}", file=sys.stderr)
+    docs, kept = [], []
+    for path, label in zip(args.runs, labels, strict=True):
+        try:
+            docs.append(load(path))
+        except CompareError as exc:
+            print(f"pytest-queryguard trend: {exc}", file=sys.stderr)
+            if not args.skip_unreadable:
+                return 2
+        else:
+            kept.append(label)
+    if not docs:
+        print("pytest-queryguard trend: no file could be read", file=sys.stderr)
         return 2
+    result = trend(docs, kept, test=args.test)
 
     def render(ascii: bool) -> str:
         if args.format == "json":

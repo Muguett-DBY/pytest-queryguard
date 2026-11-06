@@ -159,8 +159,11 @@ collapsed `<details>` block below the comparison.
 - New and gone findings compare the oldest run with the newest, as the
   comparison does; `Since` is the run from which on a new finding is in
   every run.
-- Runs without the artifact (expired after 30 days, or a job that stopped
-  before writing it) are skipped, so the window may have fewer runs. The
+- Pull-request runs are not history: only runs of other events (push,
+  schedule, merge queue) on the branch count, one per commit. Runs without
+  the artifact (expired after 30 days, or a job that stopped before writing
+  it) or with a file that cannot be read are skipped, so the window may have
+  fewer runs. The
   trend needs `actions: read` and never fails the job; without the
   permission it has this run only and the log has a warning.
 
@@ -177,7 +180,7 @@ tests whose node id contains the pattern, or matches it when it is a glob;
 sparklines use Unicode blocks; `--ascii` prints `_-~=+*#@` instead, and the
 console output falls back to it by itself when the console cannot print the
 blocks (a Windows console with cp1252). The exit status is 2 when a file
-cannot be read, otherwise 0.
+cannot be read (`--skip-unreadable` leaves it out instead), otherwise 0.
 
 A typical rollout: run once with `fail: "false"` to see the alerts, create a
 [baseline](baseline.md) for what you cannot fix yet, then switch to

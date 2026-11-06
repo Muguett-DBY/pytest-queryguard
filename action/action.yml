@@ -318,28 +318,35 @@ runs:
           echo "::warning::trend must be \"false\" or a number of runs from 2 to 100, not \"$QG_RUNS\""
           exit 0
         fi
+        QG_RUNS=$((10#$QG_RUNS))  # "08" is eight, not an octal error
         workflow="${QG_WORKFLOW_REF%%@*}"
         workflow="${workflow##*/}"
         dir="$QG_TMP/queryguard-trend"
         rm -rf "$dir"
         mkdir -p "$dir"
         wanted=$((QG_RUNS - 1))
-        # newest first: run id and short commit of the finished runs of this
-        # workflow on the branch; some may have no artifact (expired, or the
-        # job failed before writing it), so a few more are listed
+        # newest first: run id and commit of the finished runs of this workflow
+        # on the branch. Pull-request runs are left out: a fork's pull request
+        # from its own "main" has the head branch main too. One run per commit
+        # (a re-run or a schedule repeats one), and not this run's commit.
+        # Some runs have no artifact (expired, or the job stopped before
+        # writing it), so a few more are listed.
         files=()
         labels=()
+        seen=" $QG_SHA "
         if runs="$(gh run list -R "$QG_REPO" --workflow "$workflow" --branch "$QG_BRANCH" \
-            --status completed --limit $((wanted * 2 + 10)) \
-            --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha[0:7])"' 2>&1)"; then
+            --status completed --limit $((wanted * 2 + 10)) --json databaseId,headSha,event \
+            --jq '.[] | select(.event | startswith("pull_request") | not) | "\(.databaseId) \(.headSha)"' 2>&1)"; then
           while read -r run sha; do
             [ "${#files[@]}" -ge "$wanted" ] && break
             [ -n "$run" ] || continue
+            case "$seen" in *" $sha "*) continue ;; esac
             if gh run download "$run" -R "$QG_REPO" -n "queryguard-json-$QG_CATEGORY" -D "$dir/$run" 2>/dev/null; then
               file="$(find "$dir/$run" -name '*.json' -type f | head -n 1)"
               if [ -n "$file" ]; then
+                seen="$seen$sha "
                 files=("$file" "${files[@]}")
-                labels=("$sha" "${labels[@]}")
+                labels=("${sha:0:7}" "${labels[@]}")
               fi
             fi
           done <<< "$runs"
@@ -357,8 +364,9 @@ runs:
         fi
         report="$QG_TMP/queryguard-trend.md"
         folded="$QG_TMP/queryguard-trend-details.md"
-        python -m pytest_queryguard.trend "${args[@]}" --key "$key" --output "$report" > /dev/null
-        python -m pytest_queryguard.trend "${args[@]}" --key "$key" --details --output "$folded" > /dev/null
+        # an artifact that cannot be read (another format) is left out
+        python -m pytest_queryguard.trend "${args[@]}" --key "$key" --skip-unreadable --output "$report" > /dev/null
+        python -m pytest_queryguard.trend "${args[@]}" --key "$key" --skip-unreadable --details --output "$folded" > /dev/null 2>&1
         cat "$report" >> "$GITHUB_STEP_SUMMARY"
         echo "report=$report" >> "$GITHUB_OUTPUT"
         echo "details=$folded" >> "$GITHUB_OUTPUT"

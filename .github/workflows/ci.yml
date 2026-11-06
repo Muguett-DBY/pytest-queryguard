@@ -344,10 +344,12 @@ jobs:
           EXIT_CODE: ${{ steps.report.outputs.exit-code }}
           JSON_FILE: ${{ steps.report.outputs.json-file }}
           TREND_REPORT: ${{ steps.report.outputs.trend-report }}
+          # the trend runs on pull requests and on pushes to main, and then
+          # always writes a report (with this run alone if nothing else)
+          TREND_EXPECTED: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: |
-          # the trend runs on pull requests and pushes to main only; when it
-          # wrote a report, it has this run's row
-          if [ -n "$TREND_REPORT" ]; then
+          if [ "$TREND_EXPECTED" = "true" ]; then
+            test -n "$TREND_REPORT"
             grep -q "query counts over the last" "$TREND_REPORT"
             grep -q "(this run)" "$TREND_REPORT"
           fi

@@ -294,3 +294,37 @@ def test_the_module_runs_in_a_cp1252_console(
     )
     assert result.ret == 0
     result.stdout.fnmatch_lines(["*| `t.py::grows` | `__@` | 3 | 53 | +50 |*"])
+
+
+def test_a_stopped_run_does_not_break_the_stretch_of_a_finding() -> None:
+    a = {"t.py::a": {"findings": [_finding("X.y")]}}
+    runs = [
+        _doc({"t.py::a": {}}),
+        _doc(a),
+        _doc({}, complete=False),
+        _doc(a),
+        _doc(a),
+    ]
+    (finding,) = trend.trend(runs, ["1", "2", "3", "4", "5"]).new
+    assert finding.since == 1
+
+
+def test_the_folded_title_is_escaped() -> None:
+    text = trend.markdown(trend.trend(RUNS, LABELS), key="</summary>", details=True)
+    assert "<summary>pytest-queryguard: query counts over the last 3 runs " in text
+    assert "(&lt;/summary&gt;)</summary>" in text
+
+
+def test_unreadable_files_can_be_left_out(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = _write(tmp_path)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{")
+    args = [paths[0], str(bad), paths[2], "--format", "json"]
+    assert trend.main([*args, "--skip-unreadable"]) == 0
+    captured = capsys.readouterr()
+    assert [r["label"] for r in json.loads(captured.out)["runs"]] == ["r1", "r3"]
+    assert "cannot read" in captured.err
+    assert trend.main(args) == 2
+    assert trend.main([str(bad), "--skip-unreadable"]) == 2
