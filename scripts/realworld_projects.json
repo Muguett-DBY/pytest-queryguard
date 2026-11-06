@@ -8,8 +8,9 @@
     "(tag or commit SHA), python, workdir (relative to the project checkout),",
     "install (bash, runs in workdir with the run's virtual environment active;",
     "uv sync installs into it through UV_PROJECT_ENVIRONMENT), pytest_args",
-    "(split on spaces), postgres (start PostgreSQL on localhost:5432 with the",
-    "env below), env (exported for every later step)."
+    "(split on spaces), prepare (bash, runs in workdir before each of the two",
+    "runs, empty: nothing), postgres (start PostgreSQL on localhost:5432 with",
+    "the env below), env (exported for every later step)."
   ],
   "projects": [
     {
@@ -19,6 +20,7 @@
       "python": "3.12",
       "workdir": ".",
       "install": "uv pip install -e . -r requirements-tests.txt",
+      "prepare": "",
       "pytest_args": "tests",
       "postgres": false,
       "env": {}
@@ -29,7 +31,8 @@
       "ref": "0.8.0",
       "python": "3.12",
       "workdir": "backend",
-      "install": "uv sync --frozen && python app/backend_pre_start.py && alembic upgrade head && python app/initial_data.py",
+      "install": "uv sync --frozen",
+      "prepare": "docker exec realworld-postgres psql -U postgres -d postgres -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app' && python app/backend_pre_start.py && alembic upgrade head && python app/initial_data.py",
       "pytest_args": "tests",
       "postgres": true,
       "env": {
@@ -47,6 +50,7 @@
       "python": "3.11",
       "workdir": ".",
       "install": "uv pip install -e . -r requirements/test-requirements.txt",
+      "prepare": "",
       "pytest_args": "tests/store/tracking/test_sqlalchemy_store.py",
       "postgres": false,
       "env": {}
@@ -58,6 +62,7 @@
       "python": "3.12",
       "workdir": ".",
       "install": "python -I -c \"import tomllib; print('\\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['tool']['hatch']['envs']['test']['dependencies']))\" > \"$RUNNER_TEMP/test-requirements.txt\" && uv pip install -e '.[full]' -r \"$RUNNER_TEMP/test-requirements.txt\"",
+      "prepare": "",
       "pytest_args": "tests",
       "postgres": false,
       "env": {}
@@ -69,6 +74,7 @@
       "python": "3.12",
       "workdir": ".",
       "install": "uv sync --frozen --all-extras --all-groups",
+      "prepare": "",
       "pytest_args": "tests/unit",
       "postgres": false,
       "env": {}
@@ -80,6 +86,7 @@
       "python": "3.12",
       "workdir": ".",
       "install": "python -I -c \"import tomllib; print('\\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['tool']['hatch']['envs']['default']['dependencies']))\" > \"$RUNNER_TEMP/test-requirements.txt\" && uv pip install -e . -r \"$RUNNER_TEMP/test-requirements.txt\"",
+      "prepare": "",
       "pytest_args": "tests",
       "postgres": false,
       "env": {}

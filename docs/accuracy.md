@@ -309,14 +309,16 @@ runs the test suites of open-source projects that use the SQLAlchemy 2 ORM:
 SQLModel, the FastAPI full-stack template (on PostgreSQL), MLflow's
 SQLAlchemy tracking store, SQLAdmin, Advanced Alchemy (its unit tests) and the
 SQLAlchemy adapter of FastAPI Users. Each project is pinned to a release tag in
-`scripts/realworld_projects.json`.
+`scripts/realworld_projects.json`, which also holds its install and test
+commands and what to reset (a fresh database) before each run.
 
 Each suite runs twice in the same environment: once without the plugin
 (`-p no:queryguard`) and once with it in warn mode, with the experimental
 `unused-eager-load` and `unused-columns` kinds on. `scripts/realworld_summary.py`
 compares the two runs' JUnit XML and reads the plugin's JSON file:
 
-- tests that pass without the plugin and fail with it (the plugin broke them);
+- tests that pass without the plugin and fail or are skipped with it (the
+  plugin broke them), and tests that ran in only one of the two runs;
 - `QueryGuardInternalWarning`s and pytest internal errors, recorded by a small
   probe plugin (`scripts/realworld_probe.py`);
 - the findings by kind, with `file:line` samples, to be checked by hand for

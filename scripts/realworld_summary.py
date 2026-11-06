@@ -87,6 +87,7 @@ def read_junit(path: Path) -> tuple[dict[str, str], dict[str, str]] | None:
                 break
             if child.tag == "skipped":
                 outcome = "skipped"
+                message = "skipped: " + (child.get("message") or "")
         previous = outcomes.get(test_id)
         if previous is None or _RANK[outcome] < _RANK[previous]:
             outcomes[test_id] = outcome
@@ -139,12 +140,24 @@ def read_probe(path: Path) -> list[dict[str, Any]]:
     return events
 
 
-def read_counts(path: Path) -> dict[str, Any] | None:
+def read_counts(path: Path) -> dict[str, Any] | str | None:
+    """The plugin's JSON file; None when missing, a reason when unusable."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError:
         return None
-    return data if isinstance(data, dict) else None
+    except ValueError as error:
+        return f"not JSON ({error})"
+    # the checks of pytest_queryguard.compare.load, plus the entries' shape
+    if not isinstance(data, dict) or data.get("format") != 1:
+        return "not a format 1 queryguard JSON file"
+    tests = data.get("tests")
+    if not isinstance(tests, dict) or not all(
+        isinstance(entry, dict) and isinstance(entry.get("findings", []), list)
+        for entry in tests.values()
+    ):
+        return "its tests are not a mapping of entries"
+    return data
 
 
 def _one_line(text: str, limit: int = 160) -> str:
@@ -216,7 +229,8 @@ def summarize(
         broken = sorted(
             test
             for test, outcome in baseline.outcomes.items()
-            if outcome == "passed" and plugin.outcomes.get(test) == "failed"
+            if outcome == "passed"
+            and plugin.outcomes.get(test) in ("failed", "skipped")
         )
         missing = sorted(set(baseline.outcomes) - set(plugin.outcomes))
         fixed = sorted(
@@ -224,7 +238,8 @@ def summarize(
             for test, outcome in baseline.outcomes.items()
             if outcome == "failed" and plugin.outcomes.get(test) == "passed"
         )
-        out += [f"### Tests that fail only with the plugin: {len(broken)}", ""]
+        only_plugin = sorted(set(plugin.outcomes) - set(baseline.outcomes))
+        out += [f"### Tests that pass only without the plugin: {len(broken)}", ""]
         for test in broken[:50]:
             message = _one_line(plugin.messages.get(test, ""))
             out.append(f"- `{test}`" + (f": {message}" if message else ""))
@@ -232,7 +247,7 @@ def summarize(
             out.append(f"- … and {len(broken) - 50} more")
         if broken:
             out.append("")
-            problems.append(f"{len(broken)} test(s) fail only with the plugin")
+            problems.append(f"{len(broken)} test(s) pass only without the plugin")
         if missing:
             out += [
                 (
@@ -242,6 +257,14 @@ def summarize(
                 "",
             ]
             problems.append(f"{len(missing)} test(s) did not run with the plugin")
+        if only_plugin:
+            out += [
+                (
+                    f"{len(only_plugin)} test(s) ran only with the plugin, "
+                    f"for example `{only_plugin[0]}`."
+                ),
+                "",
+            ]
         if fixed:
             out += [
                 (
@@ -277,6 +300,9 @@ def summarize(
         out += ["### Findings", "", "No queryguard JSON file.", ""]
         if plugin.exit in (0, 1):
             problems.append("the run with the plugin wrote no queryguard JSON")
+    elif isinstance(counts, str):
+        out += ["### Findings", "", f"Unusable queryguard JSON file: {counts}.", ""]
+        problems.append(f"the queryguard JSON file is unusable: {counts}")
     else:
         tests = counts.get("tests") or {}
         if counts.get("complete") is not True:
@@ -284,8 +310,11 @@ def summarize(
         by_kind: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
         statements = 0
         for test_id, entry in tests.items():
-            statements += int(entry.get("statements") or 0)
+            if isinstance(entry.get("statements"), int):
+                statements += entry["statements"]
             for finding in entry.get("findings") or []:
+                if not isinstance(finding, dict):
+                    continue
                 by_kind[str(finding.get("kind", "?"))].append((test_id, finding))
         total = sum(len(v) for v in by_kind.values())
         out += [

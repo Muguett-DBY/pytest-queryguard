@@ -7,6 +7,10 @@ name: Real-world projects
 # pull requests or a schedule, and its token can only read this repository.
 # The projects, their pinned tags and their install and test commands are in
 # scripts/realworld_projects.json.
+#
+# The harness (the project list and the scripts) always comes from the commit
+# the run was started on; only the plugin that is installed comes from the
+# plugin-ref input, so a release older than this workflow can be measured too.
 on:
   workflow_dispatch:
     inputs:
@@ -15,16 +19,12 @@ on:
         required: false
         default: ""
       plugin-ref:
-        description: "Branch, tag or SHA of pytest-queryguard to test (empty: the ref the run was started on)"
+        description: "Branch, tag or SHA of pytest-queryguard to install (empty: the commit the run was started on)"
         required: false
         default: ""
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   select:
@@ -35,7 +35,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.plugin-ref }}
           persist-credentials: false
       - name: Select the projects
         id: matrix
@@ -56,7 +55,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: select
     runs-on: ubuntu-latest
-    # two runs of the suite plus the install; each run is cut at 12 minutes
+    # the install (a few minutes) plus two runs, each cut at 10 minutes
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -65,6 +64,10 @@ jobs:
       OUT: ${{ github.workspace }}/out
       UV_COMPILE_BYTECODE: "1"
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: harness
+          persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.plugin-ref }}
@@ -118,62 +121,62 @@ jobs:
         run: |
           uv pip install "$GITHUB_WORKSPACE/plugin"
           mkdir -p "$RUNNER_TEMP/probe"
-          cp "$GITHUB_WORKSPACE/plugin/scripts/realworld_probe.py" "$RUNNER_TEMP/probe/"
+          cp "$GITHUB_WORKSPACE/harness/scripts/realworld_probe.py" "$RUNNER_TEMP/probe/"
           uv pip freeze > "$OUT/freeze.txt"
           python -c "import sys, sqlalchemy, pytest, pytest_queryguard as q; print(sys.version); print('sqlalchemy', sqlalchemy.__version__); print('pytest', pytest.__version__); print('pytest-queryguard', q.__version__)" | tee "$OUT/versions.txt"
-      - name: Run the tests without the plugin
-        id: baseline
+      # One function for both runs, so they differ only in the plugin's
+      # arguments. PREPARE (for example a fresh database) runs before each, so
+      # the second run does not start from what the first left behind.
+      #
+      # With the plugin, findings must not fail tests, also in projects that
+      # turn warnings into errors: QueryGuardWarning is shown, not raised, and
+      # QueryGuardInternalWarning is always recorded, also where the project
+      # ignores UserWarning (the command-line -W comes after the project's
+      # filterwarnings). The two experimental kinds are on, as warnings.
+      - name: Run the tests without and with the plugin
+        id: runs
         working-directory: project/${{ matrix.workdir }}
         env:
           PYTEST_ARGS: ${{ matrix.pytest_args }}
+          PREPARE: ${{ matrix.prepare }}
         run: |
           read -r -a args <<< "$PYTEST_ARGS"
-          start=$(date +%s.%N)
-          set +e
-          timeout -s INT -k 60 12m python -m pytest "${args[@]}" -p no:queryguard \
-            --junitxml="$OUT/baseline.xml" > "$OUT/baseline.log" 2>&1
-          code=$?
-          set -e
-          end=$(date +%s.%N)
-          printf '{"exit": %d, "seconds": %s}\n' "$code" "$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.3f", b - a }')" > "$OUT/baseline.meta.json"
-          tail -n 30 "$OUT/baseline.log"
-          cat "$OUT/baseline.meta.json"
-      - name: Run the tests with the plugin (warn mode)
-        id: plugin
-        working-directory: project/${{ matrix.workdir }}
-        env:
-          PYTEST_ARGS: ${{ matrix.pytest_args }}
-          QUERYGUARD_PROBE_OUT: ${{ github.workspace }}/out/probe.jsonl
-        # Findings must not fail tests here, also in projects that turn
-        # warnings into errors: QueryGuardWarning is shown, not raised (the
-        # command-line -W comes after the project's filterwarnings). The two
-        # experimental kinds are on, as warnings.
-        run: |
-          read -r -a args <<< "$PYTEST_ARGS"
-          export PYTHONPATH="$RUNNER_TEMP/probe${PYTHONPATH:+:$PYTHONPATH}"
-          start=$(date +%s.%N)
-          set +e
-          timeout -s INT -k 60 12m python -m pytest "${args[@]}" -p realworld_probe \
+          run() {
+            local name=$1 start end code
+            shift
+            if [ -n "$PREPARE" ]; then bash -euo pipefail -c "$PREPARE"; fi
+            start=$(date +%s.%N)
+            set +e
+            timeout -s INT -k 30 10m python -m pytest "${args[@]}" "$@" \
+              --junitxml="$OUT/$name.xml" > "$OUT/$name.log" 2>&1
+            code=$?
+            set -e
+            end=$(date +%s.%N)
+            printf '{"exit": %d, "seconds": %s}\n' "$code" \
+              "$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.3f", b - a }')" > "$OUT/$name.meta.json"
+            echo "::group::$name: last lines"
+            tail -n 30 "$OUT/$name.log"
+            echo "::endgroup::"
+            cat "$OUT/$name.meta.json"
+          }
+          run baseline -p no:queryguard
+          PYTHONPATH="$RUNNER_TEMP/probe${PYTHONPATH:+:$PYTHONPATH}" \
+          QUERYGUARD_PROBE_OUT="$OUT/probe.jsonl" \
+          run plugin -p realworld_probe \
             --queryguard-mode=warn \
             -o queryguard_unused_eager_load=warn -o queryguard_unused_columns=warn \
             -W "default::pytest_queryguard.QueryGuardWarning" \
+            -W "always::pytest_queryguard.QueryGuardInternalWarning" \
             --queryguard-json="$OUT/queryguard.json" \
-            --queryguard-sarif="$OUT/queryguard.sarif" \
-            --junitxml="$OUT/plugin.xml" > "$OUT/plugin.log" 2>&1
-          code=$?
-          set -e
-          end=$(date +%s.%N)
-          printf '{"exit": %d, "seconds": %s}\n' "$code" "$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.3f", b - a }')" > "$OUT/plugin.meta.json"
-          tail -n 30 "$OUT/plugin.log"
-          cat "$OUT/plugin.meta.json"
+            --queryguard-sarif="$OUT/queryguard.sarif"
       - name: Summary
-        if: always() && steps.plugin.outcome != 'skipped'
+        if: always() && steps.runs.outcome == 'success'
         env:
           PROJECT: ${{ matrix.name }}
           REF: ${{ matrix.repository }}@${{ matrix.ref }}
         run: |
           set +e
-          python -I "$GITHUB_WORKSPACE/plugin/scripts/realworld_summary.py" \
+          python -I "$GITHUB_WORKSPACE/harness/scripts/realworld_summary.py" \
             --dir "$OUT" --project "$PROJECT" --ref "$REF" > "$OUT/summary.md"
           code=$?
           set -e

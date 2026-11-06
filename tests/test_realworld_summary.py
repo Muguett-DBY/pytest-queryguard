@@ -125,7 +125,7 @@ def test_a_clean_run_reports_findings_and_overhead(
     assert "| passed | 2 | 2 |" in report
     assert "| skipped | 1 | 1 |" in report
     assert "Overhead: **+25.0 %**" in report
-    assert "### Tests that fail only with the plugin: 0" in report
+    assert "### Tests that pass only without the plugin: 0" in report
     assert "### Internal warnings: 0, internal errors: 0" in report
     assert "### Findings: 3" in report
     assert "2 tests measured, 6 statements" in report
@@ -160,13 +160,13 @@ def test_a_test_the_plugin_breaks_is_a_problem(
     )
     report, problems = summary.summarize(tmp_path, "demo", "v1")
 
-    assert problems == ["2 test(s) fail only with the plugin"]
-    assert "### Tests that fail only with the plugin: 2" in report
+    assert problems == ["2 test(s) pass only without the plugin"]
+    assert "### Tests that pass only without the plugin: 2" in report
     # first line of the message only
     assert "- `tests.test_app::test_a`: AssertionError: boom\n" in report
     assert "- `tests.test_app::test_b`: fixture broke" in report
     assert "1 test(s) failed without the plugin and passed with it (flaky?)" in report
-    assert "### Problems\n\n- 2 test(s) fail only with the plugin" in report
+    assert "### Problems\n\n- 2 test(s) pass only without the plugin" in report
 
 
 def test_a_teardown_error_counts_as_a_failure(
@@ -180,7 +180,7 @@ def test_a_teardown_error_counts_as_a_failure(
         counts=counts_file({}),
     )
     _, problems = summary.summarize(tmp_path, "demo", "v1")
-    assert problems == ["1 test(s) fail only with the plugin"]
+    assert problems == ["1 test(s) pass only without the plugin"]
 
 
 def test_internal_warnings_and_errors_are_problems(
@@ -290,31 +290,120 @@ def test_main_exit_status(
     assert summary.main(["--dir", str(tmp_path), "--project", "p", "--ref", "r"]) == 1
 
 
-def test_the_probe_records_internal_warnings(
-    pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_test_skipped_only_with_the_plugin_is_a_problem(
+    summary: ModuleType, tmp_path: Path
 ) -> None:
+    write_runs(
+        tmp_path,
+        junit(("test_a", "passed")),
+        junit(("test_a", "skipped"), ("test_new", "passed")),
+        counts=counts_file({}),
+    )
+    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    assert problems == ["1 test(s) pass only without the plugin"]
+    assert "- `tests.test_app::test_a`: skipped: no" in report
+    assert "1 test(s) ran only with the plugin, for example" in report
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{broken",
+        json.dumps({"format": 2, "tests": {}}),
+        json.dumps({"format": 1, "complete": True, "tests": []}),
+        json.dumps({"format": 1, "complete": True, "tests": {"t": "x"}}),
+        json.dumps({"format": 1, "complete": True, "tests": {"t": {"findings": 3}}}),
+    ],
+)
+def test_an_unusable_json_file_is_a_problem(
+    summary: ModuleType, tmp_path: Path, content: str
+) -> None:
+    cases = junit(("test_a", "passed"))
+    write_runs(tmp_path, cases, cases)
+    (tmp_path / "queryguard.json").write_text(content, encoding="utf-8")
+    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    assert "Unusable queryguard JSON file" in report
+    (problem,) = problems
+    assert problem.startswith("the queryguard JSON file is unusable")
+
+
+def test_odd_entries_in_a_valid_file_are_skipped(
+    summary: ModuleType, tmp_path: Path
+) -> None:
+    cases = junit(("test_a", "passed"))
+    counts = counts_file({"t::a": ["junk", finding("relationship-load", 3)]})
+    counts["tests"]["t::a"]["statements"] = "many"
+    write_runs(tmp_path, cases, cases, counts=counts)
+    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    assert problems == []
+    assert "### Findings: 1" in report
+    assert "0 statements" in report
+
+
+PROBED = """
+import warnings
+from pytest_queryguard import QueryGuardInternalWarning, QueryGuardWarning
+
+def test_a():
+    warnings.warn(QueryGuardInternalWarning("listener failed"))
+    warnings.warn(QueryGuardWarning("a finding"))
+    warnings.warn(UserWarning("unrelated"))
+
+def test_b():
+    pass
+"""
+
+UNCONFIGURE = """
+import warnings
+from pytest_queryguard import QueryGuardInternalWarning
+
+def pytest_unconfigure(config):
+    if not hasattr(config, "workerinput"):
+        warnings.warn(QueryGuardInternalWarning("cleanup failed"))
+"""
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param([], id="plain"),
+        # the project ignores UserWarning; the workflow's -W wins
+        pytest.param(
+            ["-W", "ignore::UserWarning"]
+            + ["-W", "always::pytest_queryguard.QueryGuardInternalWarning"],
+            id="ignored",
+        ),
+        pytest.param(["-p", "no:warnings"], id="no-warnings-plugin"),
+        pytest.param(["-n", "2"], id="xdist"),
+    ],
+)
+def test_the_probe_records_internal_warnings(
+    pytester: pytest.Pytester,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: list[str],
+) -> None:
+    if "-n" in extra:
+        pytest.importorskip("xdist")
     out = tmp_path / "probe.jsonl"
     monkeypatch.setenv("QUERYGUARD_PROBE_OUT", str(out))
     monkeypatch.setenv("PYTHONPATH", str(SCRIPTS))  # as the workflow does
-    pytester.makepyfile(
-        """
-        import warnings
-        from pytest_queryguard import QueryGuardInternalWarning, QueryGuardWarning
-
-        def test_a():
-            warnings.warn(QueryGuardInternalWarning("listener failed"))
-            warnings.warn(QueryGuardWarning("a finding"))
-            warnings.warn(UserWarning("unrelated"))
-        """
-    )
+    pytester.makepyfile(PROBED)
+    pytester.makeconftest(UNCONFIGURE)
     result = pytester.runpytest_subprocess(
-        "-p", "realworld_probe", "-p", "no:queryguard"
+        "-p", "realworld_probe", "-p", "no:queryguard", *extra
     )
-    result.assert_outcomes(passed=1, warnings=3)
-    (event,) = [json.loads(line) for line in out.read_text().splitlines()]
-    assert event["event"] == "internal-warning"
-    assert event["message"] == "listener failed"
-    assert event["nodeid"].endswith("::test_a")
+    result.assert_outcomes(passed=2)
+    events = [json.loads(line) for line in out.read_text().splitlines()]
+    assert all(e["event"] == "internal-warning" for e in events), events
+    # once each, also under pytest-xdist (no replay from the controller)
+    assert sorted(e["message"] for e in events) == [
+        "cleanup failed",
+        "listener failed",
+    ]
+    (in_test,) = [e for e in events if e["message"] == "listener failed"]
+    if "no:warnings" not in extra:
+        assert in_test["nodeid"].endswith("::test_a")
 
 
 def test_the_project_list_is_well_formed() -> None:
@@ -324,7 +413,7 @@ def test_the_project_list_is_well_formed() -> None:
     names = [p["name"] for p in projects]
     assert len(set(names)) == len(names)
     keys = {"name", "repository", "ref", "python", "workdir", "install"}
-    keys |= {"pytest_args", "postgres", "env"}
+    keys |= {"prepare", "pytest_args", "postgres", "env"}
     for project in projects:
         assert set(project) == keys, project["name"]
         assert project["ref"] and project["ref"] not in ("main", "master", "HEAD")
