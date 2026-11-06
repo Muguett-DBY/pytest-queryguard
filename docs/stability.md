@@ -57,9 +57,11 @@ The command-line tools:
 
 - `python -m pytest_queryguard.compare BASE HEAD [--output PATH] [--rows N]
   [--key NAME]` (see [CI](ci.md#query-counts-on-pull-requests)): its
-  arguments and its exit status (0, or 2 when a file cannot be read) are
-  public. The Markdown report, including the marker on its first line that
-  the action finds its comment by, is written for people and is not.
+  arguments, its exit status (0, or 2 when a file cannot be read) and the
+  marker on the first line of its report (`<!-- pytest-queryguard compare -->`,
+  with the `--key` before `-->`), by which the action finds its own comment,
+  are public. The rest of the Markdown report is written for people and is
+  not.
 - `python -m pytest_queryguard.trend` and `python -m pytest_queryguard.lint`
   are experimental, see below.
 
@@ -67,7 +69,8 @@ The GitHub Action (`action/action.yml`, see [CI](ci.md#the-action)): its
 inputs with their defaults and accepted values, its outputs (`exit-code`,
 `sarif-file`, `json-file`), and the name of the artifact it uploads,
 `queryguard-json-<category>`, which later runs of older and newer versions of
-the action download. The action is versioned with the package: pin it to a
+the action download, and the pull-request comment it updates in place (found
+by the compare marker above). The action is versioned with the package: pin it to a
 release tag or a commit. The `trend` input and the `trend-report` output are
 experimental. What the job summary and the pull-request comment say is not
 public.
