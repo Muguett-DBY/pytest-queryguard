@@ -740,7 +740,8 @@ def _flag(config: pytest.Config, name: str) -> bool:
 def _strict_hook(
     item: pytest.Item, settings: _Settings
 ) -> (
-    Callable[[RelationshipLoadEvent, CallSite | None, int], BaseException | None] | None
+    Callable[[RelationshipLoadEvent, CallSite | None, int, bool], BaseException | None]
+    | None
 ):
     """The strict-mode check of this test, or None when it cannot raise.
 
@@ -758,29 +759,37 @@ def _strict_hook(
     root = item.config.rootpath
 
     def check(
-        load: RelationshipLoadEvent, first: CallSite | None, parents: int
+        load: RelationshipLoadEvent,
+        first: CallSite | None,
+        parents: int,
+        other_lines: bool,
     ) -> BaseException | None:
-        # the finding the report would make: located at the group's first lazy
-        # load, so ignore patterns and baseline entries match it the same way
+        # the finding the report would make: located at the relationship's
+        # first lazy load, so ignore patterns and baseline entries match it the
+        # same way; with parents of other lines too it has no patch
         parent = load.parent
-        finding = make_finding(
-            RelationshipFinding(
-                load.relationship,
-                parents,
-                first,
-                None,
-                scalar=load.scalar,
-                parent_site=None if parent is None else parent.callsite,
-                parent_root=None if parent is None else parent.root,
-                parent_path=() if parent is None else parent.path,
-            ),
-            cwd=root,
+        detection = RelationshipFinding(
+            load.relationship,
+            parents,
+            first,
+            None,
+            scalar=load.scalar,
+            parent_site=None if parent is None else parent.callsite,
+            other_parent_sites=1 if other_lines else 0,
+            parent_root=None if parent is None else parent.root,
+            parent_path=() if parent is None else parent.path,
         )
+        finding = make_finding(detection, cwd=root)
         if rules and not apply_rules([finding], rules)[0]:
             return None
         if settings.baseline and not baselines.split([finding], settings.baseline)[0]:
             return None
-        error = NPlusOneDetected(format_strict(finding, parents))
+        if settings.show_patch:
+            # the exception replaces the report, so it carries the patch too
+            finding = _with_fix(finding, detection, root, settings.started)
+        error = NPlusOneDetected(
+            format_strict(finding, parents, patch=settings.show_patch)
+        )
         error.queryguard_strict = True  # type: ignore[attr-defined]
         return error
 
@@ -2620,6 +2629,11 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
             # no collector on the stack and no tracker behind
             _discard(collector, trackers)
             raise
+    if strict_error is not None:
+        # The test stopped at the access, so what it would have read later
+        # is unknown: an eager load or a column it reads after the loop is
+        # not unused. The checks of what a test never reads do not apply.
+        trackers = _Trackers()
     try:
         parts, warn_texts = _results(
             item, collector, settings, trackers, limit, time_limit, exempt, source
@@ -2629,6 +2643,12 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         parts, warn_texts = [], []
     _report_internal_error(item.config)
     if strict_error is not None:
+        # An allow_nplusone pattern may be for a finding after the access,
+        # which the test never reached: as for a test that failed on its own,
+        # its patterns are not listed as stale.
+        settings.stale_markers[:] = [
+            entry for entry in settings.stale_markers if entry[0] != item.nodeid
+        ]
         # the failure at the access says it all; the report's text is the same N+1
         raise strict_error
     if not parts:
