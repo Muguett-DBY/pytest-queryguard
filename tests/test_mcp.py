@@ -71,6 +71,7 @@ class Server:
             encoding="utf-8",
         )
         self.next_id = 0
+        self.cwd = cwd
 
     def send(self, message: dict[str, Any] | str) -> None:
         assert self.process.stdin is not None
@@ -176,6 +177,32 @@ def test_run_tests_returns_the_finding_and_the_patch(server: Server) -> None:
     assert ".options(joinedload(Order.customer))" in result["patch"]
     assert result["patch_truncated"] is False
     assert "1 failed" in result["output_tail"]
+    assert Path(result["rootdir"]).resolve() == server.cwd.resolve()
+
+
+def test_each_test_gets_its_own_message(server: Server, project: Path) -> None:
+    (project / "test_more.py").write_text(
+        TEST.replace("test_names", "test_more_names").replace("3", "5")
+    )
+    result = _payload(server.call("run_tests", {"args": ["--", "."]}))
+    assert result["command"] == ["pytest", "--", "."]
+    messages = {f["test"]: f["message"] for f in result["findings"]}
+    assert len(messages) == 2, result["output_tail"]
+    assert "lazy-loaded 3 times" in messages["test_app.py::test_names"]
+    assert "lazy-loaded 5 times" in messages["test_more.py::test_more_names"]
+    assert not any("Seen in" in m for m in messages.values())
+
+
+def test_a_baselined_finding_keeps_its_message(server: Server) -> None:
+    update = ["--queryguard-baseline=b.json", "--queryguard-update-baseline"]
+    _payload(server.call("run_tests", {"args": update}))
+    result = _payload(
+        server.call("run_tests", {"args": ["--queryguard-baseline=b.json"]})
+    )
+    assert result["exit_code"] == 0
+    [finding] = result["findings"]
+    assert finding["baselined"] is True
+    assert "Order.customer was lazy-loaded" in finding["message"]
 
 
 def test_run_tests_passes_args(server: Server) -> None:
@@ -206,6 +233,7 @@ def test_run_tests_stops_at_the_timeout(server: Server, project: Path) -> None:
         ({"timeout": 0}, "timeout must be between"),
         ({"timeout": "5"}, "timeout must be a number"),
         ({"shell": True}, "unknown arguments: shell"),
+        ({"args": ["--queryguard-json=x.json"]}, "args must not contain"),
     ],
 )
 def test_run_tests_rejects_bad_arguments(
@@ -264,6 +292,8 @@ def test_protocol_errors(server: Server) -> None:
     assert server.receive()["error"]["code"] == -32700
     server.send(json.dumps([{"jsonrpc": "2.0", "id": 1, "method": "ping"}]))
     assert server.receive()["error"]["code"] == -32600
+    # a notification gets no answer, even a malformed one
+    server.send({"method": "notifications/initialized"})
     # still serving
     assert server.request("ping")["result"] == {}
 

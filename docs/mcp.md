@@ -47,9 +47,10 @@ not start it with the environment activated.
 
 ### run_tests
 
-`run_tests(args=[], paths=[], timeout=300)` runs `python -m pytest <args> <paths>` in the server's working directory, with
-`--queryguard-json`, `--queryguard-write-patch` and `--queryguard-sarif`
-pointing at temporary files. Returns the exit status, whether the run timed
+`run_tests(args=[], paths=[], timeout=300)` runs `python -m pytest <args> <paths>`
+in the server's working directory, with `--queryguard-json` and
+`--queryguard-write-patch` pointing at temporary files (so `args` must not
+contain them). It returns pytest's rootdir, the exit status, whether the run timed
 out or stopped early, the number of tests and statements, and every finding
 with its test, `kind`, `label`, `file`, `line`, `function`, `count`,
 `baselined`, the first frames of its call stack, its message, a fix hint
@@ -57,10 +58,12 @@ for its kind and its documentation link. When some `relationship-load`
 finding has a certain parent query line, `patch` holds the unified diff
 that adds the loader option (see
 [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query));
-apply it with `git apply` from the rootdir. `output_tail` is the end of
+apply it with `git apply` from the returned `rootdir`; the files of the
+findings are relative to it too. `output_tail` is the end of
 pytest's output. `args` and `paths` are lists of strings; `paths` must not
-start with `-`. The timeout is at most 1800 seconds; on a timeout pytest and
-its pytest-xdist workers are stopped.
+start with `-`. The timeout is at most 1800 seconds; on a timeout pytest is
+stopped with the processes it started (its process group on Linux and macOS,
+`taskkill /T` on Windows), such as pytest-xdist workers.
 
 ### explain_finding
 
@@ -83,13 +86,13 @@ characters, labels of 300, 5 stack frames, a patch of 20,000 characters
 (`patch_truncated`), the last 4,000 characters of pytest's output and a
 compare report of 20,000 characters.
 
-A finding's message is taken from the SARIF file of the run, so a finding
-without a location inside the rootdir has none; the other fields are still
-there.
+The process keeps only the end of pytest's output in memory, so a verbose
+run does not grow the server.
 
 ## Security
 
-The server runs one program: `python -m pytest` with the interpreter it runs
+The server runs one program, `python -m pytest` (on Windows also `taskkill`
+to stop it at a timeout), with the interpreter it runs
 on, in its working directory, without a shell. The arguments are passed to
 pytest as they are, and pytest options can load plugins (`-p`) and read
 configuration, so the server gives the agent what running pytest in that

@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   findings with message, fix hint and stack, plus the patch of
   `--queryguard-write-patch`), `explain_finding` and `compare` return bounded
   JSON. See docs/mcp.md.
+- `--queryguard-json`: each finding has a `message`, its report text as the
+  terminal shows it, without the indent (the wording is not stable).
 - In-application mode: `page_report="footer"` or `"console"` adds a
   request's findings to its own HTML page, as an `<aside>` before
   `</body>` or as a `console.warn()` script, like Bullet in Rails. Only

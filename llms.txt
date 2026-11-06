@@ -127,7 +127,7 @@ flask_app.wsgi_app = queryguard.QueryGuardWSGI(flask_app.wsgi_app)
 
 ## MCP server for coding agents (experimental)
 
-`python -m pytest_queryguard.mcp` is a Model Context Protocol server over stdio (JSON-RPC 2.0, one message per line, standard library only). Add it to Claude Code with `claude mcp add queryguard -- python -m pytest_queryguard.mcp`, or to Cursor's `mcp.json` with `"command": "python", "args": ["-m", "pytest_queryguard.mcp"]`, using the project's interpreter, from the project directory. Tools: `run_tests(args, paths, timeout)` runs `python -m pytest` there and returns each test's findings (kind, label, file, line, function, count, message, fix hint, stack), the totals and the patch for `git apply`, all size-capped; `explain_finding(kind)`; `compare(base_json, head_json)` over two `--queryguard-json` files. It runs only pytest, without a shell. Experimental; see docs/mcp.md.
+`python -m pytest_queryguard.mcp` is a Model Context Protocol server over stdio (JSON-RPC 2.0, one message per line, standard library only). Add it to Claude Code with `claude mcp add queryguard -- python -m pytest_queryguard.mcp`, or to Cursor's `mcp.json` with `"command": "python", "args": ["-m", "pytest_queryguard.mcp"]`, using the project's interpreter, from the project directory. Tools: `run_tests(args, paths, timeout)` runs `python -m pytest` there and returns each test's findings (kind, label, file, line, function, count, message, fix hint, stack), the totals, the rootdir and the patch for `git apply`, all size-capped; `explain_finding(kind)`; `compare(base_json, head_json)` over two `--queryguard-json` files. It runs only pytest, without a shell. Experimental; see docs/mcp.md.
 
 ## Configuration
 

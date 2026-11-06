@@ -29,6 +29,7 @@ from .findings import (
     Finding,
     SourceFix,
     docs_url,
+    message_text,
 )
 
 SARIF_VERSION = "2.1.0"
@@ -42,15 +43,15 @@ Identity = tuple[str, str, str | None, str | None]
 Collected = dict[Identity, tuple[Finding, str]]
 
 
-class _Rule(NamedTuple):
+class Rule(NamedTuple):
     name: str
     short: str
     full: str
     fix: str
 
 
-_RULES: dict[str, _Rule] = {
-    KIND_RELATIONSHIP: _Rule(
+_RULES: dict[str, Rule] = {
+    KIND_RELATIONSHIP: Rule(
         "RelationshipLoad",
         "A relationship is lazy-loaded once per row (N+1)",
         "A relationship was lazy-loaded for many parent rows, one query each. "
@@ -58,7 +59,7 @@ _RULES: dict[str, _Rule] = {
         "Load the relationship with the parent query: joinedload() for a "
         "many-to-one or one-to-one relationship, selectinload() for a collection.",
     ),
-    KIND_REPEAT: _Rule(
+    KIND_REPEAT: Rule(
         "RepeatedStatement",
         "The same statement runs many times with different parameters",
         "One statement ran many times from one source line, usually in a loop "
@@ -66,7 +67,7 @@ _RULES: dict[str, _Rule] = {
         "Fetch all rows in one query, for example WHERE id IN (...), instead of "
         "querying in a loop.",
     ),
-    KIND_COLUMN_LOAD: _Rule(
+    KIND_COLUMN_LOAD: Rule(
         "ColumnLoad",
         "Deferred or expired columns are loaded instance by instance",
         "Instances loaded their deferred columns, or columns expired by "
@@ -75,7 +76,7 @@ _RULES: dict[str, _Rule] = {
         "or deferred()); for expired attributes create the Session with "
         "expire_on_commit=False or reload the instances with one query.",
     ),
-    KIND_WRITE_LOOP: _Rule(
+    KIND_WRITE_LOOP: Rule(
         "WriteLoop",
         "Rows are written one statement at a time",
         "The same INSERT, UPDATE or DELETE ran row by row from one source line "
@@ -84,7 +85,7 @@ _RULES: dict[str, _Rule] = {
         "insert() or update() with a list of parameter sets, or one "
         "DELETE ... WHERE id IN (...).",
     ),
-    KIND_UNUSED_EAGER_LOAD: _Rule(
+    KIND_UNUSED_EAGER_LOAD: Rule(
         "UnusedEagerLoad",
         "A relationship is eager-loaded and never read (experimental)",
         "A query loaded a relationship with selectinload(), joinedload(), "
@@ -92,7 +93,7 @@ _RULES: dict[str, _Rule] = {
         "Remove the eager option from the query, or load the relationship "
         "only in the queries whose result uses it.",
     ),
-    KIND_UNUSED_COLUMNS: _Rule(
+    KIND_UNUSED_COLUMNS: Rule(
         "UnusedColumns",
         "A wide row is loaded and few of its columns are read (experimental)",
         "Queries of one function loaded many columns of a class and the test "
@@ -100,7 +101,7 @@ _RULES: dict[str, _Rule] = {
         "Load only the columns that are used with .options(load_only(...)), or "
         "defer() the large columns that are never read.",
     ),
-    KIND_CARTESIAN_LOAD: _Rule(
+    KIND_CARTESIAN_LOAD: Rule(
         "CartesianLoad",
         "One query joins two collections side by side",
         "A SELECT loads two collections with joinedload() where neither is on "
@@ -109,7 +110,7 @@ _RULES: dict[str, _Rule] = {
         "Load all but one of the collections with selectinload(): one more "
         "query each, and no repeated rows.",
     ),
-    KIND_MISSING_INDEX: _Rule(
+    KIND_MISSING_INDEX: Rule(
         "MissingIndex",
         "A query reads a table in full where an index could be used",
         "EXPLAIN shows a sequential scan that filters or joins on columns "
@@ -119,6 +120,11 @@ _RULES: dict[str, _Rule] = {
     ),
 }
 KINDS = tuple(_RULES)
+
+
+def rule(kind: str) -> Rule | None:
+    """The description and fix hint of a finding kind, None for an unknown one."""
+    return _RULES.get(kind)
 
 
 def rule_id(kind: str) -> str:
@@ -266,8 +272,7 @@ def _rule(kind: str) -> dict[str, Any]:
 
 
 def _message(finding: Finding) -> str:
-    lines = [line.removeprefix("  ") for line in finding.message.splitlines()]
-    text = "\n".join(lines).strip() or finding.label
+    text = message_text(finding)
     if finding.tests <= 1:
         return text
     # The result merges the finding from several tests: say how the counts
