@@ -8,8 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from types import FrameType
 
-import sqlalchemy.orm.session as _orm_session
-
+from ._compat import FLUSH_CONTEXT, FLUSH_FUNCTION, SESSION_FILE
 from .events import CallSite
 
 
@@ -181,7 +180,7 @@ def _first_external(frame: FrameType | None, sites: Sites) -> CallSite | None:
 # `flush_context`. It sits behind a generated "warned" wrapper, so the frame is
 # found by function name and file. If a SQLAlchemy release renames either, no
 # statement is tagged and the write-loop rule counts every statement, as before.
-_SESSION_FILE = getattr(_orm_session, "__file__", None)
+_SESSION_FILE = SESSION_FILE
 _flush_numbers = itertools.count(1)
 _MAX_FLUSH_DEPTH = 60
 
@@ -199,8 +198,8 @@ def find_flush() -> int | None:
         if frame is None:
             return None
         code = frame.f_code
-        if code.co_name == "_flush" and code.co_filename == _SESSION_FILE:
-            context = frame.f_locals.get("flush_context")
+        if code.co_name == FLUSH_FUNCTION and code.co_filename == _SESSION_FILE:
+            context = frame.f_locals.get(FLUSH_CONTEXT)
             if context is None:
                 return None
             number = getattr(context, "_queryguard_flush", None)

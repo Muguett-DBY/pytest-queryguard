@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside one function. Output as text, JSON or SARIF (rule
   `queryguard/static-relationship-load`), exit status 1 on findings,
   `# queryguard: ignore` on the line to suppress. See docs/static-check.md.
+- In-application mode: `page_report="footer"` or `"console"` adds a
+  request's findings to its own HTML page, as an `<aside>` before
+  `</body>` or as a `console.warn()` script, like Bullet in Rails. Only
+  for complete, uncompressed `text/html` responses with a `Content-Length`;
+  `Content-Length` is updated, and a page with a Content-Security-Policy
+  gets the footer instead of the script. Off by default (#280).
 - A patch for a `relationship-load` finding whose parent query line is
   certain: the loader option of the `fix:` hint added to the `select(...)` or
   `session.query(...)` call of that line, or to its `.options(...)`, with
@@ -31,6 +37,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged since the session started, and names the module imports, there
   is no patch, only the hint. Made with the stdlib `ast` when the findings
   are reported (#247).
+
+### Changed
+
+- In-application mode: the watched engine's `before_cursor_execute` listener
+  reads which relationship or column load an ORM `SELECT` runs for from that
+  statement's own options, with the same code as the pytest plugin since
+  0.7.0, and `watch()` no longer registers a `do_orm_execute` listener on
+  `Session` or a `before_cursor_execute` listener on every `Engine`. Each ORM
+  statement is prepared once instead of twice: inside a request the ORM
+  `select()` of `scripts/bench_overhead.py --app` costs about a third less
+  to measure (+21 instead of +32 microseconds per statement on one laptop),
+  and outside one about half. On SQLAlchemy 2.0.20 to 2.0.49 an
+  application's `yield_per` or `autoflush=False` query with `selectinload()`
+  now works while the engine is watched (SQLAlchemy issue 13301), and the
+  in-app mode labels a load as the plugin does: the sample SQL of a
+  relationship-load finding is the lazy load, not an eager loader's query
+  (#289).
+
+### Internal
+
+- Every private SQLAlchemy attribute, execution option, frame and code object
+  the plugin and the in-app mode read is named in one module,
+  `pytest_queryguard._compat`, with the versions it is known for, and
+  `tests/test_compat.py` checks each against the installed SQLAlchemy, so a
+  release that renames one fails that test first, with the name in the
+  message. The per-statement code reads them inline; the overhead gate's ORM
+  ratio is unchanged (#245).
 
 ## [0.7.0] - 2026-11-06
 

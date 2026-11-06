@@ -363,6 +363,7 @@ EXPECTED_APP_FIELDS = {
         "max_events",
         "sample_rate",
         "min_db_time",
+        "page_report",
     ],
     "RequestReport": [
         "id",
