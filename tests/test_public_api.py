@@ -110,6 +110,7 @@ EXPECTED_INI = {
     "queryguard_repeat_scope": "test",
     "queryguard_write_loop_threshold": "0",
     "queryguard_unused_eager_load": "off",
+    "queryguard_unused_columns": "off",
     "queryguard_cartesian_load": "warn",
     "queryguard_strict": "False",
     "queryguard_patch": "False",

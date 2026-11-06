@@ -109,6 +109,9 @@ defaults, labels or messages, or remove them, with a changelog entry under
 - `queryguard_unused_eager_load` and the `unused-eager-load` finding kind
   (rule `queryguard/unused-eager-load` in SARIF). See
   [Unused eager loads](unused-eager-load.md).
+- `queryguard_unused_columns` and the `unused-columns` finding kind (rule
+  `queryguard/unused-columns` in SARIF), with its thresholds. See
+  [Unused columns](unused-columns.md).
 - The missing-index check on MySQL and MariaDB (tested in CI on MySQL 8.4 and
   MariaDB 11.8; see [the MySQL and MariaDB page](index-check-mysql.md)).
 - The in-application mode: every name in `pytest_queryguard.app` (`watch`,
@@ -119,8 +122,8 @@ defaults, labels or messages, or remove them, with a changelog entry under
   [In-application mode](in-app.md).
 
 Everything else listed under "What is public" follows the deprecation policy.
-`tests/test_public_api.py` still snapshots the experimental ini option and its
-default, and the names, signatures and fields of `pytest_queryguard.app` and
+`tests/test_public_api.py` still snapshots the experimental ini options and
+their defaults, and the names, signatures and fields of `pytest_queryguard.app` and
 the keys of the panel's JSON, so a change to them is deliberate and visible in
 review.
 
@@ -139,7 +142,8 @@ with an `INTERNALERROR`:
   file are reported in their own section instead. A warnings "error" filter
   does not turn the warning into a failure. Tests that the plugin would have
   failed (N+1, missing index, budgets) may pass after that point.
-- The unused eager-load check turns only itself off, with its own warning.
+- The unused eager-load and unused-columns checks turn only themselves off,
+  each with its own warning.
 - `KeyboardInterrupt`, `SystemExit` and `asyncio.CancelledError` are signals,
   not plugin bugs: they are never swallowed. The plugin still takes its
   collector off the stack, and an interrupted run does not rewrite the

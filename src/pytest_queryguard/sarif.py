@@ -23,6 +23,7 @@ from .findings import (
     KIND_MISSING_INDEX,
     KIND_RELATIONSHIP,
     KIND_REPEAT,
+    KIND_UNUSED_COLUMNS,
     KIND_UNUSED_EAGER_LOAD,
     KIND_WRITE_LOOP,
     Finding,
@@ -90,6 +91,14 @@ _RULES: dict[str, _Rule] = {
         "subqueryload() or immediateload() and the test never read it.",
         "Remove the eager option from the query, or load the relationship "
         "only in the queries whose result uses it.",
+    ),
+    KIND_UNUSED_COLUMNS: _Rule(
+        "UnusedColumns",
+        "A wide row is loaded and few of its columns are read (experimental)",
+        "Queries of one function loaded many columns of a class and the test "
+        "read at most half of them, counting the keys the ORM needs.",
+        "Load only the columns that are used with .options(load_only(...)), or "
+        "defer() the large columns that are never read.",
     ),
     KIND_CARTESIAN_LOAD: _Rule(
         "CartesianLoad",

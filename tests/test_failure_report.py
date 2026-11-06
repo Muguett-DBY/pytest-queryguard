@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -83,23 +84,29 @@ def test_summary_names_the_statement_listener(project: pytest.Pytester) -> None:
 
 @_quiet
 def test_orm_listener_failure_is_named() -> None:
-    class State:
-        is_column_load = False
-        is_relationship_load = True
+    class Options:
+        _for_refresh_state = False
 
         @property
-        def loader_strategy_path(self) -> None:
+        def _current_path(self) -> None:
             raise RuntimeError("path broke")
 
+    context = SimpleNamespace(
+        execution_options={},
+        invoked_statement=SimpleNamespace(
+            _propagate_attrs={"compile_state_plugin": "orm"},
+            _compile_options=Options(),
+        ),
+    )
     collector = QueryCollector()
     push(collector)
     try:
-        listeners._on_orm_execute(State())  # type: ignore[arg-type]
+        listeners._on_cursor_execute(None, None, "SELECT 1", (), context, False)
     finally:
         pop(collector)
     failure = listeners.internal_failure()
     assert failure is not None
-    assert failure.source == "do_orm_execute listener (relationship loads)"
+    assert failure.source == "before_cursor_execute listener (statements)"
     assert failure.summary == "RuntimeError: path broke"
 
 

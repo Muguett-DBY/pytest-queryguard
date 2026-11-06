@@ -10,7 +10,7 @@ It watches the SQL each test function body sends (fixture setup and teardown are
 pip install pytest-queryguard
 ```
 
-This file describes 0.6.0. Needs Python 3.10+, pytest 8+ and SQLAlchemy 2.0.13+. The plugin registers itself through the `pytest11` entry point: there is nothing to import or configure. For async code on SQLAlchemy 2.1+, also install `sqlalchemy[asyncio]` (greenlet).
+This file describes 0.7.0. Needs Python 3.10+, pytest 8+ and SQLAlchemy 2.0.13+. The plugin registers itself through the `pytest11` entry point: there is nothing to import or configure. For async code on SQLAlchemy 2.1+, also install `sqlalchemy[asyncio]` (greenlet).
 
 ## Quick start
 
@@ -47,6 +47,7 @@ A test fails when, inside the test function, one of these finding kinds is found
 - `column-load`: 5 or more instances of one class each reload a deferred column (hint: `undefer`) or attributes expired by `commit()`/`expire()` (hint: `expire_on_commit=False`);
 - `write-loop` (opt-in, `queryguard_write_loop_threshold`): the same single-row `INSERT`, `UPDATE` or `DELETE` run many times from one source line;
 - `unused-eager-load` (experimental, off by default, `queryguard_unused_eager_load = off|warn|fail`): a relationship loaded with `selectinload`, `joinedload`, `subqueryload` or `immediateload` and never read. See docs/unused-eager-load.md;
+- `unused-columns` (experimental, off by default, `queryguard_unused_columns = off|warn|fail`): a query loads rows of a class with at least 8 columns and the test reads at most half of them (keys the ORM needs count as read); the fix line suggests `.options(load_only(...))`. See docs/unused-columns.md;
 - `missing-index` (opt-in): see below.
 
 Runnable projects are in `examples/`. Documentation pages are in `docs/` (build them with `uv run --group docs python scripts/build_docs.py --strict`).
@@ -137,6 +138,7 @@ Ini options, read from `[tool.pytest.ini_options]`, pytest 9's `[tool.pytest]`, 
 | `queryguard_column_load_threshold` | integer >= 2 | `5` |
 | `queryguard_write_loop_threshold` | `0` or integer >= 2 | `0` (off) |
 | `queryguard_unused_eager_load` | `off`, `warn`, `fail` | `off` |
+| `queryguard_unused_columns` | `off`, `warn`, `fail` | `off` |
 | `queryguard_fail_on` | finding kinds (`fnmatch`) per line; other kinds only warn | empty (all kinds fail) |
 | `queryguard_max_events` | integer >= 0 (`0`: no limit) | `10000` |
 | `queryguard_ignore` | `KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB]` per line (`stack`: any reported frame, `file` or `file:function`, up to `queryguard_stack_depth` callers) | empty |
@@ -199,7 +201,7 @@ Findings follow `queryguard_mode`. Exclude small lookup tables with `queryguard_
 ## Docs
 
 - [README](https://github.com/MaciejZiel/pytest-queryguard/blob/main/README.md): overview and a first example
-- [Documentation pages](https://github.com/MaciejZiel/pytest-queryguard/tree/main/docs): getting started, how detection works, configuration reference, budgets, in-application mode, ignoring, baseline, CI and SARIF, index check (PostgreSQL, SQLite, MySQL and MariaDB), index advisor, unused eager loads, limitations, FAQ, comparison with other tools, migration from nplusone, stability policy
+- [Documentation pages](https://github.com/MaciejZiel/pytest-queryguard/tree/main/docs): getting started, how detection works, configuration reference, budgets, in-application mode, ignoring, baseline, CI and SARIF, index check (PostgreSQL, SQLite, MySQL and MariaDB), index advisor, unused eager loads, unused columns, limitations, FAQ, comparison with other tools, migration from nplusone, stability policy
 - [Examples](https://github.com/MaciejZiel/pytest-queryguard/tree/main/examples): runnable projects
 - [CHANGELOG](https://github.com/MaciejZiel/pytest-queryguard/blob/main/CHANGELOG.md): changes per release
 - [PyPI](https://pypi.org/project/pytest-queryguard/): released versions

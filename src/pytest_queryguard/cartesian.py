@@ -6,15 +6,15 @@ customer comes back once per pair of an order and a note: 20 orders and 20
 notes are 400 rows for one customer. EF Core warns about this ("multiple
 collection includes"); this module does the same for SQLAlchemy.
 
-The check reads the loader options of each top-level ORM SELECT, as the
-unused eager-load check does (``eager.loader_paths``). The options split into
-statements wherever a step is not joined: a ``selectinload``, a
-``subqueryload``, or a ``defaultload``/``lazyload`` of a lazy relationship
-runs a SELECT of its own. Inside one statement, two joined collections are a
-product when neither is on the path of the other; the finding names the
-topmost collection of each of the two branches. ``joinedload(A.bs)
-.joinedload(B.cs)`` is a chain whose rows grow with the number of ``cs``, not
-a product, and is left alone. Loader strategies set on the mapping
+The check reads the loader options of each top-level ORM SELECT when it runs,
+with the parser of the unused eager-load check (``eager.loader_paths``). The
+options split into statements wherever a step is not joined: a
+``selectinload``, a ``subqueryload``, or a ``defaultload``/``lazyload`` of a
+lazy relationship runs a SELECT of its own. Inside one statement, two joined
+collections are a product when neither is on the path of the other; the finding
+names the topmost collection of each of the two branches. ``joinedload(A.bs)
+.joinedload(B.cs)`` is a chain whose rows grow with the number of ``cs``, not a
+product, and is left alone. Loader strategies set on the mapping
 (``relationship(lazy="joined")``) are not options of the query and are not
 seen, except on a ``defaultload()`` step.
 """
@@ -24,13 +24,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import event
-from sqlalchemy.orm import Session
-
 from . import blocks, collector, listeners
-from .callsite import find_callsite
+from .blocks import IgnoreBlock
 from .eager import LOADERS, loader_paths
-from .events import CartesianLoadEvent
+from .events import CallSite, CartesianLoadEvent
 from .findings import KIND_CARTESIAN_LOAD, Finding
 from .warnings import QueryGuardInternalWarning, warn_internal
 
@@ -112,21 +109,31 @@ def _path(key: tuple[Any, ...], strategies: dict[Any, tuple[str, str | None]]) -
     return tuple(steps)
 
 
-def _on_orm_execute(state: Any) -> None:
-    active = collector.full_active()
-    if not active or _broken or listeners._error is not None:
+def _check(
+    statement: Any,
+    site: CallSite | None,
+    ignores: tuple[IgnoreBlock, ...],
+    active: tuple[collector.QueryCollector, ...],
+) -> None:
+    """Read the loader options of a top-level ORM SELECT as it runs.
+
+    Called by the plugin's cursor listener (``listeners.cartesian_check``)
+    for an ORM query that is no relationship or column load (those carry
+    the outer query's options, not where the user wrote them), with the
+    statement's call site. Not a ``do_orm_execute`` listener: any listener
+    of that event makes SQLAlchemy prepare every ORM statement twice.
+    """
+    if _broken:
         return
     try:
         # most statements have no loader options: one attribute read, then out
-        options = getattr(state.statement, "_with_options", ())
-        if not options:
-            return
-        if not state.is_select or state.is_relationship_load or state.is_column_load:
+        options = getattr(statement, "_with_options", ())
+        if not options or not getattr(statement, "is_select", False):
             return
         found = _collections(options)
         if found is None:
             return
-        load = CartesianLoadEvent(found[1], found[0], find_callsite(), blocks.current())
+        load = CartesianLoadEvent(found[1], found[0], site, ignores)
         for c in active:
             c.add_cartesian_load(load)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
@@ -151,11 +158,12 @@ def _broke(exc: Exception) -> None:
 
 
 def enable() -> None:
-    """Install the listener; calls nest, see ``disable()``."""
+    """Turn the check on in the plugin's cursor listener; calls nest, see
+    ``disable()``."""
     global _enabled
     _enabled += 1
     if _enabled == 1:
-        event.listen(Session, "do_orm_execute", _on_orm_execute)
+        listeners.cartesian_check = _check
 
 
 def disable() -> None:
@@ -164,7 +172,7 @@ def disable() -> None:
         return
     _enabled -= 1
     if _enabled == 0:
-        event.remove(Session, "do_orm_execute", _on_orm_execute)
+        listeners.cartesian_check = None
 
 
 def label(collections: tuple[Path_, ...]) -> str:

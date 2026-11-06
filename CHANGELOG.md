@@ -21,6 +21,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is no patch, only the hint. Made with the stdlib `ast` when the findings
   are reported (#247).
 
+## [0.7.0] - 2026-11-06
+
+ORM statements cost about a third less to measure: the plugin reads the
+ORM's options on the `SELECT` itself and no longer registers a
+`do_orm_execute` listener by default. Each finding shows the lines of your
+code that led to it (`called from`). New in a test: the `queryguard` fixture
+(`max_queries` / `num_queries` blocks, like pytest-django's) and
+`pytest_queryguard.ignore()` blocks; ignore rules can match the call stack
+(`stack=`). The in-app mode can report to OpenTelemetry and Sentry and sample
+requests. An experimental check reports wide rows of which a test reads few
+columns.
+
+Upgrading from 0.6.0: reports have up to three more lines per finding
+(`queryguard_stack_depth = 0` restores the old layout). A lazy load answered
+without a `SELECT` (your own `do_orm_execute` cache) is no longer counted, and
+the cartesian-load check now also sees ORM selects run through
+`Connection.execute()`. Nothing else changes for an existing configuration.
+
+### Added
+
+
 - Each finding shows a short stack: under `first at`, a `called from` line
   for each line of your code that called it, innermost first, up to the test,
   with SQLAlchemy, pytest and plugin frames left out, so the path through
@@ -66,15 +87,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is called from `app/admin/*` and nowhere else. It sees as deep as
   `queryguard_stack_depth`; the baseline still matches by kind, label, file
   and function (#276).
+- Experimental detection of unused columns, off by default:
+  `queryguard_unused_columns` (`off`, `warn` or `fail`). When the rows of a
+  class that a query loads have at least 8 columns and the test body reads at
+  most half of them (the primary key, foreign keys and other columns the ORM
+  needs count as read), the finding (kind `unused-columns`, label the class,
+  as in `Account`) names the columns never read and suggests
+  `.options(load_only(...))`, or `defer()` of the large ones. Only the
+  query's own entities are checked, not rows loaded through relationships or
+  objects the test created. It has its SARIF rule `queryguard/unused-columns`
+  and works with `allow_nplusone`, `queryguard_ignore`, `ignore()` blocks and
+  the baseline. With the option off nothing is installed; see
+  `docs/unused-columns.md` for how it works, its cost and its limits (#243).
 
 ### Changed
 
+- The unused eager-load check and the new unused-columns check share one
+  wrapper of `InstrumentedAttribute.__get__`, so either can be turned on and
+  off without leaving the other's wrapper behind; a tracked read with only
+  the eager-load check on costs a little less than before.
 - CI runs the MySQL and MariaDB index check against live servers: a `mysql`
   job starts MySQL 8.4 and MariaDB 11.8 from their official Docker images and
   runs the MySQL test files with PyMySQL and aiomysql. The job sets
   `QUERYGUARD_REQUIRE_BACKENDS`, which turns the skip of the live tests (no
   URL, no server, no driver) into a failure, so it cannot pass without having
   run them. The check was tested by hand before (#277).
+- A lazy load no longer walks the call stack. A refresh of a mapped eager
+  relationship is told by the context SQLAlchemy hands the loader's
+  statement, and the begin-listener check that walked the whole stack for
+  each lazy-load and column-load `SELECT` is gone (see the next entry). The
+  cost of a lazy load no longer grows with the depth of the test's stack
+  (#252).
+- The plugin no longer registers a `do_orm_execute` listener by default. Lazy
+  loads, column loads and loader statements are recognised in
+  `before_cursor_execute`, from the ORM's options on the `SELECT` itself, and
+  the cartesian-load check runs in the same listener. With any
+  `do_orm_execute` listener SQLAlchemy prepares each ORM statement twice;
+  without one the added cost of an ORM statement falls by about a third (the
+  overhead check's ORM ratio from 0.38 to 0.26 on one laptop). The attribution
+  no longer has to be parked on the `Session` until its `SELECT` runs, so
+  statements in between (autoflush, begin listeners, other Sessions or tasks
+  on the connection) cannot take it by design, and the stack walk that told a
+  begin listener's statement apart is gone. Loads are counted per `SELECT`
+  sent: one answered without a `SELECT` (a `do_orm_execute` listener of your
+  own returning a cached result) is no longer counted, and one sent several
+  times (horizontal sharding, a `handle_error` retry) counts each time. The
+  query of a top-level `subqueryload` takes its scope from the connection; see
+  [limitations](docs/limitations.md). The cartesian-load check now also sees
+  ORM-enabled selects run through `Connection.execute()`. Strict mode keeps a
+  `do_orm_execute` listener, installed only when it is on, so it still raises
+  before the autoflush and the engine; a strict run pays the cost of the
+  double preparation. The workaround for SQLAlchemy issue 13301 (2.0.20 to
+  2.0.49) now comes with that listener and the unused eager-load check's
+  (#250).
 
 ### Documentation
 
@@ -2000,7 +2065,8 @@ First release.
 - An internal error disables the plugin with a single warning instead of
   failing the test suite.
 
-[Unreleased]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0rc3...v0.5.0
 [0.5.0rc3]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0rc2...v0.5.0rc3

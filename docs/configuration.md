@@ -12,6 +12,7 @@
 | `queryguard_patch` | bool | `false` | Prints a patch under each `relationship-load` finding whose parent query line is certain: the loader option added to its `select()` or `query()` call, with the import. See [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query). |
 | `queryguard_cartesian_load` | `off`, `warn`, `fail` | `warn` | Reports a SELECT that joins two collections side by side, whose rows grow as their product (kind `cartesian-load`, see [How detection works](how-detection-works.md#cartesian-load)); `warn` only warns, `fail` fails the test in `fail` mode. |
 | `queryguard_unused_eager_load` | `off`, `warn`, `fail` | `off` | Experimental (exempt from the [deprecation policy](stability.md#experimental)). Reports relationships a test eager-loads and never reads (kind `unused-eager-load`); `warn` only warns, `fail` fails the test in `fail` mode. See [docs/unused-eager-load.md](unused-eager-load.md). |
+| `queryguard_unused_columns` | `off`, `warn`, `fail` | `off` | Experimental (exempt from the [deprecation policy](stability.md#experimental)). Reports a class whose rows a query loads with at least 8 columns when the test reads at most half of them, and suggests `load_only()` (kind `unused-columns`); `warn` only warns, `fail` fails the test in `fail` mode. See [docs/unused-columns.md](unused-columns.md). |
 | `queryguard_fail_on` | kinds or `fnmatch` patterns, one per line | empty (all kinds) | The finding kinds that fail a test in `fail` mode; the other kinds are reported as `QueryGuardWarning` and the test passes. For example `relationship-load` alone. Budgets always fail. |
 | `queryguard_column_load_threshold` | integer ≥ 2 | `5` | Number of different instances of one class that must load deferred or expired columns on their own to count as N+1. |
 | `queryguard_max_events` | integer ≥ 0 | `10000` | Statements (and relationship loads) stored per test for reports. Beyond it they are only counted, and the report says so. `0` stores everything. |
@@ -27,7 +28,7 @@
 
 Any invalid value stops pytest with a usage error.
 
-The options with a fixed set of values (`queryguard_mode`, `queryguard_repeat_scope`, `queryguard_unused_eager_load`, `queryguard_cartesian_load`, `queryguard_hypopg`) and `--queryguard-mode` ignore case and surrounding spaces: `WARN`, `Warn` and `warn` mean the same.
+The options with a fixed set of values (`queryguard_mode`, `queryguard_repeat_scope`, `queryguard_unused_eager_load`, `queryguard_unused_columns`, `queryguard_cartesian_load`, `queryguard_hypopg`) and `--queryguard-mode` ignore case and surrounding spaces: `WARN`, `Warn` and `warn` mean the same.
 
 In `pyproject.toml`:
 

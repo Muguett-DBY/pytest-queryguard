@@ -217,6 +217,10 @@ The options that are off by default cost nothing until you turn them on:
   171 ns per attribute read with the option off, 207 ns with it on but idle
   (outside a test body), 306 ns while a test body is tracked
   (`scripts/bench_eager_overhead.py`).
+- Unused-column tracking (`queryguard_unused_columns`) wraps the same reads
+  and listens to each loaded row: about 170 ns per attribute read and 1.3 us
+  per loaded row while a test body is tracked
+  (`scripts/bench_columns_overhead.py`, see [Unused columns](unused-columns.md)).
 
 The numbers depend on your machine and database.
 
@@ -237,12 +241,13 @@ error and the line that raised it. A test then passes or fails on its own
 assertions. Invalid configuration values are the exception: they stop pytest
 at start-up with a usage error, before any test runs.
 
-On SQLAlchemy 2.0.20 to 2.0.49, every `do_orm_execute` listener, the plugin's
-included, makes the outer statement's `yield_per` and `autoflush` options
-reach its `selectinload` statement (SQLAlchemy issue 13301): `yield_per` then
-fails with "Can't use the ORM yield_per feature in conjunction with unique()".
-The plugin undoes that for its own listeners, so a test does not fail only
-because the plugin is installed. A listener of your own triggers the issue
+On SQLAlchemy 2.0.20 to 2.0.49, every `do_orm_execute` listener makes the
+outer statement's `yield_per` and `autoflush` options reach its
+`selectinload` statement (SQLAlchemy issue 13301): `yield_per` then fails
+with "Can't use the ORM yield_per feature in conjunction with unique()". The
+plugin has such a listener only for strict mode and the unused eager-load
+check (both off by default) and undoes the effect for them, so a test does not fail only because
+the plugin is installed. A listener of your own triggers the issue
 with or without the plugin; upgrading to SQLAlchemy 2.0.50 or later fixes the
 cause.
 

@@ -75,7 +75,8 @@ the label as the pattern. The kinds are `relationship-load` (the label is the re
 `column-load` (the class and its deferred columns, as in `Book.summary`, or
 the class and the cause for expired attributes, as in `Book (expired)`),
 `write-loop` (the normalized `INSERT`, `UPDATE` or `DELETE`),
-`unused-eager-load` (the relationship, as in `Order.customer`) and
+`unused-eager-load` (the relationship, as in `Order.customer`),
+`unused-columns` (the class, as in `Account`) and
 `missing-index` (the table, with its schema as in the report; see below for
 the spellings a table name accepts). `file` is
 relative to pytest's rootdir, with forward slashes. Findings that no longer

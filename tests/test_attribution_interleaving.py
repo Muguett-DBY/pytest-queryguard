@@ -20,6 +20,7 @@ from sqlalchemy.orm import (
     Session,
     mapped_column,
     relationship,
+    selectinload,
 )
 from sqlalchemy.pool import NullPool, StaticPool
 
@@ -193,6 +194,55 @@ def test_an_after_begin_select_does_not_take_the_attribution() -> None:
     assert _child_relationships(log) == {"Parent.children"}
 
 
+def _deep(depth: int, fn: Any) -> Any:
+    return _deep(depth - 1, fn) if depth else fn()
+
+
+class _OverridingSession(Session):
+    """A Session subclass between the lazy loader and the ORM execution."""
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        return super().execute(*args, **kwargs)
+
+
+@pytest.mark.parametrize("session_class", [Session, _OverridingSession])
+def test_a_nested_after_begin_select_deep_in_the_stack_keeps_out(
+    session_class: type[Session],
+) -> None:
+    # A begin listener that reaches its SELECT through helpers, in a test that
+    # runs far down the stack, is still told apart from the lazy load's own
+    # SELECT.
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as seed:
+        seed.add_all(Parent(id=i, children=[Child()]) for i in range(1, 4))
+        seed.commit()
+
+    @event.listens_for(Session, "after_begin")
+    def probe(session: Session, transaction: Any, connection: Any) -> None:
+        _deep(10, lambda: connection.exec_driver_sql("SELECT 1"))
+
+    def body() -> Any:
+        with (
+            session_class(engine, expire_on_commit=False) as session,
+            record_queries() as log,
+        ):
+            parents = session.scalars(select(Parent)).all()
+            session.commit()
+            for parent in parents:
+                _ = parent.children
+                session.commit()
+        return log
+
+    try:
+        log = _deep(300, body)
+    finally:
+        event.remove(Session, "after_begin", probe)
+    assert _child_relationships(log) == {"Parent.children"}
+    _only_child_loads_have_a_relationship(log)
+    assert listeners.internal_error() is None
+
+
 def test_autoflush_writes_before_a_lazy_load_keep_the_attribution() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
@@ -315,22 +365,47 @@ def test_async_sessions_on_one_connection_keep_each_attribution() -> None:
     assert _child_relationships(log) == {"Parent.children"}
 
 
-def test_a_stale_attribution_of_another_session_is_not_taken() -> None:
-    # An ORM execution whose SELECT never ran (answered from a cache by a
-    # do_orm_execute listener, or failed before the cursor) leaves its
-    # attribution parked on its Session. A later ORM SELECT of another
-    # Session on the same connection must not take it.
+def test_a_lazy_load_without_a_select_labels_no_later_statement() -> None:
+    # A do_orm_execute listener of the user answers the lazy load from a cache,
+    # so its SELECT never runs. The next statement carries its own options,
+    # never the attribution of that load.
+    engine = _shared_connection_engine()
+    with Session(engine) as session:
+        frozen = session.execute(select(Child).where(Child.id == -1)).freeze()
+
+        def cache(state: Any) -> Any:
+            return frozen() if state.is_relationship_load else None
+
+        event.listen(session, "do_orm_execute", cache)
+        parents = session.scalars(select(Parent)).all()
+        with record_queries() as log:
+            assert parents[0].children == []
+            session.scalars(select(Thing).where(Thing.id == 1)).all()
+    assert [q.relationship for q in log] == [None]
+
+
+def test_a_selectin_load_gets_the_scope_of_its_own_session() -> None:
+    # The connection's tag names the Session that began on it last; a loader
+    # statement of the other Session still belongs to the Session it ran in.
+    from pytest_queryguard import collector
+
     engine = _shared_connection_engine()
     with engine.connect() as conn:
         trans = conn.begin()
         first = Session(bind=conn, join_transaction_mode="rollback_only")
         second = Session(bind=conn, join_transaction_mode="rollback_only")
-        first.scalars(select(Parent)).all()
-        second.scalars(select(Thing)).all()
-        with record_queries() as log:
-            listeners._set_pending(first, "Parent.children")
-            second.scalars(select(Thing).where(Thing.id == 1)).all()
+        first.scalars(select(Thing)).all()
+        second.scalars(select(Thing)).all()  # begins last: the connection's tag
+        target = collector.QueryCollector()
+        collector.push(target)
+        try:
+            first.scalars(select(Parent).options(selectinload(Parent.children))).all()
+        finally:
+            collector.pop(target)
         first.close()
         second.close()
         trans.rollback()
-    assert [q.relationship for q in log] == [None]
+    [load] = target.relationship_loads
+    assert load.relationship == "Parent.children"
+    assert load.scope == listeners.scope_of_session(first)
+    assert load.scope != listeners.scope_of_session(second)
