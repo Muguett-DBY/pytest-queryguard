@@ -79,7 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over the rows of several queries that return one row each is no longer
   reported. This applies to `assert_no_nplusone()` too; the
   in-application mode does not note where parents came from and counts as
-  before (#307).
+  before. In the accuracy corpus, `clean_93_two_single_object_lookups` is no
+  longer reported and no other finding changed: relationship-load is at 29
+  TP, 0 FP, 0 FN (#307).
 - In-application mode: the watched engine's `before_cursor_execute` listener
   reads which relationship or column load an ORM `SELECT` runs for from that
   statement's own options, with the same code as the pytest plugin since
@@ -129,9 +131,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cartesian-load` (it warns by default, and warnings are now measured),
   `unused-columns`, strict mode, `ignore()` blocks and fixtures; a new test
   applies the patch of `--queryguard-write-patch` to the corpus and checks
-  that the N+1 is gone. The release gate's relationship-load minimum
-  precision is 90% (a CLEAN scenario the rule reports by design) and
-  `cartesian-load` has minimums. See docs/accuracy.md.
+  that the N+1 is gone. `cartesian-load` has minimums in the release gate;
+  the relationship-load minimum precision stays at 100% (its one new false
+  positive, two single-object lookups, is fixed by #307). See
+  docs/accuracy.md.
 
 - Every private SQLAlchemy attribute, execution option, frame and code object
   the plugin and the in-app mode read is named in one module,

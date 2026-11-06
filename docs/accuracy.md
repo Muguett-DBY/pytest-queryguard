@@ -82,18 +82,18 @@ comparison with other tools and the PostgreSQL run, which are the earlier
 
 77 of the 81 BUG scenarios that the default rules can report are flagged (the
 other 14 BUG scenarios are write loops, unused eager loads and unused columns,
-which are opt-in), and 3 of the 114 scenarios without an expected default kind
+which are opt-in), and 2 of the 114 scenarios without an expected default kind
 are flagged.
 
 | kind | TP | FP | FN | precision | recall |
 |---|---|---|---|---|---|
-| relationship-load | 29 | 1 | 0 | 97% | 100% |
+| relationship-load | 29 | 0 | 0 | 100% | 100% |
 | repeated-statement | 37 | 1 | 2 | 97% | 95% |
 | column-load | 6 | 0 | 1 | 100% | 86% |
 | cartesian-load | 6 | 1 | 1 | 86% | 86% |
 
 The small counts (29, 37, 6, 7) mean that one scenario moves a percentage by
-several points. The relationship-load row is 30 scenarios, not a claim about
+several points. The relationship-load row is 29 scenarios, not a claim about
 every ORM pattern.
 
 ### The newer kinds, before and after 2026-11-06
@@ -103,23 +103,30 @@ Before 2026-11-06 the corpus had 147 scenarios (145 ran) and did not measure
 was one BUG scenario. 50 scenarios were added for them. The plugin's findings
 did not change: the one fix of that change is to the patch file (see
 [The patch of `--queryguard-write-patch`](#the-patch-of-queryguard-write-patch)).
+The relationship-load rule changed right after, in
+[#307](https://github.com/MaciejZiel/pytest-queryguard/issues/307); the "after"
+column is measured with it.
 
 | kind (configuration) | before: TP, FP, FN | after: TP, FP, FN | precision, recall after |
 |---|---|---|---|
 | `cartesian-load` (default, warns) | not measured | 6, 1, 1 | 86%, 86% |
 | `unused-eager-load` (`= fail`) | 1, 0, 0 | 5, 0, 0 | 100%, 100% |
 | `unused-columns` (`= fail`) | not measured | 8, 2, 1 | 80%, 89% |
-| `relationship-load` (strict) | not measured | 27, 1, 2 | 96%, 93% |
+| `relationship-load` (strict) | not measured | 27, 0, 2 | 100%, 93% |
 | `repeated-statement` (strict) | not measured | 36, 1, 3 | 97%, 92% |
-| `relationship-load` (default) | 20, 0, 0 | 29, 1, 0 | 97%, 100% |
+| `relationship-load` (default) | 20, 0, 0 | 29, 0, 0 | 100%, 100% |
 | `repeated-statement` (default) | 36, 1, 2 | 37, 1, 2 | 97%, 95% |
 | `column-load` (default) | 5, 0, 1 | 6, 0, 1 | 100%, 86% |
 
 The "before" column for the default kinds is the 145-scenario run of
-2026-11-06 on the same machine and packages, before the new scenarios. The
-relationship-load false positive is a new CLEAN scenario,
-`clean_93_two_single_object_lookups`, that shows a choice of the rule, not a
-change of the plugin (see the disagreements below).
+2026-11-06 on the same machine and packages, before the new scenarios. One new
+CLEAN scenario, `clean_93_two_single_object_lookups` (one order from
+`session.get`, another from a `select`, each showing its customer), was a
+relationship-load false positive in every configuration, strict mode included:
+the rule counted the distinct parents of a relationship wherever they were
+loaded. Since #307 the report groups the parents by the query line that loaded
+them, as strict mode does, and the scenario passes; no other scenario's
+findings changed.
 
 The repeated-statement precision went from 83% to 89% when 13 BUG and 10 CLEAN
 scenarios were added on 2026-10-13, with the plugin unchanged: the same 4 false
@@ -172,7 +179,7 @@ reported by the small-repeat rule either.
 | unused-eager-load = fail | unused-eager-load | 5 | 0 | 0 | 100% | 100% |
 | unused-columns = fail | unused-columns | 8 | 2 | 1 | 80% | 89% |
 | repeat scope `session` | repeated-statement | 33 | 1 | 6 | 97% | 85% |
-| strict = true | relationship-load | 27 | 1 | 2 | 96% | 93% |
+| strict = true | relationship-load | 27 | 0 | 2 | 100% | 93% |
 | strict = true | repeated-statement | 36 | 1 | 3 | 97% | 92% |
 | all five rules | repeated-statement | 39 | 2 | 0 | 95% | 100% |
 | all five rules | column-load | 7 | 1 | 0 | 88% | 100% |
@@ -180,14 +187,14 @@ reported by the small-repeat rule either.
 | all five rules | unused-eager-load | 5 | 0 | 0 | 100% | 100% |
 | all five rules | unused-columns | 8 | 2 | 1 | 80% | 89% |
 
-`relationship-load` stays at 29 TP, 1 FP, 0 FN and `cartesian-load` at 6 TP,
+`relationship-load` stays at 29 TP, 0 FP, 0 FN and `cartesian-load` at 6 TP,
 1 FP, 1 FN in every configuration but strict. The unused-eager-load row is
 five BUG scenarios (a joined many-to-one of which only the foreign key is
 read, the unread second link of a `selectinload` chain, a repository method
 reused by a page that needs less, an async handler) against CLEAN scenarios
 where the eager load is read by some rows only, by Pydantic, by an
 `association_proxy`, or by a delete cascade: no false positive. With all
-rules on, 93 of 95 BUG scenarios are flagged, and 9 of 100 CLEAN scenarios
+rules on, 93 of 95 BUG scenarios are flagged, and 8 of 100 CLEAN scenarios
 are.
 
 **Effect of `queryguard_repeat_scope = session`** (added after the first run of this
@@ -211,7 +218,7 @@ rules report is the polling loop, which repeats one statement inside one `Sessio
 | `clean_22_expire_on_commit_two_objects` | CLEAN | `column-load` with threshold 2 | Two reloads after a commit are the threshold. |
 | `clean_18_factory_boy_seed_in_body`, `clean_30_savepoint_per_row_insert`, `clean_77_refresh_after_each_create` | CLEAN: seeding, per-row inserts with their own error handling, eight creates each refreshed | `write-loop` with the rule on | The rule cannot tell them from a write loop. |
 | `bug_47_session_per_item`, `bug_48_threadpool_lookups`, `bug_52_async_gather_session_per_task`, `bug_53_celery_task_per_id` | BUG | not reported with scope `session` | By design of the option. |
-| `clean_93_two_single_object_lookups` | CLEAN: one order from `session.get`, another from a `select`, each showing its customer | `relationship-load` in every configuration | The rule counts the distinct parents of a relationship wherever they were loaded, so two lookups that each read it once reach the threshold of 2. That is deliberate (`tests/test_strict.py` asserts it for the report); strict mode groups by the parents' query line and does not raise here. Raise `queryguard_relationship_threshold` or use `allow_nplusone` for such a test. |
+| `clean_93_two_single_object_lookups` | CLEAN: one order from `session.get`, another from a `select`, each showing its customer | `relationship-load` in every configuration before #307, nothing after | Fixed by [#307](https://github.com/MaciejZiel/pytest-queryguard/issues/307): the report groups the parents of a relationship by the query line that loaded them, as strict mode does, so two single-object lookups at two lines are no N+1. |
 | `clean_82_two_small_collections_joined` | CLEAN: a user's two roles and two e-mail addresses joined in one login query | `cartesian-load` (a warning) | The rule reads the loader options, not how many rows the collections hold. A product of 2 x 2 rows is reported like one of 20 x 20. |
 | `bug_77_cartesian_mapping_lazy_joined` | BUG: two collections with `lazy="joined"` on the mapping | not reported | Loader strategies set on the mapping are not options of the query, and the rule reads only the query's options (documented in [How detection works](how-detection-works.md#cartesian-load)). |
 | `bug_76_cartesian_async_endpoint`, `clean_78_joined_collection_and_scalar` | the cartesian verdict, and no unused columns: a page for one article | `unused-columns` with the check on | The check has no minimum number of rows: one article whose page reads its title (and body) of twelve columns is reported, which no reviewer would ask to change for one row. |
@@ -319,7 +326,7 @@ installed, 195 of the 197 scenarios), rounded down to a multiple of 10%:
 
 | kind | minimum precision | minimum recall | measured |
 |---|---|---|---|
-| `relationship-load` | 90% | 100% | 29 TP, 1 FP, 0 FN (97% and 100%) |
+| `relationship-load` | 100% | 100% | 29 TP, 0 FP, 0 FN (100% and 100%) |
 | `repeated-statement` | 90% | 90% | 37 TP, 1 FP, 2 FN (97% and 95%) |
 | `column-load` | 100% | 80% | 6 TP, 0 FP, 1 FN (100% and 86%) |
 | `cartesian-load` | 80% | 80% | 6 TP, 1 FP, 1 FN (86% and 86%) |
@@ -327,11 +334,9 @@ installed, 195 of the 197 scenarios), rounded down to a multiple of 10%:
 The repeated-statement minimum precision went from 80% to 90% with the rule for
 pagination and chunks, in the same change. The relationship-load minimum
 precision went from 100% to 90% on 2026-11-06, when
-`clean_93_two_single_object_lookups` was added: the plugin did not change, the
-corpus now holds a CLEAN scenario that the rule reports by design (see the
-disagreements). Rounded down, 97% is 90%; a new relationship-load false
-positive would still have to stay above it. `cartesian-load` got its minimums
-in the same change, the first time it was measured. The minimums
+`clean_93_two_single_object_lookups` was added (a CLEAN scenario the rule then
+reported), and back to 100% with #307, which fixed it. `cartesian-load` got
+its minimums on 2026-11-06, the first time it was measured. The minimums
 are a floor against regressions, not a goal. Raise one in the same pull request
 that improves the corpus result; lower one only with a reason in that pull
 request, because every lowered minimum is a release that detects less.
