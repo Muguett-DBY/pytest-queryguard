@@ -64,12 +64,14 @@ def warn_deprecated(message: str) -> None:
     """
     level = 1
     frame: FrameType | None = sys._getframe(0)
-    while frame is not None and str(frame.f_globals.get("__name__", "")).startswith(
-        "pytest_queryguard"
-    ):
+    while frame is not None and _internal(str(frame.f_globals.get("__name__", ""))):
         frame = frame.f_back
         level += 1
     warnings.warn(message, QueryGuardDeprecationWarning, stacklevel=level)
+
+
+def _internal(module: str) -> bool:
+    return module == "pytest_queryguard" or module.startswith("pytest_queryguard.")
 
 
 def renamed(new_name: str, new: Any, old_name: str, old: Any) -> Any:

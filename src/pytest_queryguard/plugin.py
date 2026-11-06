@@ -1637,16 +1637,26 @@ def _note_index_check(config: pytest.Config, collector: QueryCollector) -> None:
 
 
 def _budget_marker(item: pytest.Item, name: str) -> tuple[str, pytest.Mark] | None:
-    """(name, marker) of ``queryguard_<name>``, else of ``<name>``, or None.
+    """(name, marker) of the closest ``queryguard_<name>`` or ``<name>``, or None.
 
     ``max_queries`` is also a marker of pytest-querycount; the prefixed name is
-    read by this plugin only, so it wins when a test has both.
+    read by this plugin only, so it wins when one node (the function, the
+    class, the module) has both. A closer marker wins over a broader one,
+    whatever its spelling.
     """
-    for spelled in (f"queryguard_{name}", name):
-        marker = item.get_closest_marker(spelled)
-        if marker is not None:
-            return spelled, marker
-    return None
+    names = (f"queryguard_{name}", name)
+    closest: tuple[str, pytest.Mark] | None = None
+    closest_node = None
+    for node, marker in item.iter_markers_with_node():
+        if marker.name not in names:
+            continue
+        if closest is None:
+            closest, closest_node = (marker.name, marker), node
+        elif node is not closest_node:
+            break
+        if marker.name == names[0]:
+            return marker.name, marker
+    return closest
 
 
 def _budget(item: pytest.Item) -> int | None:
@@ -1685,7 +1695,10 @@ def _warn_deprecated_markers(item: pytest.Item) -> None:
     test, as a deprecation should, instead of being taken for a plugin bug.
     """
     found = _budget_marker(item, "max_queries")
-    if found is not None and "n" in found[1].kwargs:
+    # n= is how pytest-querycount spells its limit: no warning when it reads
+    # the marker too
+    querycount = item.config.pluginmanager.has_plugin("querycount")
+    if found is not None and "n" in found[1].kwargs and not querycount:
         item.warn(
             QueryGuardDeprecationWarning(
                 f"{found[0]}(n=...) is deprecated and will be removed in "
@@ -1713,7 +1726,8 @@ def _other_budget(
         )
     if settings.default_budget is not None:
         return settings.default_budget, (
-            "queryguard_max_queries, the default budget of tests without one"
+            "the queryguard_max_queries ini option, the default budget of tests "
+            "without a marker"
         )
     return None, None
 

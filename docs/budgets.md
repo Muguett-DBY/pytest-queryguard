@@ -24,8 +24,9 @@ and it will be removed in 2.0 (see [Stability](stability.md#deprecation-policy))
 Write `max_queries(3)` or `max_queries(limit=3)` instead.
 
 `@pytest.mark.queryguard_max_queries(3)` (since 0.8.0) is the same marker under
-a name only this plugin reads; when a test has both, `queryguard_max_queries`
-counts. Use it when another plugin that reads `max_queries` is installed too,
+a name only this plugin reads. As with any marker, the closest one counts (the
+function's over the class's or the module's); when one place has both
+spellings, `queryguard_max_queries` counts. Use it when another plugin that reads `max_queries` is installed too,
 see [below](#pytest-querycount-and-the-max_queries-marker).
 
 The test fails when its body runs more SQL statements than the limit. The
@@ -44,7 +45,7 @@ queryguard_max_queries = 20
 Every test without a `max_queries` marker (and without an entry in the
 budget file below) gets this budget. A test above it fails with the usual
 budget report and the line
-`(the limit is queryguard_max_queries, the default budget of tests without one)`.
+`(the limit is the queryguard_max_queries ini option, the default budget of tests without a marker)`.
 Empty, the default, means no default budget.
 
 ## Lock today's counts: the budget file
@@ -208,8 +209,7 @@ its three slowest statements too. Like `max_queries`, the budget fails
 whatever `queryguard_mode` is set to. In `record_queries()`, each `Query` has
 a `duration` (seconds), and the log has `db_time` and `slowest(n)`.
 `@pytest.mark.queryguard_max_db_time(0.25)` (since 0.8.0) is the same marker
-under the plugin's own prefix, like `queryguard_max_queries`; when a test has
-both, `queryguard_max_db_time` counts.
+under the plugin's own prefix, chosen the same way as `queryguard_max_queries`.
 
 ## pytest-querycount and the `max_queries` marker
 
@@ -238,6 +238,8 @@ def test_order_page(client):
 ```
 
 With both markers on a test, pytest-queryguard uses `queryguard_max_queries`
-and ignores `max_queries`. Or turn one plugin off for a run with
+and ignores `max_queries`. While pytest-querycount is installed,
+`max_queries(n=3)`, its own spelling, does not emit the deprecation warning of
+`n=`. Or turn one plugin off for a run with
 `-p no:querycount` or `-p no:queryguard`.
 

@@ -144,7 +144,12 @@ def check_action_pin(
         headings = re.findall(r"^## \[([^\]]+)\]", changelog, flags=re.MULTILINE)
         wanted = next((h for h in headings if re.fullmatch(FINAL, h)), None)
     pins = re.findall(ACTION_PIN, text)
-    if problems.check(pins, "docs/ci.md does not pin the action to a release tag"):
+    if wanted is None:
+        problems.append(
+            f"__version__ is the pre-release {version} and the changelog has no "
+            "final release for docs/ci.md to pin the action to"
+        )
+    elif problems.check(pins, "docs/ci.md does not pin the action to a release tag"):
         for pin in sorted(set(pins)):
             problems.check(
                 pin == wanted,

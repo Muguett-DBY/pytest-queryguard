@@ -321,6 +321,60 @@ def test_marker_n_still_works_with_a_deprecation_warning(
     result.stdout.no_fnmatch_line("*measurement stopped*")
 
 
+def test_n_does_not_warn_when_pytest_querycount_reads_it(
+    project: pytest.Pytester,
+) -> None:
+    """``n=`` is pytest-querycount's keyword; a marker it reads too stays silent."""
+    project.makeconftest(
+        """
+        def pytest_configure(config):
+            config.pluginmanager.register(object(), "querycount")
+        """
+    )
+    project.makepyfile(test_a=BODY.format(limit="n=3"))
+    project.runpytest("test_a.py", *STRICT).assert_outcomes(passed=1, warnings=0)
+
+
+def test_a_closer_marker_wins_over_a_broader_prefixed_one(
+    project: pytest.Pytester,
+) -> None:
+    project.makepyfile(
+        test_a="""
+        import pytest
+        from sqlalchemy import create_engine, text
+
+        pytestmark = [
+            pytest.mark.queryguard_max_queries(50),
+            pytest.mark.queryguard_max_db_time(60),
+        ]
+
+
+        def run(count):
+            engine = create_engine("sqlite://")
+            with engine.connect() as conn:
+                for _ in range(count):
+                    conn.execute(text("select 1"))
+
+
+        @pytest.mark.max_queries(2)
+        def test_function_marker():
+            run(3)
+
+
+        @pytest.mark.max_db_time(0)
+        def test_function_time_marker():
+            run(1)
+
+
+        def test_module_marker():
+            run(3)
+        """
+    )
+    result = project.runpytest()
+    result.assert_outcomes(passed=1, failed=2)
+    result.stdout.fnmatch_lines(["*expected at most 2 queries, got 3*"])
+
+
 @pytest.mark.parametrize("limit", ["2", "limit=2"])
 def test_marker_limit_spellings_do_not_warn(
     project: pytest.Pytester, limit: str

@@ -174,6 +174,12 @@ def test_a_stale_action_pin_fails(
     assert any(message in problem for problem in problems), problems
 
 
+def test_a_pre_release_without_a_final_release_says_so(gate: ModuleType) -> None:
+    only_rc = "## [Unreleased]\n\n## [1.0.0rc1] - 2026-03-01\n"
+    (problem,) = gate.check_action_pin("1.0.0rc1", only_rc, _ci("v0.9.0"))
+    assert "no final release" in problem
+
+
 def test_every_action_pin_is_checked(gate: ModuleType) -> None:
     text = _ci("v1.2.0") + _ci("v1.1.0")
     assert gate.check_action_pin("1.2.0", GOOD, text) == [

@@ -25,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_db_time` under names no other plugin reads. pytest-querycount also
   registers `max_queries`, so with both plugins installed each enforced the
   other's marker, and `max_queries(limit=3)` stopped the run at collection.
-  When a test has both spellings, the prefixed one counts. See
+  The closest marker counts; when one place has both spellings, the
+  prefixed one. See
   docs/budgets.md (#303).
 - Experimental: `python -m pytest_queryguard.trend RUN1.json RUN2.json ...`
   shows how the query counts moved over several `--queryguard-json` files,
@@ -92,7 +93,8 @@ will be removed in 2.0 (#303).
   `pytest_queryguard.app.Settings`: use `scope=`. A `Settings` built with
   `repeat_scope=` has it in `scope`, and its `repeat_scope` reads None.
 - The `n=` keyword of the `max_queries` marker (the spelling of 0.1 to 0.3):
-  pass the limit positionally, `max_queries(3)`, or as `limit=3`.
+  pass the limit positionally, `max_queries(3)`, or as `limit=3`. Not while
+  pytest-querycount is installed, whose own keyword it is.
 
 ### Changed
 

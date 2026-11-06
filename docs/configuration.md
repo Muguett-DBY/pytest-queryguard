@@ -117,7 +117,7 @@ Command-line options:
 |---|---|
 | `max_queries(limit)` | Fails the test if it runs more than `limit` SQL statements. See [Budgets and timing](budgets.md). |
 | `max_db_time(seconds)` | Fails the test if its statements take more than that many seconds in total. |
-| `queryguard_max_queries(limit)`, `queryguard_max_db_time(seconds)` | Since 0.8.0. The same as `max_queries` and `max_db_time`, under names no other plugin reads; when a test has both spellings, the `queryguard_` one counts. Use them when [pytest-querycount](budgets.md#pytest-querycount-and-the-max_queries-marker) is installed too. |
+| `queryguard_max_queries(limit)`, `queryguard_max_db_time(seconds)` | Since 0.8.0. The same as `max_queries` and `max_db_time`, under names no other plugin reads; the closest marker counts, and when one place (function, class, module) has both spellings, the `queryguard_` one. Use them when [pytest-querycount](budgets.md#pytest-querycount-and-the-max_queries-marker) is installed too. |
 | `queryguard_ignore(*labels, kind=..., file=..., function=..., stack=...)` | Since 0.8.0. Leaves out findings: all of them without arguments, or only those that match the `fnmatch` patterns, like the `queryguard_ignore` option. See [Ignoring findings](ignoring.md). |
 | `allow_nplusone(*labels, kind=..., file=..., function=..., stack=...)` | The name of `queryguard_ignore` before 0.8.0; a permanent alias, it does not warn. |
 | `allow_missing_index(*tables)` | Skips the missing-index check for the test, or only for the given tables. `queryguard_ignore` without arguments does not affect the index check; with patterns it also matches missing-index findings, as in `queryguard_ignore("public.audit_log", kind="missing-index")`. |
