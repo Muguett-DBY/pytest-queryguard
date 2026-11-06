@@ -79,6 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Strict mode no longer raises for a relationship lazy-loaded for the
+  parents of two query lines when an ignore pattern with `file=` or
+  `function=`, or a baseline entry, accepts the report's finding: the report
+  makes one finding at the first lazy load of the test, and strict mode
+  matched the first lazy load of the later line instead, so it failed a test
+  the report passed.
 - Strict mode no longer lists an `allow_nplusone` pattern of a test it
   stopped at the access under "stale ignores": the pattern may be for a
   finding after the access, which the test never reached. A test that fails

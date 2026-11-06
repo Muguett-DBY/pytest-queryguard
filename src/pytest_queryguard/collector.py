@@ -193,10 +193,31 @@ class QueryCollector:
             # inside an ignore() block: the load counts for the group (a
             # later load outside the block raises), this one never raises
             return None
-        error = self.strict(load, group.first, len(group.parents))
+        first = self._report_first(load, scope) or group.first
+        error = self.strict(load, first, len(group.parents))
         if error is None:
             group.suppressed = True
         return error
+
+    def _report_first(
+        self, load: RelationshipLoadEvent, scope: object | None
+    ) -> CallSite | None:
+        """Where the report puts this N+1: the first lazy load of the relationship.
+
+        The report makes one finding per relationship (per scope with
+        ``queryguard_repeat_scope = session``), whatever line loaded the
+        parents, so ignore patterns and the baseline must match that line,
+        not the first load of this group's parent line.
+        """
+        for earlier in self.relationship_loads:
+            if (
+                earlier.relationship == load.relationship
+                and earlier.parent_key is not None
+                and earlier.callsite is not None
+                and (scope is None or earlier.scope == scope)
+            ):
+                return earlier.callsite
+        return None
 
     def _strict_group(
         self, key: tuple[object, ...], load: RelationshipLoadEvent

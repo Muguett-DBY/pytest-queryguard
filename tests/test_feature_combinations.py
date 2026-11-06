@@ -998,3 +998,67 @@ def test_strict_lists_no_marker_of_a_stopped_test_as_stale(
     result.stdout.fnmatch_lines(["*kind: relationship-load  label: Order.customer"])
     result.stdout.no_fnmatch_line("*allow_nplusone patterns that matched no finding*")
     result.stdout.no_fnmatch_line("*test_two_loops: * Order.items")
+
+
+TWO_HELPERS = """\
+from sqlalchemy import select
+
+from app.models import Order, make_session
+
+
+def names_a(session):
+    orders = session.scalars(select(Order).where(Order.id < 20)).all()
+    return [order.customer.name for order in orders]
+
+
+def names_b(session):
+    orders = session.scalars(select(Order).where(Order.id >= 20)).all()
+    return [order.customer.name for order in orders]
+
+
+def test_two_helpers():
+    session = make_session()
+    names_a(session)
+    names_b(session)
+"""
+
+
+@pytest.mark.parametrize("accepted_by", ["pattern", "baseline"])
+@pytest.mark.parametrize("strict", [False, True], ids=["report", "strict"])
+def test_strict_accepts_what_the_report_accepts_across_parent_lines(
+    pytester: pytest.Pytester, strict: bool, accepted_by: str
+) -> None:
+    """One relationship lazy-loaded for the parents of two query lines.
+
+    The report makes one finding, at the first lazy load (in ``names_a``), so
+    an ignore pattern or a baseline entry for ``names_a`` accepts it. Strict
+    mode must not raise at the loads of ``names_b`` then.
+    """
+    _write_project(pytester, Combo("two-helpers"))
+    (pytester.path / "tests" / "test_app.py").write_text(TWO_HELPERS)
+    args = ["-p", "no:cacheprovider", "--queryguard-json=out.json"]
+    if accepted_by == "pattern":
+        args += [
+            "-o",
+            "queryguard_ignore=relationship-load Order.customer function=names_a",
+        ]
+    else:
+        entry = {
+            "kind": REL,
+            "label": "Order.customer",
+            "file": "tests/test_app.py",
+            "function": "names_a",
+        }
+        (pytester.path / "baseline.json").write_text(
+            json.dumps({"version": 1, "findings": [entry]})
+        )
+        args.append("--queryguard-baseline=baseline.json")
+    if strict:
+        args.append("--queryguard-strict")
+    result = pytester.runpytest_subprocess(*args)
+    result.assert_outcomes(passed=1)
+    result.stdout.no_fnmatch_line("*NPlusOneDetected*")
+    doc = json.loads((pytester.path / "out.json").read_text())
+    (entry_,) = doc["tests"].values()
+    expected = [] if accepted_by == "pattern" else [("names_a", True)]
+    assert [(f["function"], f["baselined"]) for f in entry_["findings"]] == expected
