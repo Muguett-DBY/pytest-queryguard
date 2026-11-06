@@ -250,10 +250,13 @@ runs:
         workflow="${workflow##*/}"
         dir="$QG_TMP/queryguard-base"
         # the latest finished runs of this workflow on the base branch, of any
-        # event (push, merge queue, schedule); the artifact is uploaded whether
-        # the tests passed or not
+        # event but a pull request (push, merge queue, schedule); the artifact
+        # is uploaded whether the tests passed or not. Pull-request runs are
+        # left out, as in the trend step: a fork's pull request from its own
+        # "main" has the head branch main too.
         if ! runs="$(gh run list -R "$QG_REPO" --workflow "$workflow" --branch "$QG_BASE" \
-            --status completed --limit 10 --json databaseId --jq '.[].databaseId' 2>&1)"; then
+            --status completed --limit 20 --json databaseId,event \
+            --jq '.[] | select(.event | startswith("pull_request") | not) | .databaseId' 2>&1)"; then
           {
             echo "### pytest-queryguard: query counts not compared"
             echo

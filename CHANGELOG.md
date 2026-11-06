@@ -67,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The GitHub Action's comparison on a pull request no longer takes a
+  pull-request run as the base: a fork's pull request from its own branch
+  named like the base branch (`main`) had that head branch too, so its query
+  counts could be compared against instead of the base branch's. Like the
+  trend step, it now takes only runs that were not triggered by a pull
+  request (#299).
 - An `ignore()` block that left out a finding only in
   `log.assert_no_nplusone()` (or in an in-app report made in the test) is no
   longer listed as stale (#284).

@@ -90,7 +90,9 @@ Outputs: `exit-code` (pytest's), `sarif-file`, `json-file` and `trend-report`
 
 On every run the action writes the [query counts](#query-counts-as-json) and
 uploads them as an artifact. On a pull request it downloads the file of the
-latest finished run of the same workflow on the base branch, compares the
+latest finished run of the same workflow on the base branch (a push, merge
+queue or scheduled run, never a pull-request run: a fork's pull request from
+its own `main` would otherwise count as the base), compares the
 two, and writes the result to the job summary and to one pull-request
 comment:
 
