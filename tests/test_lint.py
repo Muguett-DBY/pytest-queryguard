@@ -102,12 +102,13 @@ def models(tmp_path_factory: pytest.TempPathFactory) -> Iterator[lint.Models]:
 
 
 HEADER = f"""\
-from sqlalchemy import select
+import sqlalchemy as sa
+from sqlalchemy import orm, select
 from sqlalchemy.orm import (
     Load, contains_eager, defaultload, joinedload, lazyload, load_only, raiseload,
     selectinload,
 )
-from {MODULE} import Customer, Order
+from {MODULE} import Customer, Item, Order
 """
 
 
@@ -474,7 +475,7 @@ def test_a_class_name_used_twice_is_resolved_by_its_import(
         )
     monkeypatch.syspath_prepend(str(tmp_path))
     models = lint.load_models(["dup_a", "dup_b"])
-    loop = "for c in session.scalars(select(Child)):\n    c.parent\n"
+    loop = "from sqlalchemy import select\nfor c in session.scalars(select(Child)):\n    c.parent\n"
     found_a = lint.lint_source(f"from dup_a import Child\n{loop}", "x.py", models)
     found_b = lint.lint_source(f"from dup_b import Child\n{loop}", "x.py", models)
     unknown = lint.lint_source(loop, "x.py", models)
@@ -514,7 +515,7 @@ def test_text_output_and_exit_status(
 ) -> None:
     assert lint.main(["--models", MODULE, "app"]) == 1
     out, err = capsys.readouterr()
-    assert out.startswith("app/orders.py:10:")
+    assert out.startswith("app/orders.py:11:")
     assert "Order.customer is lazy-loaded once per row (N+1)" in out
     assert "rule: queryguard/static-relationship-load  label: Order.customer" in out
     assert "select(Order).options(joinedload(Order.customer))" in out
@@ -538,10 +539,10 @@ def test_json_output(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         {
             "rule": "queryguard/static-relationship-load",
             "file": "app/orders.py",
-            "line": 10,
+            "line": 11,
             "column": 17,
-            "loop_line": 9,
-            "query_line": 9,
+            "loop_line": 10,
+            "query_line": 10,
             "function": "f",
             "relationship": "Order.customer",
             "path": ["Order.customer"],
@@ -565,7 +566,7 @@ def test_sarif_output(
     assert result["level"] == "warning"
     location = result["locations"][0]["physicalLocation"]
     assert location["artifactLocation"]["uri"] == f"{project.name}/app/orders.py"
-    assert location["region"] == {"startLine": 10, "startColumn": 17}
+    assert location["region"] == {"startLine": 11, "startColumn": 17}
     assert "joinedload(Order.customer)" in result["message"]["text"]
     assert len(result["partialFingerprints"]["queryguardIdentity/v1"]) == 64
 
@@ -689,3 +690,181 @@ def test_a_nested_loop_through_a_many_to_one(models: lint.Models) -> None:
 )
 def test_more_that_is_not_reported(models: lint.Models, code: str) -> None:
     assert found(models, code) == []
+
+
+def test_a_self_referential_many_to_one_is_not_taken_as_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "tree_models.py").write_text(
+        textwrap.dedent(
+            """
+            from __future__ import annotations
+            from sqlalchemy import ForeignKey
+            from sqlalchemy.orm import DeclarativeBase, Mapped
+            from sqlalchemy.orm import mapped_column, relationship
+
+            class Base(DeclarativeBase):
+                pass
+
+            class Node(Base):
+                __tablename__ = "nodes"
+                id: Mapped[int] = mapped_column(primary_key=True)
+                parent_id: Mapped[int | None] = mapped_column(ForeignKey("nodes.id"))
+                parent: Mapped[Node | None] = relationship(remote_side=[id])
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    models = lint.load_models(["tree_models"])
+    source = (
+        "from sqlalchemy import select\nfrom tree_models import Node\n"
+        "def f(session):\n"
+        "    stmt = select(Node).where(Node.id > 3)\n"
+        "    for node in session.scalars(stmt):\n"
+        "        node.parent\n"
+    )
+    assert [f.relationship for f in lint.lint_source(source, "x.py", models)] == [
+        "Node.parent"
+    ]
+
+
+def test_review_regressions(models: lint.Models) -> None:
+    # an option chained on a variable is not understood: nothing is reported
+    assert (
+        found(
+            models,
+            """
+        opt = selectinload(Order.items)
+        for o in session.scalars(select(Order).options(opt.joinedload(Item.product))):
+            for i in o.items:
+                i.product
+        """,
+        )
+        == []
+    )
+    # orm.selectinload is SQLAlchemy's
+    assert (
+        found(
+            models,
+            """
+        for o in session.scalars(select(Order).options(orm.selectinload(Order.items))):
+            o.items
+        """,
+        )
+        == []
+    )
+    # names that refer to each other do not recurse
+    assert (
+        found(
+            models,
+            """
+        a = b.where(1)
+        b = a.where(2)
+        for o in session.scalars(b):
+            o.customer
+        """,
+        )
+        == []
+    )
+    # an explicit lazyload() wins over a wildcard
+    assert found(
+        models,
+        """
+        stmt = select(Order).options(joinedload("*"), lazyload(Order.customer))
+        for o in session.scalars(stmt):
+            o.customer, o.items
+        """,
+    ) == ["Order.customer"]
+    # a filtered query of the target does not put all of them in the Session
+    assert found(
+        models,
+        """
+        def f(session):
+            one = session.scalars(select(Customer).where(Customer.id == 1)).first()
+            for o in session.scalars(select(Order)):
+                o.customer
+        """,
+    ) == ["Order.customer"]
+    # the else of a nested loop that breaks leaves the outer loop
+    assert (
+        found(
+            models,
+            """
+        for o in session.scalars(select(Order)):
+            for x in range(3):
+                pass
+            else:
+                break
+            o.customer
+        """,
+        )
+        == []
+    )
+    # select() of something that is not SQLAlchemy
+    assert (
+        found(
+            models,
+            """
+        class Repo:
+            def f(self, session):
+                for o in session.scalars(self.select(Order)):
+                    o.customer
+        """,
+        )
+        == []
+    )
+
+
+def test_the_column_counts_characters(models: lint.Models) -> None:
+    source = HEADER + (
+        "for o in session.scalars(select(Order)):\n"
+        '    print("Zamówienie żółć", o.customer)\n'
+    )
+    (finding,) = lint.lint_source(source, "app.py", models)
+    assert finding.column == len('    print("Zamówienie żółć", o.') + 1
+
+
+def test_a_select_not_from_sqlalchemy(models: lint.Models) -> None:
+    source = (
+        f"from {MODULE} import Order\n"
+        "from app.queries import select\n"
+        "for o in session.scalars(select(Order)):\n    o.customer\n"
+    )
+    assert lint.lint_source(source, "app.py", models) == []
+
+
+def test_sarif_fingerprints_differ_per_loop(models: lint.Models) -> None:
+    source = HEADER + textwrap.dedent(
+        """
+        class A:
+            def f(self, session):
+                for o in session.scalars(select(Order)):
+                    o.customer
+                for o in session.scalars(select(Order)):
+                    o.customer
+        """
+    )
+    findings = lint.lint_source(source, "app.py", models)
+    assert [f.function for f in findings] == ["A.f", "A.f"]
+    doc = lint.to_sarif(lint.Report(findings, 1))
+    prints = [
+        r["partialFingerprints"]["queryguardIdentity/v1"]
+        for r in doc["runs"][0]["results"]
+    ]
+    assert len(set(prints)) == 2
+
+
+def test_flask_sqlalchemy_db_select(models: lint.Models) -> None:
+    source = (
+        f"from {MODULE} import Order\n"
+        "from flask_sqlalchemy import SQLAlchemy\n"
+        "db = SQLAlchemy()\n"
+        "def f():\n"
+        "    for o in db.session.scalars(db.select(Order)).all():\n"
+        "        o.customer\n"
+        "    for o in db.session.scalars(other.select(Order)):\n"
+        "        o.items\n"
+    )
+    found_ = lint.lint_source(source, "app.py", models)
+    assert [f.relationship for f in found_] == ["Order.customer"]

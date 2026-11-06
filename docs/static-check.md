@@ -68,7 +68,11 @@ A finding needs all of these:
      `list()`, `tuple()` or `sorted()`;
    - `session.query(C)...` and Flask-SQLAlchemy's `C.query...`;
    - `select(C)` followed by `where`, `order_by`, `join`, `options`, `limit`
-     and the other methods that keep it a select of `C`.
+     and the other methods that keep it a select of `C`. `select` has to be
+     SQLAlchemy's (or SQLModel's) by the file's imports: `from sqlalchemy
+     import select`, `sa.select` after `import sqlalchemy as sa`, or
+     `db.select` where the module has `db = SQLAlchemy(...)` from
+     Flask-SQLAlchemy.
 
    The statement, the result or the list of rows may be assigned to a
    variable first, in the same function, as long as that variable is
@@ -80,7 +84,10 @@ A finding needs all of these:
 3. The query has no loader option for that relationship: `joinedload`,
    `selectinload`, `subqueryload`, `immediateload`, `raiseload`, `noload` or
    `contains_eager`, on that path or with `"*"`. `lazyload()` and
-   `defaultload()` keep it lazy, so they do not count.
+   `defaultload()` keep it lazy, so they do not count, and `lazyload()` of
+   the relationship wins over a `"*"` option. The options are functions
+   imported from SQLAlchemy (`selectinload(...)`, `orm.selectinload(...)`)
+   and the methods chained on them.
 
 It follows chains: in `order.customer.address`, both `Order.customer` and
 `Customer.address` are checked, and in a nested loop
@@ -100,7 +107,8 @@ These are left out on purpose, to keep false positives rare:
   a template, `__repr__` or a property that reads a relationship.
 - A variable assigned more than once in the function (or a loop variable
   assigned in the loop body): it may no longer hold the query.
-- An option it does not understand (a variable, `*options`, a helper call,
+- An option it does not understand (a variable, a method of a variable such
+  as `opt.joinedload(...)`, `*options`, a helper call,
   `with_loader_criteria`, `selectin_polymorphic`): the query is treated as
   if it loaded everything.
 - `session.execute(select(C))` iterated as rows, selects of more than one
@@ -109,9 +117,10 @@ These are left out on purpose, to keep false positives rare:
 - A read that runs at most once per loop: in a block that ends with
   `return`, `raise` or (for the loop itself) `break`, or inside a `lambda` or
   a nested function.
-- A many-to-one relationship when the same function queried the target class
-  before the loop: those objects usually come from the identity map, without
-  a query.
+- A many-to-one relationship when the same function queried all rows of the
+  target class (no `where`, `filter`, `join` or `limit`) before the loop:
+  those objects usually come from the identity map, without a query. This
+  does not apply when the target is the class of the loop's own query.
 - `lazy="dynamic"` and `write_only` relationships, even when each one is
   queried per row; the plugin reports those at runtime.
 - Django, SQLAlchemy 1.x `Query` features beyond the ones above, and Core
@@ -153,7 +162,7 @@ Each finding:
 | `line`, `column` | the read of the relationship (1-based) |
 | `loop_line` | the loop that reads it |
 | `query_line` | the call that runs the query |
-| `function` | the function, or `<module>` |
+| `function` | the qualified name of the function (`Repo.list_orders`), or `<module>` |
 | `relationship` | the label, as in the plugin: `"Order.customer"` |
 | `path` | the relationships from the query's class to this one, `["Order.customer", "Customer.address"]` |
 | `query_class` | the class the query loads |
@@ -167,7 +176,10 @@ uploaded to GitHub code scanning like the plugin's file (see
 [SARIF output](sarif.md)). In GitHub Actions the paths are made relative to
 the repository root with `GITHUB_WORKSPACE`, as in the plugin. Its findings
 are separate from the plugin's `relationship-load` results: the rule id is
-different, and a baseline does not apply to it.
+different, and a baseline does not apply to it. A result's fingerprint is
+made of the file, the function and the relationship path (and its position,
+when one function has the same path in two loops), not the line, so it
+survives edits elsewhere in the file.
 
 ```yaml
       - run: python -m pytest_queryguard.lint --models app.models --format sarif --output lint.sarif app
