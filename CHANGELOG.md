@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relationship-load finding is the lazy load, not an eager loader's query
   (#289).
 
+### Fixed
+
+- An `ignore()` block that left out a finding only in
+  `log.assert_no_nplusone()` (or in an in-app report made in the test) is no
+  longer listed as stale (#284).
+- A statement run outside an `ignore("missing-index")` block, then again
+  inside it after DDL made the check explain it again, is reported: the block
+  no longer leaves the missing-index finding out (#284).
+
 ### Internal
 
 - Every private SQLAlchemy attribute, execution option, frame and code object

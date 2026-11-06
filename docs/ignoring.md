@@ -216,7 +216,8 @@ thread or the asyncio task that entered it, and the tasks created inside it
 
 For the missing-index check, every run of the statement in the test counts,
 although it is explained only at its first run: a statement run inside the
-block and again outside it is reported.
+block and again outside it is reported, also when DDL in between made the
+check explain it again.
 
 A block that left out nothing in the whole run, in any test that entered
 it, is listed in the same "stale ignores" summary, with the file and line of
@@ -226,6 +227,9 @@ the `with` (or of the decorator):
 ignore() blocks that left out no finding in this run:
   app/reports.py:14: ignore('relationship-load')
 ```
+
+A finding the block left out in `log.assert_no_nplusone()`, or in an in-app
+report made in the test, counts as well.
 
 Unlike the patterns, the blocks are also reported under pytest-xdist: the
 workers send the blocks they entered and used to the controller. A block is

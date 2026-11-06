@@ -51,6 +51,9 @@ class QueryCollector:
     # The ignore() blocks entered in the measured test's context, for the
     # stale-block report (see blocks.record_entered).
     blocks_entered: dict[tuple[str, int], IgnoreBlock] = field(default_factory=dict)
+    # The blocks that left out a finding in a check run in that context, such
+    # as QueryLog.assert_no_nplusone (an ordered set).
+    blocks_used: dict[IgnoreBlock, None] | None = None
     explained: set[object] = field(default_factory=set)
     # A statement is explained at its first run only. For one first explained
     # inside an ignore() block: explain key -> the blocks of every run of it
@@ -58,6 +61,12 @@ class QueryCollector:
     index_runs: dict[object, dict[tuple[IgnoreBlock, ...], None]] = field(
         default_factory=dict
     )
+    # The runs of the scans recorded before a catalog change, which makes the
+    # statements be explained again (see freeze_index_runs): id(scan) -> its
+    # runs, None for a statement not followed (its own run is all). None until
+    # the first change: most tests run no DDL.
+    frozen_runs: dict[int, dict[tuple[IgnoreBlock, ...], None] | None] | None = None
+    frozen_scans: int = 0  # how many of scans have their runs in frozen_runs
     scans: list[ScanEvent] = field(default_factory=list)
     index_notices: dict[str, None] = field(default_factory=dict)  # ordered set
     explain_errors: list[tuple[str, str]] = field(default_factory=list)
@@ -201,6 +210,29 @@ class QueryCollector:
         if len(group.parents) < self.strict_threshold:  # no more is needed
             group.parents.add(load.parent_key)
         return group if len(group.parents) >= self.strict_threshold else None
+
+    def freeze_index_runs(self) -> None:
+        """Keep the runs of the scans so far; the statements start afresh.
+
+        After a catalog change a statement is explained again: its later runs
+        belong to that explain, and do not count for the scans before it.
+        """
+        scans = self.scans[self.frozen_scans :]
+        if scans:
+            if self.frozen_runs is None:
+                self.frozen_runs = {}
+            for scan in scans:
+                self.frozen_runs[id(scan)] = self.index_runs.get(scan.key)
+            self.frozen_scans += len(scans)
+        if self.index_runs:
+            self.index_runs = {}
+
+    def runs_of(self, scan: ScanEvent) -> dict[tuple[IgnoreBlock, ...], None] | None:
+        """The blocks of every run of ``scan``'s statement, or None if not followed."""
+        frozen = self.frozen_runs
+        if frozen is not None and id(scan) in frozen:
+            return frozen[id(scan)]
+        return self.index_runs.get(scan.key)
 
     def note_index_run(self, key: object, tags: tuple[IgnoreBlock, ...]) -> None:
         """Another run of an explained statement (see ``index_runs``)."""
