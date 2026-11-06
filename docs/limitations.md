@@ -137,8 +137,8 @@
   ORM yield_per feature in conjunction with unique()"; with `autoflush=False`
   it no longer flushes. The plugin installs such a listener only for strict
   mode (`queryguard_strict`) and the unused eager-load check
-  (`queryguard_unused_eager_load`), both off by default;
-  then, on those versions, it removes the inherited options from the loader
+  (`queryguard_unused_eager_load`), both off by default, and the in-app mode
+  installs none; then, on those versions, it removes the inherited options from the loader
   statement before SQLAlchemy reads them, and the statement runs as it does
   without the plugin; the cursor still gets the outer statement's options.
   This happens only when the plugin's listeners are the only ones: with a
