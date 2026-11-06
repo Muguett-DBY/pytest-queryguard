@@ -2513,6 +2513,14 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         parts, warn_texts = [], []
     _report_internal_error(item.config)
     if strict_error is not None:
+        # An allow_nplusone pattern may be for a finding after the access,
+        # which the test never reached: as for a test that failed on its own,
+        # its patterns are not listed as stale.
+        settings.stale_markers[:] = [
+            (nodeid, rule)
+            for nodeid, rule in settings.stale_markers
+            if nodeid != item.nodeid
+        ]
         # the failure at the access says it all; the report's text is the same N+1
         raise strict_error
     if not parts:

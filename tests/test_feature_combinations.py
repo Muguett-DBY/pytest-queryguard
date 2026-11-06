@@ -38,7 +38,7 @@ from typing import Any
 
 import pytest
 
-from pytest_queryguard import compare
+from pytest_queryguard import compare, mcp, trend
 
 # pytester runs sessions in a subprocess here, but keep the outer plugin quiet
 pytestmark = pytest.mark.allow_nplusone
@@ -838,6 +838,12 @@ def _check_same(serial: Run, parallel: Run) -> None:
     assert not (
         comparison.more or comparison.fewer or comparison.new or comparison.fixed
     )
+    moved = trend.trend([serial.json, parallel.json], ["serial", "xdist"])
+    assert moved.complete
+    assert not (moved.changed or moved.new or moved.gone)
+    assert [run.statements for run in moved.runs] == [
+        sum(e["statements"] for e in serial.json["tests"].values())
+    ] * 2
 
 
 @pytest.mark.parametrize("combo", COMBOS, ids=[c.name for c in COMBOS])
@@ -935,3 +941,60 @@ def test_strict_error_shows_the_patch(pytester: pytest.Pytester) -> None:
             "E*(queryguard_strict raises at the lazy load*",
         ]
     )
+
+
+@pytest.mark.skipif(not _XDIST, reason="pytest-xdist is not installed")
+def test_mcp_run_tests_agrees_with_the_files(pytester: pytest.Pytester) -> None:
+    """The MCP server's run_tests returns the findings and patch of a pytest run."""
+    combo = next(c for c in COMBOS if c.name == "xdist-strict-baseline-patch-fail-on")
+    _write_project(pytester, combo)
+    serial = _run(pytester, combo, xdist=False)
+    reply = mcp.run_tests({"args": ["-p", "no:cacheprovider", "-n", "2"]})
+    assert reply["exit_code"] == serial.ret
+    assert reply["complete"] is True
+    assert reply["rootdir"] == str(pytester.path)
+    assert reply["tests"] == len(NODEIDS)
+    assert reply["findings_total"] == len(reply["findings"])
+    got = sorted(
+        (f["test"], f["kind"], f["label"], f["baselined"], f["count"], f["message"])
+        for f in reply["findings"]
+    )
+    expected = sorted(
+        (nodeid, f["kind"], f["label"], f["baselined"], f["count"], f["message"])
+        for nodeid, entry in serial.json["tests"].items()
+        for f in entry["findings"]
+    )
+    assert got == expected
+    assert reply["patch"] == serial.patch
+
+
+STOPPED_MARKER = """\
+import pytest
+
+from app import queries
+from app.models import make_session
+
+
+@pytest.mark.allow_nplusone("Order.items")
+def test_two_loops():
+    session = make_session()
+    queries.customer_names(session)  # strict raises here
+    queries.item_counts(session)  # the N+1 the marker allows
+"""
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["report", "strict"])
+def test_strict_lists_no_marker_of_a_stopped_test_as_stale(
+    pytester: pytest.Pytester, strict: bool
+) -> None:
+    """The marker is for the second loop, which a strict run never reaches."""
+    _write_project(pytester, Combo("stopped-marker"))
+    (pytester.path / "tests" / "test_app.py").write_text(STOPPED_MARKER)
+    args = ["-p", "no:cacheprovider"]
+    if strict:
+        args.append("--queryguard-strict")
+    result = pytester.runpytest_subprocess(*args)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*kind: relationship-load  label: Order.customer"])
+    result.stdout.no_fnmatch_line("*allow_nplusone patterns that matched no finding*")
+    result.stdout.no_fnmatch_line("*test_two_loops: * Order.items")

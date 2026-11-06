@@ -79,6 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Strict mode no longer lists an `allow_nplusone` pattern of a test it
+  stopped at the access under "stale ignores": the pattern may be for a
+  finding after the access, which the test never reached. A test that fails
+  on its own was already left out the same way.
 - With `--queryguard-show-patch`, the error strict mode raises at the access
   has the patch under the finding: it replaces the report, which was the only
   place the patch was shown.
