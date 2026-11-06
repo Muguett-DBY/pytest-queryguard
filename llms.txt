@@ -110,6 +110,10 @@ Here `list_orders` is the fixed function from the README (`select(Order).options
 - After an internal error, a block that ends normally issues `QueryGuardInternalWarning` (the log may be incomplete), and `assert_no_nplusone()` raises `RuntimeError` instead of passing.
 - `QueryGuardDeprecationWarning` (a `DeprecationWarning`, not a `QueryGuardWarning`) is what a later release uses to announce an option or name it removes; a `filterwarnings` entry for `QueryGuardWarning` does not match it.
 
+## Static check (experimental, unreleased)
+
+`python -m pytest_queryguard.lint --models app.models [--format text|json|sarif] [--output FILE] PATHS...` reads source code without running it. It imports the `--models` modules (their import-time code runs) to read every mapped class and its relationships, parses PATHS with `ast`, and reports a `for` loop, `async for` loop or comprehension over one ORM query of one class (`session.scalars(select(C))`, `session.execute(select(C)).scalars()`, `session.query(C)`, `C.query`, awaited async calls, optionally via a variable assigned once in the same function) that reads a `lazy="select"` relationship with no covering loader option (`joinedload`, `selectinload`, `subqueryload`, `immediateload`, `raiseload`, `noload`, `contains_eager`; `lazyload`/`defaultload` do not cover). Follows chains (`o.customer.address`) and nested loops over collections. One function at a time; unknown options, reassigned variables and reads that run once (block ends with `return`/`raise`/`break`) are not reported. Fix line as in the plugin. Exit 1 on findings, 2 on import or usage errors. Suppress with `# queryguard: ignore` on the read or the loop line. JSON `format` 1 keys: `files`, `errors`, `findings` (`rule`, `file`, `line`, `column`, `loop_line`, `query_line`, `function`, `relationship`, `path`, `query_class`, `fix`). SARIF rule `queryguard/static-relationship-load`, level warning. See docs/static-check.md.
+
 ## In-application mode (experimental, from 0.5.0)
 
 ```python
@@ -201,7 +205,7 @@ Findings follow `queryguard_mode`. Exclude small lookup tables with `queryguard_
 ## Docs
 
 - [README](https://github.com/MaciejZiel/pytest-queryguard/blob/main/README.md): overview and a first example
-- [Documentation pages](https://github.com/MaciejZiel/pytest-queryguard/tree/main/docs): getting started, how detection works, configuration reference, budgets, in-application mode, ignoring, baseline, CI and SARIF, index check (PostgreSQL, SQLite, MySQL and MariaDB), index advisor, unused eager loads, unused columns, limitations, FAQ, comparison with other tools, migration from nplusone, stability policy
+- [Documentation pages](https://github.com/MaciejZiel/pytest-queryguard/tree/main/docs): getting started, how detection works, configuration reference, budgets, in-application mode, ignoring, baseline, CI and SARIF, index check (PostgreSQL, SQLite, MySQL and MariaDB), index advisor, unused eager loads, unused columns, static check, limitations, FAQ, comparison with other tools, migration from nplusone, stability policy
 - [Examples](https://github.com/MaciejZiel/pytest-queryguard/tree/main/examples): runnable projects
 - [CHANGELOG](https://github.com/MaciejZiel/pytest-queryguard/blob/main/CHANGELOG.md): changes per release
 - [PyPI](https://pypi.org/project/pytest-queryguard/): released versions
