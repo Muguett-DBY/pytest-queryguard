@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relationship-load finding is the lazy load, not an eager loader's query
   (#289).
 
+### Internal
+
+- Every private SQLAlchemy attribute, execution option, frame and code object
+  the plugin and the in-app mode read is named in one module,
+  `pytest_queryguard._compat`, with the versions it is known for, and
+  `tests/test_compat.py` checks each against the installed SQLAlchemy, so a
+  release that renames one fails that test first, with the name in the
+  message. The per-statement code reads them inline; the overhead gate's ORM
+  ratio is unchanged (#245).
+
 ## [0.7.0] - 2026-11-06
 
 ORM statements cost about a third less to measure: the plugin reads the

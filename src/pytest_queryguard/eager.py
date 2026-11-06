@@ -39,6 +39,14 @@ from sqlalchemy import event
 from sqlalchemy.orm import RelationshipProperty, Session
 
 from . import blocks, listeners, readhook
+from ._compat import (
+    EAGER_FROM_ALIAS,
+    ELEMENT_LOCAL_OPTS,
+    ELEMENT_PATH,
+    ELEMENT_STRATEGY,
+    LOAD_CONTEXT,
+    WITH_OPTIONS,
+)
 from .blocks import IgnoreBlock
 from .callsite import find_callsite
 from .events import CallSite
@@ -121,15 +129,15 @@ def loader_paths(options: Any) -> Iterator[tuple[tuple[Any, ...], str | None]]:
     Shared by the unused eager-load and the cartesian-load checks.
     """
     for option in options:
-        for element in getattr(option, "context", ()):
-            path = getattr(getattr(element, "path", None), "path", None)
+        for element in getattr(option, LOAD_CONTEXT, ()):
+            path = getattr(getattr(element, ELEMENT_PATH, None), "path", None)
             if not path or len(path) < 3 or len(path) % 2 == 0:
                 continue
             if not all(isinstance(p, RelationshipProperty) for p in path[1::2]):
                 continue
-            if "eager_from_alias" in getattr(element, "local_opts", {}):
+            if EAGER_FROM_ALIAS in getattr(element, ELEMENT_LOCAL_OPTS, {}):
                 continue
-            strategy = getattr(element, "strategy", None)
+            strategy = getattr(element, ELEMENT_STRATEGY, None)
             if not strategy:
                 yield tuple(path), None
             elif strategy[0][0] == "lazy":
@@ -159,7 +167,7 @@ def _on_orm_execute(state: Any) -> None:
     try:
         if not state.is_select or state.is_relationship_load or state.is_column_load:
             return
-        loads = _elements(getattr(state.statement, "_with_options", ()))
+        loads = _elements(getattr(state.statement, WITH_OPTIONS, ()))
         if not loads:
             return
         site = find_callsite()

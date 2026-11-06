@@ -206,6 +206,31 @@ Any exception raised inside a listener is caught, reported once as a pytest
 warning, and disables the plugin for the rest of the session. The plugin
 must never break a test suite because of its own bug.
 
+### 5.7 Private SQLAlchemy names (`_compat.py`)
+
+Public events say that a statement runs, not what it is for. Which
+relationship a lazy load is for, which object a column load reloads, whether
+a loader runs for a refresh, where the rows of a query became instances: the
+listeners read these from attributes, execution options, frames and code
+objects that SQLAlchemy keeps for itself (`_sa_orm_load_options`,
+`_compile_options`, `sa_top_level_orm_context`, `_lazy_loaded_from`,
+`_refresh_state`, `ORMExecuteState._events_todo`, `_with_options`,
+`loading.instances`, `Session._flush`, `InstrumentedAttribute.__get__`, an
+`OptionEngine`'s `_proxied`, and a few more).
+
+All of them are named in one module, `src/pytest_queryguard/_compat.py`, with
+the SQLAlchemy versions they are known for (2.0.13 to 2.1). The code reads
+them through its constants and small accessors; the code that runs per
+statement or per attribute read uses `getattr(obj, NAME)` with the constants
+(or, for the attribute read hook, the attribute itself), not a function call,
+which `scripts/bench_gate.py` would show. `tests/test_compat.py` exercises
+each name against the installed SQLAlchemy with real queries, loads, flushes
+and frames, and fails with the missing name in the message; it also fails
+when a name is added to `_compat.py` without a check. A new SQLAlchemy
+release breaks that test first. Every reader degrades when a name is gone: a
+load without a label or a hint without a parent site, never an error in the
+user's code.
+
 ## 6. Testing strategy
 
 - Unit tests for detectors, normalization, call sites and messages, with no
@@ -241,7 +266,7 @@ must never break a test suite because of its own bug.
 |---|---|
 | False positives on legitimate loops | Thresholds, `allow_nplusone` marker, `warn` mode |
 | Stack inspection slows large suites | Only while a collector is active; about 15 µs per statement, measured on 1500 tests × 20 statements during review; a benchmark test is planned for 0.2 |
-| SQLAlchemy changes internal attributes | Only public, documented event APIs are used; CI tests the latest 2.x |
+| SQLAlchemy changes internal attributes | Every private name is in `_compat.py` and checked by `tests/test_compat.py` against the installed version (5.7); CI tests a pinned 2.0.49 and the latest 2.x, the release gate the oldest supported (2.0.13) |
 | Repeated-SQL rule misreads batch jobs | Writes are excluded from N+1; budgets cover them |
 
 ## 9. Success criteria for 0.1.0

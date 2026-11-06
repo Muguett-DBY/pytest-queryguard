@@ -17,6 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .. import blocks
+from .._compat import option_engine_parent
 from ..callsite import find_callsite, find_flush
 from ..events import StatementEvent
 from ..listeners import (
@@ -173,7 +174,7 @@ def _in_chain(engine: Any, ancestor: Engine) -> bool:
     while engine is not None:
         if engine is ancestor:
             return True
-        engine = getattr(engine, "_proxied", None)
+        engine = option_engine_parent(engine)
     return False
 
 
@@ -182,7 +183,7 @@ def _in_watched(engine: Any) -> bool:
     while engine is not None:
         if engine in _watched:
             return True
-        engine = getattr(engine, "_proxied", None)
+        engine = option_engine_parent(engine)
     return False
 
 
