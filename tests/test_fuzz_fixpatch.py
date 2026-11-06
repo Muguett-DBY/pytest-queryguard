@@ -546,9 +546,11 @@ def _git_apply(root: Path, fix: SourceFix, index: int) -> str:
     patch = copy / f"fix{index}.patch"
     patch.write_bytes(fix.diff.encode("utf-8"))
     env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(root)}
+    # Windows runners set core.autocrlf, which would rewrite the line ends
+    plain = ["-c", "core.autocrlf=false", "-c", "core.safecrlf=false"]
     for args in (["apply", "--check", str(patch)], ["apply", str(patch)]):
         done = subprocess.run(
-            [_GIT, *args], cwd=copy, env=env, capture_output=True, check=False
+            [_GIT, *plain, *args], cwd=copy, env=env, capture_output=True, check=False
         )
         assert done.returncode == 0, done.stderr.decode(errors="replace")
     return target.read_bytes().decode("utf-8")

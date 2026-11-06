@@ -102,9 +102,15 @@ def _git_apply(tmp_path: Path, patch: Path, file: str) -> str:
     if _GIT is None:
         pytest.skip("git is not installed")
     env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path.parent)}
+    # Windows runners set core.autocrlf, which would rewrite the line ends
+    plain = ["-c", "core.autocrlf=false", "-c", "core.safecrlf=false"]
     for args in (["apply", "--check", str(patch)], ["apply", str(patch)]):
         subprocess.run(
-            [_GIT, *args], cwd=tmp_path, check=True, env=env, capture_output=True
+            [_GIT, *plain, *args],
+            cwd=tmp_path,
+            check=True,
+            env=env,
+            capture_output=True,
         )
     return (tmp_path / file).read_text(encoding="utf-8")
 
