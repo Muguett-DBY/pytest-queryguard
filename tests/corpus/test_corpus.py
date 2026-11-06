@@ -108,6 +108,10 @@ def test_plugin_agrees_with_the_verdict(
 def test_a_failing_test_has_findings_and_a_passing_one_has_none() -> None:
     for config, results in _cache.items():
         for name, result in results.items():
+            if config == "strict" and known_reason(BY_NAME[name], config):
+                # a library (Pydantic) can turn the strict exception into its
+                # own; the test fails, without the report: an xfail above
+                continue
             assert result.failed == bool(result.findings), (config, name)
 
 

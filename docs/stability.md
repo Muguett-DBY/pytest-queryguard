@@ -25,10 +25,55 @@ changes by accident.
   `queryguard_ignore` and `allow_nplusone`, so that an existing ignore keeps
   matching the same finding.
 - The pytest entry point name (`queryguard`).
+- The files the plugin writes and reads, and the command-line tools and the
+  GitHub Action that work with them, as listed under
+  [Files, tools and the action](#files-tools-and-the-action).
 - Supported versions: Python, SQLAlchemy and pytest releases listed in
   `pyproject.toml` and the CI matrix. Dropping a Python, SQLAlchemy or pytest
   series is announced in the changelog and happens in a minor release at the
   earliest after the series is end of life upstream.
+
+### Files, tools and the action
+
+Each file has a number for its format. A reader rejects a number it does not
+know, with an error that says so. New keys may be added in a minor release
+(read a file by the keys you need and ignore the others). Changing the meaning
+of a key, removing one, or changing what identifies a finding is an
+incompatible change: the number goes up, and from 1.0 on it needs a major
+release.
+
+| What | Format key | Public | Not public |
+|---|---|---|---|
+| Baseline file (`--queryguard-baseline`, see [Baseline](baseline.md)) | `"version": 1` | `findings`, each with `kind`, `label`, `file`, `function` (the identity of a finding) | the order of the entries |
+| Budget file (`--queryguard-budgets`, see [Budgets](budgets.md#lock-todays-counts-the-budget-file)) | `"format": 1` | `budgets`: test node id to a number of queries | the order of the entries |
+| Query counts (`--queryguard-json`, see [CI](ci.md#query-counts-as-json)) | `"format": 1` | the keys documented there: `tool`, `complete`, and per test `statements`, `by_verb`, `db_time`, `truncated`, `max_queries_marker`, `findings` (`kind`, `label`, `count`, `file`, `function`, `line`, `stack`, `baselined`) | `tool.version`, the order of tests and findings |
+| SARIF file (`--queryguard-sarif`, see [SARIF](sarif.md)) | SARIF 2.1.0 | the rule ids `queryguard/<kind>`, one per finding kind; the fingerprint key `queryguardIdentity/v1` in `partialFingerprints` and the identity it hashes, so code scanning alerts stay the same alerts after an upgrade; the result `properties` `count`, `label`, `tests` and `peakCount` | rule names, descriptions and help, message text, `primaryLocationLineHash`, `codeFlows`, `fixes` (experimental, see below) |
+
+A new fingerprint key (`queryguardIdentity/v2`) would close every open alert
+and open it again, so it is treated as a removal: from 1.0 on, only in a major
+release.
+
+The command-line tools:
+
+- `python -m pytest_queryguard.compare BASE HEAD [--output PATH] [--rows N]
+  [--key NAME]` (see [CI](ci.md#query-counts-on-pull-requests)): its
+  arguments, its exit status (0, or 2 when a file cannot be read) and the
+  marker on the first line of its report (`<!-- pytest-queryguard compare -->`,
+  with the `--key` before `-->`), by which the action finds its own comment,
+  are public. The rest of the Markdown report is written for people and is
+  not.
+- `python -m pytest_queryguard.trend` and `python -m pytest_queryguard.lint`
+  are experimental, see below.
+
+The GitHub Action (`action/action.yml`, see [CI](ci.md#the-action)): its
+inputs with their defaults and accepted values, its outputs (`exit-code`,
+`sarif-file`, `json-file`), and the name of the artifact it uploads,
+`queryguard-json-<category>`, which later runs of older and newer versions of
+the action download, and the pull-request comment it updates in place (found
+by the compare marker above). The action is versioned with the package: pin it to a
+release tag or a commit. The `trend` input and the `trend-report` output are
+experimental. What the job summary and the pull-request comment say is not
+public.
 
 ## What is not public
 
@@ -38,8 +83,8 @@ changes by accident.
   implementation details even though they can be imported.
 - The wording and layout of failure messages, warnings, summaries and
   reports. They are written for people and improve between releases; do not
-  parse them. Use `QueryLog`, the SARIF file or the baseline file when a program needs
-  the data.
+  parse them. Use `QueryLog`, the SARIF file, the baseline file or the
+  `--queryguard-json` file when a program needs the data.
 - Which statements SQLAlchemy emits for a given ORM call; that depends on the
   SQLAlchemy version.
 - The index check beyond what the documentation promises: it is documented
@@ -100,11 +145,11 @@ says how. Before 1.0 it may be on by default (see the pre-1.0 clause above).
 
 ## Experimental
 
-Options, finding kinds and markers listed here are public to use but exempt
+Options, finding kinds, markers, tools and files listed here are public to use but exempt
 from the deprecation policy: a minor release may change their values,
 defaults, labels or messages, or remove them, with a changelog entry under
-"Changed" or "Removed" and no deprecation period. The ini option is marked
-`EXPERIMENTAL` in `pytest --help`.
+"Changed" or "Removed" and no deprecation period. Their ini options and
+command-line flags are marked `EXPERIMENTAL` in `pytest --help`.
 
 - `queryguard_unused_eager_load` and the `unused-eager-load` finding kind
   (rule `queryguard/unused-eager-load` in SARIF). See
@@ -120,7 +165,16 @@ defaults, labels or messages, or remove them, with a changelog entry under
   `internal_error`, `opentelemetry_reporter`, `sentry_reporter`) and the
   panel's JSON. See
   [In-application mode](in-app.md).
-- The static check, `python -m pytest_queryguard.lint`: its options, what it
+- The fix patch (since 0.8.0): `queryguard_show_patch`,
+  `--queryguard-show-patch`, `--queryguard-write-patch`, which findings get a
+  patch, the content of the diff, and the `fixes` entries of the SARIF file.
+  See [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query).
+- The query-count trend (since 0.8.0): `python -m pytest_queryguard.trend`,
+  its options, its output (Markdown, text and JSON) and exit status, and the
+  GitHub Action's `trend` input and `trend-report` output. It reads
+  `--queryguard-json` files, whose format is public. See
+  [CI](ci.md#query-counts-over-the-last-runs).
+- The static check (since 0.8.0), `python -m pytest_queryguard.lint`: its options, what it
   reports, its text output, and the rule `queryguard/static-relationship-load`
   in its SARIF output. Its JSON output has a `format` key; a change to the
   documented keys increments it. See [Static check](static-check.md).
@@ -174,6 +228,12 @@ checks the outcome of every test of a small suite.
   entry point. A failing snapshot means: the change is breaking, or it is an
   addition that must be added to the snapshot on purpose. Update the snapshot
   in the same commit as the change, so reviewers see it.
+- The snapshot does not yet cover the files, the compare tool and the action
+  listed under [Files, tools and the action](#files-tools-and-the-action).
+  Their own tests (`tests/test_baseline.py`, `test_budget_file.py`,
+  `test_testjson.py`, `test_sarif.py`, `test_compare.py`,
+  `test_action_args.py`) check how they behave; a change to them is reviewed
+  against that section.
 - CI runs the suite on Python 3.10 to 3.14 and the 3.15 pre-release,
   SQLAlchemy 2.0 and the latest release, the oldest and the latest pytest,
   PostgreSQL 14 to 18, Windows and macOS, and under pytest-xdist. A nightly

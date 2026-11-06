@@ -54,8 +54,11 @@ action to a release tag or a commit and you get the plugin of that release. A
 fixed default such as `pytest-queryguard` would let pip pick an older release
 (for example 0.3.0, which has no `--queryguard-sarif`), and pytest would stop
 with `unrecognized arguments`. Set
-`package` only to install something else, such as `pytest-queryguard==0.4.0`
-or a path.
+`package` only to install something else, such as `pytest-queryguard==0.7.0`
+or a path. The action needs pytest-queryguard 0.6.0 or newer: it passes
+`--queryguard-sarif` and `--queryguard-json` and runs
+`python -m pytest_queryguard.compare`, which older releases do not have. The
+`trend` input needs 0.8.0 or newer (`python -m pytest_queryguard.trend`).
 
 The action installs `pytest-queryguard` into the active Python, runs
 `pytest --queryguard-sarif=queryguard.sarif`, uploads the file with
@@ -67,7 +70,7 @@ failed. Install your own project first: the action does not know how.
 |---|---|---|
 | `pytest-args` | empty | Arguments for pytest, as a list of shell words: quotes group words (`-k "a or b"`). The value is split by Python's `shlex` and is not evaluated by a shell, so `$(...)`, backticks and `$VAR` are passed to pytest as literal text. |
 | `python-version` | empty | Set up this Python. Empty: use the `python` on PATH. |
-| `package` | empty | What to `pip install`. Empty: the plugin from the action's own checkout, matching the pinned ref. Otherwise a requirement like `pytest-queryguard>=0.4`, or a path. |
+| `package` | empty | What to `pip install`. Empty: the plugin from the action's own checkout, matching the pinned ref. Otherwise a requirement like `pytest-queryguard>=0.6` (the oldest release the action works with; 0.8.0 for `trend`), or a path. |
 | `baseline` | empty | Baseline file, see [baseline.md](baseline.md). Empty: `queryguard_baseline` from your config. |
 | `fail` | `true` | `true`: fail the step when pytest fails. `false`: never fail, only report. |
 | `working-directory` | `.` | Where to run pytest. Locations in the SARIF file are still relative to the repository root (see [SARIF output](sarif.md#paths-and-the-repository-root)). |
@@ -77,17 +80,19 @@ failed. Install your own project first: the action does not know how.
 | `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. Empty: none. |
 | `compare` | `true` | On a pull request, compare the counts with the base branch and write the result to the job summary. |
 | `comment` | `true` | Also post the comparison as a pull-request comment, updated in place on later pushes. |
-| `trend` | `false` | A number of runs N (2 to 100; `true` means 10): on pushes to the default branch and on pull requests, show how the counts moved over the last N runs, see [below](#query-counts-over-the-last-runs). |
+| `trend` | `false` | Since 0.8.0, experimental. A number of runs N (2 to 100; `true` means 10): on pushes to the default branch and on pull requests, show how the counts moved over the last N runs, see [below](#query-counts-over-the-last-runs). |
 | `github-token` | `github.token` | Token for the comparison, the trend and the comment. |
 
 Outputs: `exit-code` (pytest's), `sarif-file`, `json-file` and `trend-report`
-(the trend's Markdown file, empty when there is none).
+(since 0.8.0: the trend's Markdown file, empty when there is none).
 
 ### Query counts on pull requests
 
 On every run the action writes the [query counts](#query-counts-as-json) and
 uploads them as an artifact. On a pull request it downloads the file of the
-latest finished run of the same workflow on the base branch, compares the
+latest finished run of the same workflow on the base branch (a push or
+scheduled run, never a pull-request run: a fork's pull request from its own
+`main` would otherwise count as the base), compares the
 two, and writes the result to the job summary and to one pull-request
 comment:
 
@@ -126,6 +131,8 @@ never fails the job.
 
 ### Query counts over the last runs
 
+Since 0.8.0; experimental (see [Stability](stability.md#experimental)).
+
 The comparison shows one step; `trend: "10"` shows the last ten runs, as an
 APM shows a query count over time in production. On a push to the default
 branch and on a pull request, the action downloads the query-count artifacts
@@ -160,7 +167,7 @@ collapsed `<details>` block below the comparison.
   comparison does; `Since` is the run from which on a new finding is in
   every run.
 - Pull-request runs are not history: only runs of other events (push,
-  schedule, merge queue) on the branch count, one per commit. Runs without
+  schedule) on the branch count, one per commit. Runs without
   the artifact (expired after 30 days, or a job that stopped before writing
   it) or with a file that cannot be read are skipped, so the window may have
   fewer runs. The

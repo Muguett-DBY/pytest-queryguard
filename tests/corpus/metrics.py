@@ -49,7 +49,13 @@ class Score:
 
 # Configurations that switch several opt-in rules on at once.
 COMPOSITE = {
-    "all-opt-in": ("small-repeat", "write-loop", "column-load-2", "unused-eager-load")
+    "all-opt-in": (
+        "small-repeat",
+        "write-loop",
+        "column-load-2",
+        "unused-eager-load",
+        "unused-columns",
+    )
 }
 
 

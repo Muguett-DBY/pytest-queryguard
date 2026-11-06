@@ -1,5 +1,7 @@
 # MCP server for coding agents (experimental)
 
+Since 0.8.0.
+
 ```console
 python -m pytest_queryguard.mcp
 ```

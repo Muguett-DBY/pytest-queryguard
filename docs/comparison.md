@@ -51,7 +51,7 @@ a command line and an MCP server for AI coding agents. Its `nplusone` command
 looks for N+1 patterns in the code; it does not run tests or watch the
 statements a test sends, so it is not in the matrix below. Read from its PyPI
 description on 2026-11-05, not run. pytest-queryguard has an experimental
-[static check](static-check.md) of its own (unreleased), which reads the
+[static check](static-check.md) of its own (since 0.8.0), which reads the
 mappers by importing your model modules and reports only lazy relationships
 read in a loop over a query inside one function, and an experimental
 [MCP server](mcp.md), whose tools run the test suite and return the findings
@@ -122,7 +122,7 @@ not work.
 
 ### N+1 and budgets on SQLite
 
-A larger run, with 143 scenarios and precision and recall per finding kind, is on the
+A larger run, with 197 scenarios and precision and recall per finding kind, is on the
 [accuracy page](accuracy.md).
 
 I ran 45 scenarios in `tests/scenarios` (SQLAlchemy ORM and Core, sync and
@@ -287,8 +287,10 @@ pytest-queryguard only.
   per-statement failure messages and an index check: pytest-queryguard is
   built for that, and it has a baseline and SARIF for adoption.
 - You also want N+1 findings in a running FastAPI, Starlette, Flask or WSGI
-  app: look at queryspy. I did not test running
-  it together with pytest-queryguard.
+  app: both pytest-queryguard (its [in-application mode](in-app.md),
+  experimental since 0.5.0) and queryspy have ASGI and WSGI middleware and a
+  request panel; the two were not compared on running apps. I did not test
+  running queryspy together with pytest-queryguard.
 - You use queryspy in tests and want to move: see
   [Migrating from queryspy](migrating-from-queryspy.md).
 - You want budgets written for you or one global ratchet: pytest-querycount

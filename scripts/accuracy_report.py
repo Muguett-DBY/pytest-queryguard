@@ -178,7 +178,11 @@ def main() -> int:
             "versions": versions(),
             "queryguard": {
                 c: {
-                    n: {"failed": r.failed, "findings": r.findings}
+                    n: {
+                        "failed": r.failed,
+                        "findings": r.findings,
+                        "warnings": r.warnings,
+                    }
                     for n, r in res.items()
                 }
                 for c, res in raw.items()
