@@ -11,7 +11,9 @@ import functools
 import inspect
 import itertools
 import logging
+import math
 import os
+import random
 import re
 import sys
 import threading
@@ -26,6 +28,7 @@ from typing import Any, ParamSpec, TypeVar
 
 from ..api import Query, _to_query
 from ..blocks import Sieve
+from ..callsite import Sites
 from ..collector import QueryCollector
 from ..detectors import SCOPE_SESSION, SCOPE_TEST, detect
 from ..findings import Finding
@@ -46,6 +49,13 @@ _METHOD = re.compile(r"[A-Za-z][A-Za-z-]*")  # GET, M-SEARCH, VERSION-CONTROL
 def _check_threshold(name: str, value: object, minimum: int = 2) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ValueError(f"{name} must be an integer >= {minimum}, got {value!r}")
+
+
+def _is_number(value: object) -> bool:
+    """An int or a finite float, not a bool."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    return math.isfinite(value)
 
 
 def _split_budget_key(key: str) -> tuple[str, str]:
@@ -82,6 +92,12 @@ class Settings:
 
     ``max_events`` caps the statements stored per request (None: no cap);
     past it they are counted but not stored.
+
+    ``sample_rate`` is the fraction of requests measured, chosen at random;
+    the others are not measured at all (statements of a ``track()`` unit left
+    out count for the enclosing unit). ``min_db_time`` (seconds) skips the
+    N+1 rules for a request whose database time (``RequestReport.db_time``)
+    is below it; budgets still apply.
     """
 
     relationship_threshold: int = 2
@@ -94,6 +110,8 @@ class Settings:
     default_budget: int | None = None
     report: ReportTarget | Sequence[ReportTarget] = "log"
     max_events: int | None = 1000
+    sample_rate: float = 1.0
+    min_db_time: float = 0.0
 
     def __post_init__(self) -> None:
         _check_threshold("relationship_threshold", self.relationship_threshold)
@@ -124,6 +142,13 @@ class Settings:
             _check_threshold("default_budget", self.default_budget, minimum=0)
         if self.max_events is not None:
             _check_threshold("max_events", self.max_events, minimum=1)
+        rate = self.sample_rate
+        if not _is_number(rate) or not 0 <= rate <= 1:
+            raise ValueError(f"sample_rate must be a number from 0 to 1, got {rate!r}")
+        if not _is_number(self.min_db_time) or not self.min_db_time >= 0:
+            raise ValueError(
+                f"min_db_time must be a number of seconds >= 0, got {self.min_db_time!r}"
+            )
         for target in self.targets:
             if not callable(target) and target not in _TARGETS:
                 raise ValueError(
@@ -162,7 +187,9 @@ class RequestReport:
     (at most ``Settings.max_events``), ``statement_count`` all of them.
     ``duration`` and ``db_time`` are in seconds; ``started`` is a Unix time.
     ``error`` is set when the in-app mode hit an internal error during the
-    request; the report is then incomplete and not checked.
+    request; the report is then incomplete and not checked. ``sampled`` is
+    False for a ``track()`` unit that ``sample_rate`` left out: nothing was
+    measured or reported.
     """
 
     id: int
@@ -179,6 +206,7 @@ class RequestReport:
     findings: tuple[Finding, ...] = ()
     budget: int | None = None
     error: str | None = None
+    sampled: bool = True
     _message: str = field(default="", repr=False)
 
     @property
@@ -299,12 +327,23 @@ def _reset_for_tests() -> None:
 # --- the current request --------------------------------------------------
 
 
+def sampled(settings: Settings) -> bool:
+    """Whether to measure the next unit: ``sample_rate`` of them, at random."""
+    rate = settings.sample_rate
+    return rate >= 1 or random.random() < rate  # not for security
+
+
 @dataclass(eq=False, slots=True)
 class Active:
-    """What the listeners write to: the collector of the current request."""
+    """What the listeners write to: the collector of the current request.
+
+    ``owner`` is the unit whose block set it, when that is not ``tracker``:
+    a unit left out by sampling, which writes to the enclosing unit.
+    """
 
     collector: QueryCollector
     tracker: Tracker
+    owner: Tracker | None = None
 
 
 _P = ParamSpec("_P")
@@ -314,6 +353,8 @@ current: contextvars.ContextVar[Active | None] = contextvars.ContextVar(
     "queryguard_app_current", default=None
 )
 _ids = itertools.count(1)
+# The collector of a unit left out by sampling; nothing is written to it.
+_NONE = QueryCollector(max_events=1)
 
 
 def live() -> Active | None:
@@ -339,6 +380,7 @@ class Tracker:
         "active",
         "report",
         "settings",
+        "sites",
         "warning",
     )
 
@@ -349,14 +391,27 @@ class Tracker:
         *,
         method: str | None = None,
         path: str | None = None,
+        sampled: bool = True,
     ) -> None:
         self.settings = settings
         self.report = RequestReport(
-            id=next(_ids), name=name, method=method, path=path, started=time.time()
+            id=next(_ids),
+            name=name,
+            method=method,
+            path=path,
+            started=time.time(),
+            sampled=sampled,
         )
-        self.active = Active(QueryCollector(max_events=settings.max_events), self)
+        # A unit left out by sampling is finished from the start: finish()
+        # reports nothing, and on its own live() drops its statements.
+        self._done = not sampled
+        collector = QueryCollector(max_events=settings.max_events) if sampled else _NONE
+        self.active = Active(collector, self)
         self._token: contextvars.Token[Active | None] | None = None
-        self._done = False
+        # The unit's own call sites: each line's callers are those of its
+        # first run in this unit, not in another unit that ran it earlier or
+        # runs it at the same time.
+        self.sites: Sites = {}
         self._started = time.perf_counter()
         # The QueryGuardWarning a warning filter turned into an error, for the
         # caller to raise once the unit itself has ended without an exception.
@@ -364,6 +419,10 @@ class Tracker:
 
     def start(self) -> None:
         self._started = time.perf_counter()
+        outer = current.get()
+        if self._done and outer is not None:
+            # Not sampled: the enclosing unit keeps collecting.
+            self.active = Active(outer.collector, outer.tracker, self)
         self._token = current.set(self.active)
 
     @property
@@ -415,21 +474,22 @@ class Tracker:
         report.budget = settings.budget_for(report.method, report.route, report.path)
         root = display_root()
         scope = SCOPE_SESSION if settings.repeat_scope == SCOPE_SESSION else SCOPE_TEST
-        report.findings = tuple(
-            make_findings(
-                detect(
-                    collector,
-                    relationship_threshold=settings.relationship_threshold,
-                    repeat_threshold=settings.repeat_threshold,
-                    column_load_threshold=settings.column_load_threshold,
-                    small_repeat_threshold=settings.small_repeat_threshold,
-                    write_loop_threshold=settings.write_loop_threshold,
-                    scope=scope,
-                    sieve=Sieve(),
-                ),
-                cwd=root,
+        if report.db_time >= settings.min_db_time:
+            report.findings = tuple(
+                make_findings(
+                    detect(
+                        collector,
+                        relationship_threshold=settings.relationship_threshold,
+                        repeat_threshold=settings.repeat_threshold,
+                        column_load_threshold=settings.column_load_threshold,
+                        small_repeat_threshold=settings.small_repeat_threshold,
+                        write_loop_threshold=settings.write_loop_threshold,
+                        scope=scope,
+                        sieve=Sieve(),
+                    ),
+                    cwd=root,
+                )
             )
-        )
         if not report.problems:
             return
         parts = [f"queryguard: {report.name}"]
@@ -542,7 +602,8 @@ class track:  # a function to its callers, as in 0.5.0
         self._tracker: Tracker | None = None
 
     def _begin(self) -> Tracker:
-        tracker = Tracker(self._settings, self._name or "track()")
+        settings = self._settings
+        tracker = Tracker(settings, self._name or "track()", sampled=sampled(settings))
         tracker.start()
         return tracker
 
@@ -578,7 +639,7 @@ class track:  # a function to its callers, as in 0.5.0
         active = current.get()
         if active is None:
             return
-        tracker = active.tracker
+        tracker = active.owner or active.tracker
         tracker.finish()
         if kind is None and tracker.warning is not None:
             raise tracker.warning

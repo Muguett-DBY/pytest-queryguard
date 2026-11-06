@@ -45,8 +45,8 @@ def test_callsite_found_through_parent_greenlet(
     found: list[object] = []
     original = callsite._first_external
 
-    def spy(frame: object) -> object:
-        site = original(frame)  # type: ignore[arg-type]
+    def spy(frame: object, sites: object) -> object:
+        site = original(frame, sites)  # type: ignore[arg-type]
         found.append(site)
         return site
 

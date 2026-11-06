@@ -314,6 +314,8 @@ EXPECTED_APP_ALL = [
     "Settings",
     "internal_error",
     "is_watched",
+    "opentelemetry_reporter",
+    "sentry_reporter",
     "set_route",
     "track",
     "unwatch",
@@ -337,6 +339,8 @@ EXPECTED_APP_SIGNATURES = {
     ),
     "set_route": "(template: 'str') -> 'None'",
     "internal_error": "() -> 'BaseException | None'",
+    "opentelemetry_reporter": "() -> 'Reporter'",
+    "sentry_reporter": "(*, level: 'str' = 'warning') -> 'Reporter'",
     "QueryGuardASGI.__init__": _MIDDLEWARE_INIT.format(app="ASGIApp"),
     "QueryGuardWSGI.__init__": _MIDDLEWARE_INIT.format(app="WSGIApp"),
 }
@@ -353,6 +357,8 @@ EXPECTED_APP_FIELDS = {
         "default_budget",
         "report",
         "max_events",
+        "sample_rate",
+        "min_db_time",
     ],
     "RequestReport": [
         "id",
@@ -369,6 +375,7 @@ EXPECTED_APP_FIELDS = {
         "findings",
         "budget",
         "error",
+        "sampled",
     ],
 }
 

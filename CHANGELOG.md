@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `queryguard_max_events` it leaves nothing out. A block that left out
   nothing in the whole run, for a kind that was checked, is listed under
   "stale ignores" with its file and line, also with pytest-xdist (#234).
+- In-application mode: `opentelemetry_reporter()` and `sentry_reporter()`,
+  ready-made `report` callables. The first adds `queryguard.*` attributes and
+  one `queryguard.finding` event per finding to the current OpenTelemetry
+  span; the second sends one Sentry message per finding, fingerprinted by
+  the finding's identity (the SARIF fingerprint), so one N+1 is one Sentry
+  issue. Each imports its library only when created (#278).
+- In-application mode: `sample_rate` measures only that fraction of requests
+  and `track()` units, chosen at random, and `min_db_time` skips the N+1
+  rules for a request whose total database time is below it; budgets still
+  apply. `RequestReport.sampled` is False for a unit left out (#279).
 - `stack=GLOB` in `queryguard_ignore` patterns and `allow_nplusone(...,
   stack=...)`: leaves out a finding only when some frame of its reported
   stack (the `first at` line and its `called from` lines) matches, as `file`
