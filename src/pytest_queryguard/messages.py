@@ -25,6 +25,7 @@ from .findings import (
     KIND_MISSING_INDEX,
     KIND_RELATIONSHIP,
     KIND_REPEAT,
+    KIND_UNUSED_COLUMNS,
     KIND_UNUSED_EAGER_LOAD,
     KIND_WRITE_LOOP,
     Finding,
@@ -348,6 +349,8 @@ def format_findings(
     made = [f if isinstance(f, Finding) else make_finding(f, cwd=cwd) for f in findings]
     if made and all(f.kind == KIND_UNUSED_EAGER_LOAD for f in made):
         lines = ["queryguard: unused eager load detected (experimental)"]
+    elif made and all(f.kind == KIND_UNUSED_COLUMNS for f in made):
+        lines = ["queryguard: unused columns detected (experimental)"]
     elif made and all(f.kind == KIND_CARTESIAN_LOAD for f in made):
         lines = ["queryguard: cartesian join detected"]
     else:

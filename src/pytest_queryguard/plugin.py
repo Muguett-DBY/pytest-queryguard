@@ -7,7 +7,7 @@ import os
 import shlex
 import warnings as std_warnings
 from collections.abc import Callable, Generator, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, cast
@@ -15,7 +15,17 @@ from typing import Any, cast
 import pytest
 
 from . import baseline as baselines
-from . import blocks, cartesian, catalog, eager, hypopg, indexes, sarif, testjson
+from . import (
+    blocks,
+    cartesian,
+    catalog,
+    eager,
+    hypopg,
+    indexes,
+    sarif,
+    testjson,
+    unused_columns,
+)
 from . import budgets as budget_files
 from . import groups as finding_groups
 from .api import NPlusOneDetected, QueryGuardFixture
@@ -37,6 +47,7 @@ from .findings import (
     KIND_MISSING_INDEX,
     KIND_RELATIONSHIP,
     KIND_REPEAT,
+    KIND_UNUSED_COLUMNS,
     KIND_UNUSED_EAGER_LOAD,
     KIND_WRITE_LOOP,
     Finding,
@@ -73,6 +84,7 @@ from .warnings import QueryGuardInternalWarning, QueryGuardWarning, warn_interna
 _MODES = ("fail", "warn", "off")
 _EAGER_MODES = ("off", "warn", "fail")
 _eager_enabled = pytest.StashKey[bool]()
+_columns_enabled = pytest.StashKey[bool]()
 _cartesian_enabled = pytest.StashKey[bool]()
 _internal_reported = pytest.StashKey[bool]()
 # Set on a test item once its function starts: a queryguard fixture requested
@@ -142,6 +154,7 @@ class _Settings:
         # the same counted finding in several tests, for the terminal summary
         self.groups: finding_groups.Groups = {}
         self.cartesian = "warn"  # queryguard_cartesian_load
+        self.unused_columns = "off"  # queryguard_unused_columns
         self.strict = False  # queryguard_strict
         # budgets: queryguard_max_queries, the budget file and its update
         self.default_budget: int | None = None
@@ -403,6 +416,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "queryguard_unused_eager_load",
         "EXPERIMENTAL: report relationships a test loads with selectinload, "
         "joinedload, subqueryload or immediateload and never reads: off "
+        "(default), warn or fail",
+        default="off",
+    )
+    parser.addini(
+        "queryguard_unused_columns",
+        "EXPERIMENTAL: report wide rows (at least 8 columns) a test loads and "
+        "reads at most half the columns of, suggesting load_only(): off "
         "(default), warn or fail",
         default="off",
     )
@@ -676,6 +696,10 @@ def _unused_eager(config: pytest.Config) -> str:
     return _choice(config, "queryguard_unused_eager_load", _EAGER_MODES)
 
 
+def _unused_columns(config: pytest.Config) -> str:
+    return _choice(config, "queryguard_unused_columns", _EAGER_MODES)
+
+
 def _index_check(config: pytest.Config) -> bool:
     name = "queryguard_index_check"
     try:
@@ -837,6 +861,7 @@ def _read_settings(config: pytest.Config) -> _Settings:
     settings.rootpath = config.rootpath
     settings.json_path = _json_path(config)
     settings.cartesian = _cartesian_mode(config)
+    settings.unused_columns = _unused_columns(config)
     settings.strict = _strict(config)
     settings.default_budget = _default_budget(config)
     settings.budgets_path = _budgets_path(config)
@@ -924,6 +949,9 @@ def _configure(config: pytest.Config) -> None:
         if settings.unused_eager != "off":
             config.stash[_eager_enabled] = True  # set first: undone even if it fails
             eager.enable()
+        if settings.unused_columns != "off":
+            config.stash[_columns_enabled] = True  # set first: undone even if it fails
+            unused_columns.enable()
         if settings.cartesian != "off":
             config.stash[_cartesian_enabled] = True
             cartesian.enable()
@@ -957,6 +985,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     # session its state back.
     steps: tuple[Callable[[], object], ...] = (
         lambda: _disable_eager(config),
+        lambda: _disable_columns(config),
         lambda: _disable_cartesian(config),
         lambda: swap_error(stash.get(_outer_error, None)),
         lambda: indexes.swap_stopped(stash.get(_outer_stopped, None)),
@@ -990,6 +1019,12 @@ def _disable_cartesian(config: pytest.Config) -> None:
     if config.stash.get(_cartesian_enabled, False):
         config.stash[_cartesian_enabled] = False
         cartesian.disable()
+
+
+def _disable_columns(config: pytest.Config) -> None:
+    if config.stash.get(_columns_enabled, False):
+        config.stash[_columns_enabled] = False
+        unused_columns.disable()
 
 
 def _disable_eager(config: pytest.Config) -> None:
@@ -1067,6 +1102,8 @@ def _fails(settings: _Settings, finding: Finding) -> bool:
         return False
     if finding.kind == KIND_CARTESIAN_LOAD and settings.cartesian != "fail":
         return False
+    if finding.kind == KIND_UNUSED_COLUMNS and settings.unused_columns != "fail":
+        return False
     return settings.fails(finding.kind)
 
 
@@ -1074,7 +1111,7 @@ def _analyse(
     item: pytest.Item,
     collector: QueryCollector,
     settings: _Settings,
-    tracker: eager.Tracker | None = None,
+    trackers: _Trackers | None = None,
     sieve: blocks.Sieve | None = None,
 ) -> tuple[str | None, str | None]:
     """(report of the failing kinds, report of the others) for the finished test.
@@ -1089,13 +1126,15 @@ def _analyse(
     try:
         root = item.config.rootpath
         rules = bool(settings.ignore or marker_rules)
-        findings = _findings(collector, settings, tracker, root, None)
-        if sieve is not None and _in_blocks(collector, tracker):
+        if trackers is None:
+            trackers = _Trackers()
+        findings = _findings(collector, settings, trackers, root, None)
+        if sieve is not None and _in_blocks(collector, trackers):
             # The patterns and markers are matched against what the test found
             # without the blocks, so one that a block also covers is not stale.
             if rules:
                 _drop_ignored(item, settings, findings, marker_rules)
-            findings = _findings(collector, settings, tracker, root, sieve)
+            findings = _findings(collector, settings, trackers, root, sieve)
             if rules:
                 findings = apply_rules(findings, (*settings.ignore, *marker_rules))[0]
         elif rules:
@@ -1120,7 +1159,7 @@ def _analyse(
 def _findings(
     collector: QueryCollector,
     settings: _Settings,
-    tracker: eager.Tracker | None,
+    trackers: _Trackers,
     root: Path,
     sieve: blocks.Sieve | None,
 ) -> list[Finding]:
@@ -1138,23 +1177,32 @@ def _findings(
         ),
         cwd=root,
     )
-    if tracker is not None:
-        findings.extend(eager.findings(tracker, cwd=root, sieve=sieve))
+    if trackers.eager is not None:
+        findings.extend(eager.findings(trackers.eager, cwd=root, sieve=sieve))
+    if trackers.columns is not None:
+        findings.extend(
+            unused_columns.findings(trackers.columns, cwd=root, sieve=sieve)
+        )
     if settings.cartesian != "off" and collector.cartesian_loads:
         findings.extend(cartesian.findings(collector, cwd=root, sieve=sieve))
     return findings
 
 
-def _in_blocks(collector: QueryCollector, tracker: eager.Tracker | None) -> bool:
+def _in_blocks(collector: QueryCollector, trackers: _Trackers) -> bool:
     """True when some event of the test ran inside an ignore() block."""
     events: tuple[Sequence[Any], ...] = (
         collector.relationship_loads,
         collector.statements,
         collector.column_loads,
         collector.cartesian_loads,
-        () if tracker is None else tracker.loads,
+        () if trackers.eager is None else trackers.eager.loads,
     )
-    return any(event.ignores for group in events for event in group)
+    if any(event.ignores for group in events for event in group):
+        return True
+    columns = trackers.columns
+    return columns is not None and any(
+        any(group.ignores) for group in columns.groups.values()
+    )
 
 
 def _at_the_test(finding: Finding, item: pytest.Item) -> Finding:
@@ -1363,7 +1411,7 @@ def _note_blocks(
 
 
 def _analysed_kinds(
-    settings: _Settings, collector: QueryCollector, tracker: eager.Tracker | None
+    settings: _Settings, collector: QueryCollector, trackers: _Trackers
 ) -> tuple[str, ...]:
     """The finding kinds the test was checked for; none past the event cap."""
     if collector.truncated:
@@ -1371,8 +1419,10 @@ def _analysed_kinds(
     kinds = [KIND_RELATIONSHIP, KIND_REPEAT, KIND_COLUMN_LOAD]
     if settings.write_loop is not None:
         kinds.append(KIND_WRITE_LOOP)
-    if tracker is not None:
+    if trackers.eager is not None:
         kinds.append(KIND_UNUSED_EAGER_LOAD)
+    if trackers.columns is not None:
+        kinds.append(KIND_UNUSED_COLUMNS)
     if settings.cartesian != "off":
         kinds.append(KIND_CARTESIAN_LOAD)
     if collector.index_check:
@@ -2228,7 +2278,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         _report_internal_error(item.config)
         return (yield)
     try:
-        collector, tracker = _start_measuring(
+        collector, trackers = _start_measuring(
             settings,
             budgets=limit is not None or time_limit is not None,
             index_check=index_check and not exempt_all,
@@ -2257,22 +2307,22 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         with contextlib.suppress(Exception):
             blocks.stop_recording(recording)
         try:
-            _stop_measuring(item, collector, settings, tracker)
+            _stop_measuring(item, collector, settings, trackers)
             entry = settings.tests.get(item.nodeid) if settings.counting else None
             if entry is not None:
                 # a test with its own marker keeps no entry in the budget file
                 entry["max_queries_marker"] = limit is not None and source is None
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "end of the measurement")
-            _discard(collector, tracker)
+            _discard(collector, trackers)
         except BaseException:
             # a signal (KeyboardInterrupt, SystemExit) goes on, but leaves
             # no collector on the stack and no tracker behind
-            _discard(collector, tracker)
+            _discard(collector, trackers)
             raise
     try:
         parts, warn_texts = _results(
-            item, collector, settings, tracker, limit, time_limit, exempt, source
+            item, collector, settings, trackers, limit, time_limit, exempt, source
         )
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "end of the measurement")
@@ -2364,10 +2414,39 @@ def _emit_warnings(item: pytest.Item, texts: list[str]) -> None:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _Trackers:
+    """The trackers of the experimental checks that are on, for one test body."""
+
+    eager: eager.Tracker | None = None
+    columns: unused_columns.Tracker | None = None
+
+    def stop(self) -> None:
+        try:
+            if self.eager is not None:
+                eager.stop(self.eager)
+        finally:
+            if self.columns is not None:
+                unused_columns.stop(self.columns)
+
+
+def _start_trackers(settings: _Settings) -> _Trackers:
+    if settings.mode == "off":
+        return _Trackers()
+    tracker = eager.start() if eager.is_enabled() else None
+    try:
+        columns = unused_columns.start() if unused_columns.is_enabled() else None
+    except BaseException:
+        if tracker is not None:
+            eager.stop(tracker)
+        raise
+    return _Trackers(tracker, columns)
+
+
 def _start_measuring(
     settings: _Settings, *, budgets: bool, index_check: bool
-) -> tuple[QueryCollector, eager.Tracker | None]:
-    """A collector on the stack and, when it is on, the eager-load tracker."""
+) -> tuple[QueryCollector, _Trackers]:
+    """A collector on the stack and the trackers of the experimental checks."""
     if budgets:
         install()  # idempotent; budgets also work when the mode is off
     collector = QueryCollector()
@@ -2375,21 +2454,20 @@ def _start_measuring(
     collector.index_check = index_check
     collector.index_advisor = settings.index_advisor
     collector.hypopg = settings.hypopg
-    tracker = eager.start() if settings.mode != "off" and eager.is_enabled() else None
+    trackers = _start_trackers(settings)
     try:
         push(collector)
     except BaseException:
-        if tracker is not None:
-            eager.stop(tracker)
+        trackers.stop()
         raise
-    return collector, tracker
+    return collector, trackers
 
 
 def _stop_measuring(
     item: pytest.Item,
     collector: QueryCollector,
     settings: _Settings,
-    tracker: eager.Tracker | None,
+    trackers: _Trackers,
 ) -> None:
     """Take the collector off the stack, whatever happens; never raises an Exception.
 
@@ -2397,8 +2475,7 @@ def _stop_measuring(
     """
     try:
         try:
-            if tracker is not None:
-                eager.stop(tracker)
+            trackers.stop()
         finally:
             pop(collector)
         _report_internal_error(item.config)
@@ -2408,12 +2485,11 @@ def _stop_measuring(
         record_error(exc, "end of the measurement")
 
 
-def _discard(collector: QueryCollector, tracker: eager.Tracker | None) -> None:
-    """Best effort: take the collector and the tracker off after a failed stop."""
+def _discard(collector: QueryCollector, trackers: _Trackers) -> None:
+    """Best effort: take the collector and the trackers off after a failed stop."""
     # the error is already recorded; nothing here may add another
-    if tracker is not None:
-        with contextlib.suppress(Exception):
-            eager.stop(tracker)
+    with contextlib.suppress(Exception):
+        trackers.stop()
     with contextlib.suppress(Exception):
         pop(collector)
 
@@ -2422,7 +2498,7 @@ def _results(
     item: pytest.Item,
     collector: QueryCollector,
     settings: _Settings,
-    tracker: eager.Tracker | None,
+    trackers: _Trackers,
     limit: int | None,
     time_limit: float | None,
     exempt: tuple[str, ...],
@@ -2442,10 +2518,10 @@ def _results(
     warn_texts: list[str] = []
     if settings.mode != "off":
         sieve = blocks.Sieve()
-        failing, warning = _analyse(item, collector, settings, tracker, sieve)
+        failing, warning = _analyse(item, collector, settings, trackers, sieve)
         index = _analyse_indexes(item, collector, settings, exempt, sieve)
         try:
-            kinds = _analysed_kinds(settings, collector, tracker)
+            kinds = _analysed_kinds(settings, collector, trackers)
             _note_blocks(item, settings, sieve, collector.blocks_entered, kinds)
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "stale ignore() blocks")

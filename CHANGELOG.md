@@ -54,9 +54,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is called from `app/admin/*` and nowhere else. It sees as deep as
   `queryguard_stack_depth`; the baseline still matches by kind, label, file
   and function (#276).
+- Experimental detection of unused columns, off by default:
+  `queryguard_unused_columns` (`off`, `warn` or `fail`). When the rows of a
+  class that a query loads have at least 8 columns and the test body reads at
+  most half of them (the primary key, foreign keys and other columns the ORM
+  needs count as read), the finding (kind `unused-columns`, label the class,
+  as in `Account`) names the columns never read and suggests
+  `.options(load_only(...))`, or `defer()` of the large ones. Only the
+  query's own entities are checked, not rows loaded through relationships or
+  objects the test created. It has its SARIF rule `queryguard/unused-columns`
+  and works with `allow_nplusone`, `queryguard_ignore`, `ignore()` blocks and
+  the baseline. With the option off nothing is installed; see
+  `docs/unused-columns.md` for how it works, its cost and its limits (#243).
 
 ### Changed
 
+- The unused eager-load check and the new unused-columns check share one
+  wrapper of `InstrumentedAttribute.__get__`, so either can be turned on and
+  off without leaving the other's wrapper behind; a tracked read with only
+  the eager-load check on costs a little less than before.
 - CI runs the MySQL and MariaDB index check against live servers: a `mysql`
   job starts MySQL 8.4 and MariaDB 11.8 from their official Docker images and
   runs the MySQL test files with PyMySQL and aiomysql. The job sets
