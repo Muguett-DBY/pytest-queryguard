@@ -692,7 +692,8 @@ def _flag(config: pytest.Config, name: str) -> bool:
 def _strict_hook(
     item: pytest.Item, settings: _Settings
 ) -> (
-    Callable[[RelationshipLoadEvent, CallSite | None, int], BaseException | None] | None
+    Callable[[RelationshipLoadEvent, CallSite | None, int, bool], BaseException | None]
+    | None
 ):
     """The strict-mode check of this test, or None when it cannot raise.
 
@@ -710,10 +711,14 @@ def _strict_hook(
     root = item.config.rootpath
 
     def check(
-        load: RelationshipLoadEvent, first: CallSite | None, parents: int
+        load: RelationshipLoadEvent,
+        first: CallSite | None,
+        parents: int,
+        other_lines: bool,
     ) -> BaseException | None:
-        # the finding the report would make: located at the group's first lazy
-        # load, so ignore patterns and baseline entries match it the same way
+        # the finding the report would make: located at the relationship's
+        # first lazy load, so ignore patterns and baseline entries match it the
+        # same way; with parents of other lines too it has no patch
         parent = load.parent
         detection = RelationshipFinding(
             load.relationship,
@@ -722,6 +727,7 @@ def _strict_hook(
             None,
             scalar=load.scalar,
             parent_site=None if parent is None else parent.callsite,
+            other_parent_sites=1 if other_lines else 0,
             parent_root=None if parent is None else parent.root,
             parent_path=() if parent is None else parent.path,
         )

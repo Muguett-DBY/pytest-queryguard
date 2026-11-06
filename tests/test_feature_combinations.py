@@ -1065,3 +1065,30 @@ def test_strict_accepts_what_the_report_accepts_across_parent_lines(
     (entry_,) = doc["tests"].values()
     expected = [] if accepted_by == "pattern" else [("names_a", True)]
     assert [(f["function"], f["baselined"]) for f in entry_["findings"]] == expected
+
+
+def test_strict_error_has_no_patch_when_parents_come_from_two_lines(
+    pytester: pytest.Pytester,
+) -> None:
+    """As in the report, a patch of one of two parent queries would not fix it."""
+    _write_project(pytester, Combo("two-lines-patch"))
+    (pytester.path / "tests" / "test_app.py").write_text(
+        TWO_HELPERS.replace("Order.id < 20", "Order.id == 10")
+    )
+    result = pytester.runpytest_subprocess(
+        "-p",
+        "no:cacheprovider",
+        "--queryguard-strict",
+        "--queryguard-show-patch",
+        "--queryguard-write-patch=out.patch",
+    )
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "E*NPlusOneDetected: queryguard strict: Order.customer*",
+            "E*first at tests/test_app.py:8 in names_a",
+            "E*parents loaded at tests/test_app.py:12 in names_b and 1 other place",
+        ]
+    )
+    result.stdout.no_fnmatch_line("*patch (git apply*")
+    assert (pytester.path / "out.patch").read_text() == ""

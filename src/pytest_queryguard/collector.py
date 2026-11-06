@@ -34,6 +34,8 @@ class StrictGroup:
     first: CallSite | None
     parents: set[object] = field(default_factory=set)
     suppressed: bool = False  # its finding is ignored or baselined
+    # (the report's location, parents from other lines), once at the threshold
+    report: tuple[CallSite | None, bool] | None = None
 
 
 @dataclass(slots=True, eq=False)
@@ -94,7 +96,9 @@ class QueryCollector:
     # relationship has been lazy-loaded for ``strict_threshold`` parents that
     # one query line loaded; returns the exception to raise, or None.
     strict: (
-        Callable[[RelationshipLoadEvent, CallSite | None, int], BaseException | None]
+        Callable[
+            [RelationshipLoadEvent, CallSite | None, int, bool], BaseException | None
+        ]
         | None
     ) = None
     strict_threshold: int = 2
@@ -185,39 +189,54 @@ class QueryCollector:
         if _FREE_THREADED:
             with self._lock:
                 group = self._strict_group(key, load)
+                if group is not None and group.report is None:
+                    group.report = self._report_site(load, scope)
         else:
             group = self._strict_group(key, load)
+            if group is not None and group.report is None:
+                group.report = self._report_site(load, scope)
         if group is None:
             return None
         if load.ignores and covers(load.ignores, KIND_RELATIONSHIP):
             # inside an ignore() block: the load counts for the group (a
             # later load outside the block raises), this one never raises
             return None
-        first = self._report_first(load, scope) or group.first
-        error = self.strict(load, first, len(group.parents))
+        assert group.report is not None
+        first, other_lines = group.report
+        error = self.strict(load, first or group.first, len(group.parents), other_lines)
         if error is None:
             group.suppressed = True
         return error
 
-    def _report_first(
+    def _report_site(
         self, load: RelationshipLoadEvent, scope: object | None
-    ) -> CallSite | None:
-        """Where the report puts this N+1: the first lazy load of the relationship.
+    ) -> tuple[CallSite | None, bool]:
+        """(where the report puts this N+1, whether other lines loaded parents).
 
         The report makes one finding per relationship (per scope with
-        ``queryguard_repeat_scope = session``), whatever line loaded the
-        parents, so ignore patterns and the baseline must match that line,
-        not the first load of this group's parent line.
+        ``queryguard_repeat_scope = session``), located at its first lazy
+        load, whatever line loaded the parents; ignore patterns and the
+        baseline must match that line, not the first load of this group's
+        parent line. When parents of other lines are in it too, the report's
+        finding has no patch, so neither has the strict error. Computed once
+        per group, when it reaches the threshold.
         """
+        first: CallSite | None = None
+        other_lines = False
+        here = load.parent.callsite if load.parent is not None else None
         for earlier in self.relationship_loads:
             if (
-                earlier.relationship == load.relationship
-                and earlier.parent_key is not None
-                and earlier.callsite is not None
-                and (scope is None or earlier.scope == scope)
+                earlier.relationship != load.relationship
+                or earlier.parent_key is None
+                or (scope is not None and earlier.scope != scope)
             ):
-                return earlier.callsite
-        return None
+                continue
+            if first is None and earlier.callsite is not None:
+                first = earlier.callsite
+            parent = earlier.parent
+            if parent is None or parent.callsite != here:
+                other_lines = True
+        return first, other_lines
 
     def _strict_group(
         self, key: tuple[object, ...], load: RelationshipLoadEvent
