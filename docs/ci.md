@@ -90,9 +90,9 @@ Outputs: `exit-code` (pytest's), `sarif-file`, `json-file` and `trend-report`
 
 On every run the action writes the [query counts](#query-counts-as-json) and
 uploads them as an artifact. On a pull request it downloads the file of the
-latest finished run of the same workflow on the base branch (a push, merge
-queue or scheduled run, never a pull-request run: a fork's pull request from
-its own `main` would otherwise count as the base), compares the
+latest finished run of the same workflow on the base branch (a push or
+scheduled run, never a pull-request run: a fork's pull request from its own
+`main` would otherwise count as the base), compares the
 two, and writes the result to the job summary and to one pull-request
 comment:
 
@@ -167,7 +167,7 @@ collapsed `<details>` block below the comparison.
   comparison does; `Since` is the run from which on a new finding is in
   every run.
 - Pull-request runs are not history: only runs of other events (push,
-  schedule, merge queue) on the branch count, one per commit. Runs without
+  schedule) on the branch count, one per commit. Runs without
   the artifact (expired after 30 days, or a job that stopped before writing
   it) or with a file that cannot be read are skipped, so the window may have
   fewer runs. The
