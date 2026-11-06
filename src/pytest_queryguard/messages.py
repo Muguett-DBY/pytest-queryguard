@@ -156,6 +156,17 @@ def _loader(scalar: bool) -> str:
     return "joinedload" if scalar else "selectinload"
 
 
+def loader_query(root: str, path: Sequence[tuple[str, bool]]) -> str:
+    """``select(root).options(...)`` loading each ``(label, scalar)`` step.
+
+    ``joinedload`` for a many-to-one or one-to-one step, ``selectinload`` for
+    a collection; the fix line of a ``relationship-load`` finding, also used
+    by the static check (``pytest_queryguard.lint``).
+    """
+    steps = ".".join(f"{_loader(scalar)}({label})" for label, scalar in path)
+    return f"select({root}).options({steps})"
+
+
 def loader_steps(finding: RelationshipFinding) -> list[tuple[str, str]]:
     """The loader option as (loader, relationship) steps from the parent query.
 

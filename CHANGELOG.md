@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   last N runs on the base branch to the job summary on pushes to the default
   branch and on pull requests, and folds it into the pull-request comment;
   new output `trend-report` (#248).
+- An experimental static check, `python -m pytest_queryguard.lint --models
+  app.models PATHS...`, reports likely N+1 queries without running tests: a
+  loop or comprehension over an ORM query (`session.scalars(select(C))`,
+  `session.execute(...).scalars()`, `session.query(C)`, async sessions,
+  with the query in a variable of the same function) that reads a
+  `lazy="select"` relationship the query has no loader option for, along
+  chains and nested loops. It imports the `--models` modules to read the
+  mappers and only parses the code it checks. It is conservative and stays
+  inside one function. Output as text, JSON or SARIF (rule
+  `queryguard/static-relationship-load`), exit status 1 on findings,
+  `# queryguard: ignore` on the line to suppress. See docs/static-check.md.
 - In-application mode: `page_report="footer"` or `"console"` adds a
   request's findings to its own HTML page, as an `<aside>` before
   `</body>` or as a `console.warn()` script, like Bullet in Rails. Only
