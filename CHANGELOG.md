@@ -13,6 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows how the query counts moved over several `--queryguard-json` files,
   oldest first: the statements of each run, the tests whose count changed
   most with a sparkline per test, and the findings new or gone in the window. Runs that
+- An experimental MCP server for coding agents such as Claude Code and
+  Cursor: `python -m pytest_queryguard.mcp` speaks the Model Context Protocol
+  over stdio with the standard library only, no new dependency. Its tools
+  `run_tests` (runs pytest in the server's directory and returns each test's
+  findings with message, fix hint and stack, plus the patch of
+  `--queryguard-write-patch`), `explain_finding` and `compare` return bounded
+  JSON. See docs/mcp.md.
+- `--queryguard-json`: each finding has a `message`, its report text as the
+  terminal shows it, without the indent (the wording is not stable).
+- `python -m pytest_queryguard.trend RUN1.json RUN2.json ...` shows how the
+  query counts moved over several `--queryguard-json` files, oldest first:
+  the statements of each run, the tests whose count changed most with a
+  sparkline per test, and the findings new or gone in the window. Runs that
   stopped early are marked. `--top`, `--test`, `--format markdown|text|json`
   and `--ascii` (also chosen by itself for a console that cannot print the
   blocks). The GitHub Action's new input `trend: N` adds the trend of the

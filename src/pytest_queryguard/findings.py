@@ -144,3 +144,9 @@ class Finding:
     @property
     def identity(self) -> tuple[str, str, str | None, str | None]:
         return (self.kind, self.label, self.file, self.function)
+
+
+def message_text(finding: Finding) -> str:
+    """The finding's report text without the indent of the terminal report."""
+    lines = [line.removeprefix("  ") for line in finding.message.splitlines()]
+    return "\n".join(lines).strip() or finding.label

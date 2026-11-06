@@ -178,6 +178,9 @@ command-line flags are marked `EXPERIMENTAL` in `pytest --help`.
   reports, its text output, and the rule `queryguard/static-relationship-load`
   in its SARIF output. Its JSON output has a `format` key; a change to the
   documented keys increments it. See [Static check](static-check.md).
+- The MCP server, `python -m pytest_queryguard.mcp`: its tools, their
+  arguments and the fields of their results. See
+  [MCP server](mcp.md).
 
 Everything else listed under "What is public" follows the deprecation policy.
 `tests/test_public_api.py` still snapshots the experimental ini options and
