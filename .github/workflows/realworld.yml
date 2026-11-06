@@ -1,0 +1,190 @@
+name: Real-world projects
+
+# Runs the test suites of open-source projects that use the SQLAlchemy 2 ORM,
+# once without the plugin and once with it in warn mode, to measure false
+# positives, crashes and overhead (docs/accuracy.md#real-projects). Started by
+# hand only: it installs and runs third-party code, so it never runs on push,
+# pull requests or a schedule, and its token can only read this repository.
+# The projects, their pinned tags and their install and test commands are in
+# scripts/realworld_projects.json.
+on:
+  workflow_dispatch:
+    inputs:
+      projects:
+        description: "Projects to run, comma-separated names from scripts/realworld_projects.json (empty: all)"
+        required: false
+        default: ""
+      plugin-ref:
+        description: "Branch, tag or SHA of pytest-queryguard to test (empty: the ref the run was started on)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.plugin-ref }}
+          persist-credentials: false
+      - name: Select the projects
+        id: matrix
+        env:
+          FILTER: ${{ inputs.projects }}
+        run: |
+          matrix=$(jq -c --arg filter "$FILTER" '
+            ($filter | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))) as $names
+            | .projects as $all
+            | ($names - ($all | map(.name))) as $unknown
+            | if ($unknown | length) > 0 then error("unknown projects: \($unknown | join(", "))") else . end
+            | {include: [$all[] | select(($names | length) == 0 or (.name as $n | $names | index($n)))]}
+          ' scripts/realworld_projects.json)
+          echo "$matrix" | jq .
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  project:
+    name: ${{ matrix.name }}
+    needs: select
+    runs-on: ubuntu-latest
+    # two runs of the suite plus the install; each run is cut at 12 minutes
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    env:
+      OUT: ${{ github.workspace }}/out
+      UV_COMPILE_BYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.plugin-ref }}
+          path: plugin
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
+          path: project
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Start PostgreSQL
+        if: matrix.postgres
+        env:
+          POSTGRES_USER: ${{ matrix.env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ matrix.env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ matrix.env.POSTGRES_DB }}
+        run: |
+          docker run -d --name realworld-postgres -p 127.0.0.1:5432:5432 \
+            -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB postgres:17
+          for _ in $(seq 1 60); do
+            docker exec realworld-postgres pg_isready -h localhost -U "$POSTGRES_USER" && break
+            sleep 1
+          done
+          docker exec realworld-postgres pg_isready -h localhost -U "$POSTGRES_USER"
+      - name: Create the virtual environment
+        env:
+          PROJECT_ENV: ${{ toJSON(matrix.env) }}
+        run: |
+          mkdir -p "$OUT"
+          uv venv "$RUNNER_TEMP/venv"
+          {
+            echo "VIRTUAL_ENV=$RUNNER_TEMP/venv"
+            # uv sync in a project installs here instead of the project's .venv
+            echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/venv"
+          } >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' <<< "$PROJECT_ENV" >> "$GITHUB_ENV"
+      - name: Install the project
+        working-directory: project/${{ matrix.workdir }}
+        env:
+          INSTALL: ${{ matrix.install }}
+        run: bash -euo pipefail -c "$INSTALL"
+      # After the project, so both runs use the same environment: if the plugin
+      # needs a newer pytest or SQLAlchemy than the project pinned, the run
+      # without it uses that version too.
+      - name: Install the plugin
+        run: |
+          uv pip install "$GITHUB_WORKSPACE/plugin"
+          mkdir -p "$RUNNER_TEMP/probe"
+          cp "$GITHUB_WORKSPACE/plugin/scripts/realworld_probe.py" "$RUNNER_TEMP/probe/"
+          uv pip freeze > "$OUT/freeze.txt"
+          python -c "import sys, sqlalchemy, pytest, pytest_queryguard as q; print(sys.version); print('sqlalchemy', sqlalchemy.__version__); print('pytest', pytest.__version__); print('pytest-queryguard', q.__version__)" | tee "$OUT/versions.txt"
+      - name: Run the tests without the plugin
+        id: baseline
+        working-directory: project/${{ matrix.workdir }}
+        env:
+          PYTEST_ARGS: ${{ matrix.pytest_args }}
+        run: |
+          read -r -a args <<< "$PYTEST_ARGS"
+          start=$(date +%s.%N)
+          set +e
+          timeout -s INT -k 60 12m python -m pytest "${args[@]}" -p no:queryguard \
+            --junitxml="$OUT/baseline.xml" > "$OUT/baseline.log" 2>&1
+          code=$?
+          set -e
+          end=$(date +%s.%N)
+          printf '{"exit": %d, "seconds": %s}\n' "$code" "$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.3f", b - a }')" > "$OUT/baseline.meta.json"
+          tail -n 30 "$OUT/baseline.log"
+          cat "$OUT/baseline.meta.json"
+      - name: Run the tests with the plugin (warn mode)
+        id: plugin
+        working-directory: project/${{ matrix.workdir }}
+        env:
+          PYTEST_ARGS: ${{ matrix.pytest_args }}
+          QUERYGUARD_PROBE_OUT: ${{ github.workspace }}/out/probe.jsonl
+        # Findings must not fail tests here, also in projects that turn
+        # warnings into errors: QueryGuardWarning is shown, not raised (the
+        # command-line -W comes after the project's filterwarnings). The two
+        # experimental kinds are on, as warnings.
+        run: |
+          read -r -a args <<< "$PYTEST_ARGS"
+          export PYTHONPATH="$RUNNER_TEMP/probe${PYTHONPATH:+:$PYTHONPATH}"
+          start=$(date +%s.%N)
+          set +e
+          timeout -s INT -k 60 12m python -m pytest "${args[@]}" -p realworld_probe \
+            --queryguard-mode=warn \
+            -o queryguard_unused_eager_load=warn -o queryguard_unused_columns=warn \
+            -W "default::pytest_queryguard.QueryGuardWarning" \
+            --queryguard-json="$OUT/queryguard.json" \
+            --queryguard-sarif="$OUT/queryguard.sarif" \
+            --junitxml="$OUT/plugin.xml" > "$OUT/plugin.log" 2>&1
+          code=$?
+          set -e
+          end=$(date +%s.%N)
+          printf '{"exit": %d, "seconds": %s}\n' "$code" "$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.3f", b - a }')" > "$OUT/plugin.meta.json"
+          tail -n 30 "$OUT/plugin.log"
+          cat "$OUT/plugin.meta.json"
+      - name: Summary
+        if: always() && steps.plugin.outcome != 'skipped'
+        env:
+          PROJECT: ${{ matrix.name }}
+          REF: ${{ matrix.repository }}@${{ matrix.ref }}
+        run: |
+          set +e
+          python -I "$GITHUB_WORKSPACE/plugin/scripts/realworld_summary.py" \
+            --dir "$OUT" --project "$PROJECT" --ref "$REF" > "$OUT/summary.md"
+          code=$?
+          set -e
+          cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$OUT/summary.md"
+          exit "$code"
+      - name: Upload the outputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: realworld-${{ matrix.name }}
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 30

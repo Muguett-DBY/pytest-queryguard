@@ -301,6 +301,32 @@ serial and identity sequence past the seeded rows after a scenario's setup
 (`Ctx.sync_sequences()`). The run showed no difference between PostgreSQL and
 SQLite that comes from the plugin.
 
+## Real projects
+
+The corpus is written by the author of the plugin. To see what the plugin does
+on code nobody wrote for it, the workflow `.github/workflows/realworld.yml`
+runs the test suites of open-source projects that use the SQLAlchemy 2 ORM:
+SQLModel, the FastAPI full-stack template (on PostgreSQL), MLflow's
+SQLAlchemy tracking store, SQLAdmin, Advanced Alchemy (its unit tests) and the
+SQLAlchemy adapter of FastAPI Users. Each project is pinned to a release tag in
+`scripts/realworld_projects.json`.
+
+Each suite runs twice in the same environment: once without the plugin
+(`-p no:queryguard`) and once with it in warn mode, with the experimental
+`unused-eager-load` and `unused-columns` kinds on. `scripts/realworld_summary.py`
+compares the two runs' JUnit XML and reads the plugin's JSON file:
+
+- tests that pass without the plugin and fail with it (the plugin broke them);
+- `QueryGuardInternalWarning`s and pytest internal errors, recorded by a small
+  probe plugin (`scripts/realworld_probe.py`);
+- the findings by kind, with `file:line` samples, to be checked by hand for
+  false positives;
+- the extra wall time of the run with the plugin (one run each, so noisy).
+
+The workflow is started by hand only, never on pushes or pull requests,
+because it installs and runs third-party code. The results will be published
+here after the first run.
+
 ## Known limits
 
 See also [Limitations](limitations.md).
