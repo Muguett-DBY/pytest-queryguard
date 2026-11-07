@@ -58,9 +58,12 @@ the groups that reach the threshold; when several do, it names the first
 query line and how many others. When the query of a parent is unknown
 (objects the test created that a query or `session.get()` handed back without
 reading their row, objects loaded before the test body, objects that two
-queries read), the plugin cannot tell which query it belongs to: it counts for
-every query line's group, and the parents of unknown origin also count as a
-group of their own, so an unknown origin never hides a loop. A query line
+queries read), the plugin cannot tell which query it belongs to: such parents
+are grouped by the line that read the relationship instead. A loop reads it at
+one line; code that creates three objects and reads each one's relationship on
+a line of its own (SQLModel's tutorials) is no N+1. A parent of unknown origin
+also counts for every query line's group whose parents were read at the same
+line, so an unknown origin never hides a loop. A query line
 whose lazy loads all ran inside an `ignore("relationship-load")` block is
 left out of the finding, the other lines are still reported.
 

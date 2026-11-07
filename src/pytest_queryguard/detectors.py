@@ -258,20 +258,36 @@ def _n_plus_one_groups(
     them, and a group needs ``threshold`` distinct parents, so two
     single-object lookups at two lines are no N+1 (#307). A parent whose
     query is unknown (made by the test, loaded before the measurement, read
-    by two queries) may belong to any of them: its loads count for every
-    group, and form one of their own, so an unknown origin never hides a loop.
+    by two queries) is grouped by the line that read the relationship
+    instead: a loop reads it at one line, straight-line code that reads the
+    relationship of a few objects one by one at lines of their own. Its loads
+    also count for every query line whose parents were read at the same line,
+    so an unknown origin never hides a loop; a load read where no line of the
+    application is known counts for every group.
     """
-    unknown: list[RelationshipLoadEvent] = []
+    unknown: dict[CallSite | None, list[RelationshipLoadEvent]] = {}
     groups: dict[CallSite, list[RelationshipLoadEvent]] = {}
     for load in loads:
         parent = load.parent
         if parent is None or parent.callsite is None:
-            unknown.append(load)
+            unknown.setdefault(load.callsite, []).append(load)
         else:
             groups.setdefault(parent.callsite, []).append(load)
-    candidates = [[*group, *unknown] for group in groups.values()]
-    if unknown:
-        candidates.append(unknown)
+    # read at an unknown line (no frame of the application): may be any line
+    anywhere = unknown.pop(None, [])
+    candidates = []
+    for group in groups.values():
+        lines = dict.fromkeys(load.callsite for load in group)
+        candidates.append(
+            [
+                *group,
+                *(load for line in lines for load in unknown.get(line, ())),
+                *anywhere,
+            ]
+        )
+    candidates.extend([*group, *anywhere] for group in unknown.values())
+    if anywhere:
+        candidates.append(anywhere)
     return [
         group
         for group in candidates

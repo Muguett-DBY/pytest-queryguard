@@ -942,6 +942,47 @@ def test_a_parent_of_unknown_origin_counts_for_each_query_line_alone() -> None:
     assert (f.count, f.parent_site) == (3, None)
 
 
+def _read_at(
+    key: object, parent: ParentLoad | None, read: CallSite
+) -> RelationshipLoadEvent:
+    return RelationshipLoadEvent("Customer.country", key, read, True, None, parent)
+
+
+READ_2 = CallSite(filename="app.py", lineno=30, function="handler")
+READ_3 = CallSite(filename="app.py", lineno=31, function="handler")
+
+
+def test_parents_of_unknown_origin_read_at_different_lines_are_no_n_plus_one() -> None:
+    # SQLModel's tutorial: three objects the code made, committed and refreshed,
+    # each relationship read on a line of its own; no loop
+    c = QueryCollector()
+    c.relationship_loads.extend(
+        (_read_at(1, None, SITE), _read_at(2, None, READ_2), _read_at(3, None, READ_3))
+    )
+    assert detect(c, relationship_threshold=2, repeat_threshold=5) == []
+    # nor with a single lookup at a line of its own
+    c.relationship_loads.append(_read_at(4, ParentLoad(OTHER, None), SITE))
+    assert detect(c, relationship_threshold=3, repeat_threshold=5) == []
+
+
+def test_parents_of_unknown_origin_read_at_one_line_are_a_loop() -> None:
+    c = QueryCollector()
+    c.relationship_loads.extend(
+        (_read_at(1, None, READ_2), _read_at(2, None, SITE), _read_at(3, None, SITE))
+    )
+    [f] = detect(c, relationship_threshold=2, repeat_threshold=5)
+    assert isinstance(f, RelationshipFinding)
+    assert f.count == 2
+    # and with the parents of a query read at that line
+    c = QueryCollector()
+    c.relationship_loads.extend(
+        (_read_at(1, None, SITE), _read_at(2, ParentLoad(OTHER, None), SITE))
+    )
+    [f] = detect(c, relationship_threshold=2, repeat_threshold=5)
+    assert isinstance(f, RelationshipFinding)
+    assert f.count == 2
+
+
 def test_a_query_line_inside_an_ignore_block_is_left_out_of_the_finding() -> None:
     block = IgnoreBlock(("relationship-load",), None, None)
 
