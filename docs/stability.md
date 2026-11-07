@@ -83,8 +83,10 @@ follows them too:
 
 - An ini option `queryguard_<name>` and the command-line flag that overrides
   it, `--queryguard-<name>`, use the same words. A flag that turns a boolean
-  option on has no value; `--no-queryguard-<name>` turns it off (so far only
-  for the index check). Flags without an ini option (`--queryguard-report`,
+  option on has no value; `--no-queryguard-<name>` turns it off for the run
+  (`--no-queryguard-index-check`, `--no-queryguard-strict`,
+  `--no-queryguard-show-patch`); of the two, the last one on the command line
+  wins. Flags without an ini option (`--queryguard-report`,
   `--queryguard-json`, `--queryguard-sarif`, `--queryguard-write-patch`, the
   two `--queryguard-update-*` flags) are about one run, not about the project.
 - Options with a fixed set of values ignore case and surrounding spaces.

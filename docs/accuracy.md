@@ -302,7 +302,7 @@ reported by the small-repeat rule either.
 | unused-eager-load = fail | unused-eager-load | 5 | 1 | 0 | 83% | 100% |
 | unused-columns = fail | unused-columns | 8 | 0 | 1 | 100% | 89% |
 | repeat scope `session` | repeated-statement | 41 | 1 | 6 | 98% | 87% |
-| strict = true | relationship-load | 41 | 0 | 2 | 100% | 95% |
+| strict = true | relationship-load | 43 | 0 | 0 | 100% | 100% |
 | strict = true | repeated-statement | 44 | 1 | 3 | 98% | 94% |
 | all five rules | repeated-statement | 47 | 2 | 0 | 96% | 100% |
 | all five rules | column-load | 13 | 1 | 0 | 93% | 100% |
@@ -310,8 +310,9 @@ reported by the small-repeat rule either.
 | all five rules | unused-eager-load | 5 | 1 | 0 | 83% | 100% |
 | all five rules | unused-columns | 8 | 0 | 1 | 100% | 89% |
 
-`relationship-load` stays at 43 TP, 0 FP, 0 FN in every configuration but
-strict, and `cartesian-load` at 7 TP, 1 FP, 0 FN in every configuration. The unused-eager-load row is
+`relationship-load` stays at 43 TP, 0 FP, 0 FN in every configuration,
+strict included since the fix for a strict error that a library wraps (see
+below), and `cartesian-load` at 7 TP, 1 FP, 0 FN in every configuration. The unused-eager-load row is
 five BUG scenarios (a joined many-to-one of which only the foreign key is
 read, the unread second link of a `selectinload` chain, a repository method
 reused by a page that needs less, an async handler) against CLEAN scenarios
@@ -347,7 +348,7 @@ rules report is the polling loop, which repeats one statement inside one `Sessio
 | `bug_77_cartesian_mapping_lazy_joined` | BUG: two collections with `lazy="joined"` on the mapping | not reported before the fix; `cartesian-load` after | Fixed on 2026-11-07: the rule follows the loader strategies of the mapping, not only the options of the query. |
 | `bug_76_cartesian_async_endpoint`, `clean_78_joined_collection_and_scalar` | the cartesian verdict, and no unused columns: a page for one article | `unused-columns` with the check on, before the fix; nothing after | Fixed on 2026-11-07: a query that pins the whole primary key returns one row, and the check no longer reports a group of such queries. |
 | `bug_86_unused_columns_via_selectinload` | BUG: `selectinload(Author.articles)`, only `title` read of each article | not reported by the unused-columns check | The check groups only the instances a query returns itself, not those loaded through a relationship (documented in [Unused columns](unused-columns.md)). |
-| `bug_04_pydantic_from_attributes`, `bug_06_fastapi_response_model` | BUG: Pydantic `from_attributes` and a FastAPI `response_model` over lazy relationships | no finding in strict mode; the test fails with Pydantic's or FastAPI's validation error | Pydantic catches the `NPlusOneDetected` that strict mode raises at the access and raises its own validation error, with the strict message inside, once per remaining item. The plugin sees that error, not its own, so the report at the end (and SARIF, `--queryguard-json`, the summary) does not run. The test still fails, with the N+1 in its message. |
+| `bug_04_pydantic_from_attributes`, `bug_06_fastapi_response_model` | BUG: Pydantic `from_attributes` and a FastAPI `response_model` over lazy relationships | no finding in strict mode before the fix; `relationship-load` after | Pydantic catches the `NPlusOneDetected` that strict mode raises at the access and raises its own validation error, with the strict message inside. The plugin saw that error, not its own, so the report at the end (and SARIF, `--queryguard-json`, the summary) did not run. Fixed after 0.8.0: when strict mode raised in a test that then fails with another error, the analysis still runs and records the N+1; the test keeps failing with the library's error. |
 | `bug_88_strict_lazy_then_lookup_loop` | BUG: a lazy loop, then a `session.get` loop | only `relationship-load` in strict mode | Strict mode stops the test at the first N+1, so the second loop never runs. |
 | `clean_123_polymorphic_subclass_without_rows` | CLEAN: `selectinload` of a subclass relationship, no subclass rows in the data | `unused-eager-load` with the check on, before the fix; nothing after | Fixed on 2026-11-07: reads of base-class rows no longer count as reads of instances that could have the subclass's relationship. |
 | `clean_124_collection_checked_through_inspect` | CLEAN: the collection is read through `inspect(obj).attrs.x.loaded_value` | `unused-eager-load` with the check on | The check sees reads through the attribute, not through `inspect()` or `__dict__` (documented in [Unused eager loads](unused-eager-load.md)). |
@@ -647,10 +648,8 @@ See also [Limitations](limitations.md).
 - The unused-columns check (experimental) does not see instances loaded
   through a relationship. It leaves out queries that pin the primary key (one
   row each), but otherwise reports three rows as readily as a thousand.
-- In strict mode, a library that catches the exception at the access
-  (Pydantic, FastAPI's response validation) fails the test with its own error;
-  the N+1 is in its message but not in the report, SARIF or JSON. Strict mode
-  also stops the test at the first N+1, so later ones are not reported.
+- Strict mode stops the test at the first N+1, so later ones are not
+  reported.
 - `--queryguard-write-patch` writes a patch only for a `select(Class)` (or
   `select(module.Class)`) written on the line that ran it, or assigned once to
   the variable that line runs, and not inside a comprehension: 20 of the 43

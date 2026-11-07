@@ -275,11 +275,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--queryguard-strict",
         dest="queryguard_strict",
-        action="store_true",
+        action="store_const",
+        const=True,
         default=None,
         help="Raise at the lazy load that makes an N+1 (by default the second "
         "parent from one query line), with the test's traceback (overrides "
         "queryguard_strict).",
+    )
+    group.addoption(
+        "--no-queryguard-strict",
+        dest="queryguard_strict",
+        action="store_const",
+        const=False,
+        help="Turn strict mode off for this run.",
     )
     group.addoption(
         "--queryguard-report",
@@ -348,10 +356,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--queryguard-show-patch",
         dest="queryguard_show_patch",
-        action="store_true",
+        action="store_const",
+        const=True,
         default=None,
         help="EXPERIMENTAL: print a patch under each relationship-load finding "
         "whose parent query line is certain (overrides queryguard_show_patch).",
+    )
+    group.addoption(
+        "--no-queryguard-show-patch",
+        dest="queryguard_show_patch",
+        action="store_const",
+        const=False,
+        help="Do not print the patches for this run.",
     )
     group.addoption(
         "--queryguard-write-patch",
@@ -725,16 +741,19 @@ def _strict(config: pytest.Config) -> bool:
 
 
 def _flag(config: pytest.Config, name: str) -> bool:
-    """A bool ini option that its command-line flag (same dest) turns on."""
-    if config.getoption(name):
-        return True
+    """A bool ini option that its flags (same dest) turn on or off for the run.
+
+    The ini value is checked even when a flag overrides it; of the two flags
+    the last one wins.
+    """
     try:
         raw: Any = config.getini(name)
     except (TypeError, ValueError) as exc:
         raise pytest.UsageError(f"{name} must be true or false: {exc}") from None
     if not isinstance(raw, bool):
         raise pytest.UsageError(f"{name} must be true or false, got {raw!r}")
-    return raw
+    cli: bool | None = config.getoption(name)
+    return raw if cli is None else cli
 
 
 def _strict_hook(
@@ -809,15 +828,7 @@ def _unused_columns(config: pytest.Config) -> str:
 
 
 def _index_check(config: pytest.Config) -> bool:
-    name = "queryguard_index_check"
-    try:
-        raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
-        raise pytest.UsageError(f"{name} must be true or false: {exc}") from None
-    if not isinstance(raw, bool):
-        raise pytest.UsageError(f"{name} must be true or false, got {raw!r}")
-    cli: bool | None = config.getoption("queryguard_index_check")
-    return raw if cli is None else cli
+    return _flag(config, "queryguard_index_check")
 
 
 def _index_advisor(config: pytest.Config) -> bool:
@@ -2630,17 +2641,31 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         collector.strict_threshold = settings.relationship
         collector.strict_by_scope = settings.repeat_scope == SCOPE_SESSION
     strict_error: NPlusOneDetected | None = None
+    # the test's own failure, after strict mode raised in it
+    other_error: BaseException | None = None
     recording = blocks.record_entered(collector)
     try:
         result = yield
-    except NPlusOneDetected as exc:
-        if not getattr(exc, "_queryguard_strict", False):
+    except BaseException as exc:
+        if isinstance(exc, NPlusOneDetected) and getattr(
+            exc, "_queryguard_strict", False
+        ):
+            with contextlib.suppress(Exception):
+                trim_to_user_code(exc)
+            # raised again below, after the end-of-test analysis has recorded
+            # the findings (SARIF, JSON, the summary) as for any failing N+1
+            strict_error = exc
+        elif collector.strict_raised and isinstance(
+            exc, (Exception, pytest.fail.Exception)
+        ):
+            # Strict mode raised, but the test failed with another error:
+            # a library caught the strict one and raised its own (Pydantic's
+            # from_attributes, FastAPI's response_model), or the code
+            # swallowed it and the test then failed on its own. Raised again
+            # below, after the analysis has recorded the N+1.
+            other_error = exc
+        else:
             raise
-        with contextlib.suppress(Exception):
-            trim_to_user_code(exc)
-        # raised again below, after the end-of-test analysis has recorded the
-        # findings (SARIF, JSON, the summary) as for any failing N+1
-        strict_error = exc
     finally:
         with contextlib.suppress(Exception):
             blocks.stop_recording(recording)
@@ -2658,14 +2683,19 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
             # no collector on the stack and no tracker behind
             _discard(collector, trackers)
             raise
-    if strict_error is not None:
-        # The test stopped at the access, so what it would have read later
-        # is unknown: an eager load or a column it reads after the loop is
-        # not unused. The checks of what a test never reads do not apply.
+    stopped = strict_error is not None or other_error is not None
+    if stopped:
+        # The test stopped at the access (or failed after it), so what it
+        # would have read later is unknown: an eager load or a column it
+        # reads after the loop is not unused. The checks of what a test
+        # never reads do not apply.
         trackers = _Trackers()
     budget_texts: list[str] = []
     try:
-        budget_texts = _budget_texts(item, collector, limit, time_limit, source)
+        if other_error is None:
+            # a test that fails with its own error has its budgets unjudged,
+            # as any failing test
+            budget_texts = _budget_texts(item, collector, limit, time_limit, source)
         parts, warn_texts = _results(
             item,
             collector,
@@ -2673,19 +2703,27 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
             trackers,
             budget_texts,
             exempt,
-            stopped=strict_error is not None,
+            stopped=stopped,
         )
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "end of the measurement")
         parts, warn_texts = [], []
     _report_internal_error(item.config)
-    if strict_error is not None:
+    if stopped:
         # An allow_nplusone pattern may be for a finding after the access,
         # which the test never reached: as for a test that failed on its own,
         # its patterns are not listed as stale.
         settings.stale_markers[:] = [
             entry for entry in settings.stale_markers if entry[0] != item.nodeid
         ]
+    if other_error is not None:
+        # The test keeps its own failure; the report goes beside it, unless
+        # the error already carries the strict message (Pydantic's does).
+        text = "\n\n".join(parts or warn_texts)
+        if text and not _carries_strict_message(other_error):
+            item.add_report_section("call", "queryguard", text)
+        raise other_error
+    if strict_error is not None:
         # The failure at the access replaces the report's text, the same N+1.
         # A budget the test went over before the access is gone over whatever
         # the rest would have run: it goes under the N+1, not lost with the
@@ -2702,6 +2740,14 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
     if parts:
         pytest.fail("\n\n".join(parts), pytrace=False)
     return result
+
+
+def _carries_strict_message(error: BaseException) -> bool:
+    """True when the error's text already holds a strict-mode message."""
+    try:
+        return "queryguard strict: " in str(error)
+    except Exception:  # noqa: BLE001  # a foreign __str__ may fail
+        return False
 
 
 @pytest.fixture

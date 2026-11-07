@@ -877,6 +877,7 @@ def _on_orm_execute_strict(state: ORMExecuteState) -> None:
     if _error is not None:
         return
     strict: BaseException | None = None
+    raiser: collector.QueryCollector | None = None
     try:
         full = collector.full_active()
         if not any(target.strict is not None for target in full):
@@ -893,8 +894,8 @@ def _on_orm_execute_strict(state: ORMExecuteState) -> None:
                 # every strict collector counts the load; the first error wins
                 # (strict_check skips a load its ignore() blocks cover)
                 error = target.strict_check(_for_target(load, target))
-                if strict is None:
-                    strict = error
+                if strict is None and error is not None:
+                    strict, raiser = error, target
         if strict is not None:
             for target in full:
                 target.add_relationship_load(_for_target(load, target))
@@ -902,6 +903,10 @@ def _on_orm_execute_strict(state: ORMExecuteState) -> None:
         _fail(exc, "do_orm_execute listener (strict mode)")
         return
     if strict is not None:
+        if raiser is not None:
+            # only the test whose error this is: it may then fail with
+            # another one (a library that wrapped it), see the plugin
+            raiser.strict_raised = True
         # queryguard_strict: the N+1 fails here, at the attribute access, with
         # the test's own traceback (outside the try: this is meant to raise)
         raise strict

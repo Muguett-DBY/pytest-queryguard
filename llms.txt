@@ -175,13 +175,13 @@ queryguard_index_ignore_tables = ["countries", "lookup_*"]
 Command-line options:
 
 - `--queryguard-mode=fail|warn|off`: overrides `queryguard_mode` for this run.
-- `--queryguard-strict`: turns `queryguard_strict` on for this run.
+- `--queryguard-strict` / `--no-queryguard-strict`: turn `queryguard_strict` on or off for this run.
 - `--queryguard-report`: prints the 10 tests with the most queries at the end of the session.
 - `--queryguard-baseline=PATH`: findings listed in the baseline file do not fail or warn; `--queryguard-update-baseline` writes the file from this run (docs/baseline.md).
 - `--queryguard-budgets=PATH`: the budget file (each listed test fails above its count); `--queryguard-update-budgets` writes this run's counts to it (docs/budgets.md).
 - `--queryguard-json=PATH`: writes each test's statement counts and findings as JSON (`"format": 1`), for `python -m pytest_queryguard.compare BASE HEAD` (docs/ci.md).
 - `--queryguard-sarif=PATH`: writes the findings as SARIF 2.1.0 for GitHub code scanning (docs/sarif.md); a `relationship-load` result with a certain parent query line has a `fixes` entry.
-- `--queryguard-show-patch` / `--queryguard-write-patch=PATH` (experimental, since 0.8.0): print under each `relationship-load` finding, or write to one file for `git apply` from the rootdir, a patch that adds the loader option (and its import) to the `select(Entity)` or `session.query(Entity)` call of the parent query line; only when that line is certain (docs/when-a-test-fails.md#a-patch-for-the-parent-query).
+- `--queryguard-show-patch` / `--queryguard-write-patch=PATH` (experimental, since 0.8.0): print under each `relationship-load` finding, or write to one file for `git apply` from the rootdir, a patch that adds the loader option (and its import) to the `select(Entity)` or `session.query(Entity)` call of the parent query line; only when that line is certain (docs/when-a-test-fails.md#a-patch-for-the-parent-query). `--no-queryguard-show-patch` turns `queryguard_show_patch` off for this run.
 - `--queryguard-index-check` / `--no-queryguard-index-check`: turn the missing-index check on or off for this run.
 
 Adopting on an existing project: record a baseline, run the GitHub Action in `action/` (pytest, SARIF upload; docs/ci.md), and ignore single findings with the `queryguard_ignore("Order.customer", kind=..., file=..., function=..., stack=...)` marker or the `queryguard_ignore` option, or a block of code with `with pytest_queryguard.ignore("relationship-load"):` (covers the thread or asyncio task that enters it, not threads started inside it).

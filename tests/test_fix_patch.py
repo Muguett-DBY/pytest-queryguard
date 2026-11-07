@@ -1769,6 +1769,19 @@ def test_the_ini_option_prints_the_patch(project: pytest.Pytester) -> None:
     result.stdout.fnmatch_lines(["  patch (git apply from the rootdir*"])
 
 
+def test_no_flag_turns_the_patch_off_for_one_run(project: pytest.Pytester) -> None:
+    project.makeini("[pytest]\nqueryguard_show_patch = true\n")
+    result = project.runpytest("-k", "test_orders", "--no-queryguard-show-patch")
+    result.assert_outcomes(failed=1)
+    assert "patch (git apply" not in result.stdout.str()
+    # the last of the two flags wins
+    result = project.runpytest(
+        "-k", "test_orders", "--no-queryguard-show-patch", "--queryguard-show-patch"
+    )
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["  patch (git apply from the rootdir*"])
+
+
 def test_the_written_patch_applies_and_fixes_the_n_plus_one(
     project: pytest.Pytester,
 ) -> None:
