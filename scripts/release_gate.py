@@ -315,6 +315,148 @@ def find_dist(dist: Path, version: str) -> tuple[Path, Path]:
     return wheel, sdist
 
 
+# The modules a user runs with python -m; each answers --help.
+CLI_MODULES = ("lint", "trend", "compare", "mcp")
+# Classifiers every release has, besides the ones checked below.
+CLASSIFIERS = ("Framework :: Pytest", "Typing :: Typed")
+PROJECT_URLS = ("Homepage", "Documentation", "Changelog", "Issues")
+STABLE = "Development Status :: 5 - Production/Stable"
+# Versions ci.yml tests before their final release: they get no classifier
+# until then. Add one here when it enters the matrix as an alpha or beta, and
+# remove it (adding the classifier) once it is released.
+PRE_RELEASE_PYTHONS: frozenset[str] = frozenset()
+
+
+def ci_python_versions(text: str | None = None) -> list[str]:
+    """The CPython versions the workflows of ci.yml test on (3.14t counts as 3.14)."""
+    if text is None:
+        text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    found: set[str] = set()
+    for line in re.findall(r"^\s*-?\s*python-version:\s*(.+)$", text, re.MULTILINE):
+        found.update(re.findall(r'"(3\.\d+)t?"', line))
+    return sorted(found - PRE_RELEASE_PYTHONS, key=_key)
+
+
+def oldest_tested(text: str | None = None) -> dict[str, str]:
+    """The oldest SQLAlchemy and pytest the release gate installs, by name."""
+    if text is None:
+        text = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(
+            encoding="utf-8"
+        )
+    return {
+        name.lower(): pinned.removesuffix(".*")
+        for name, pinned in re.findall(
+            r'"(sqlalchemy|pytest)==([\d.]+(?:\.\*)?)"', text, re.IGNORECASE
+        )
+    }
+
+
+def _same_version(a: str, b: str) -> bool:
+    """8 and 8.0 are the same version; 2.0.13 and 2.0.1 are not."""
+
+    def parts(v: str) -> tuple[int, ...]:
+        numbers = list(_key(v))
+        while numbers and numbers[-1] == 0:
+            numbers.pop()
+        return tuple(numbers)
+
+    return parts(a) == parts(b)
+
+
+def check_metadata(
+    metadata: str,
+    version: str,
+    ci: str | None = None,
+    gate: str | None = None,
+) -> list[str]:
+    """The wheel's METADATA against the CI matrix, the oldest tested versions and the release.
+
+    ``ci`` and ``gate`` are the texts of ci.yml and release-gate.yml (read
+    from the repository by default).
+    """
+    problems = Problems()
+    headers, _, body = metadata.partition("\n\n")
+    fields: dict[str, list[str]] = {}
+    for line in headers.splitlines():
+        name, _, value = line.partition(": ")
+        fields.setdefault(name, []).append(value.strip())
+
+    def one(name: str) -> str:
+        return (fields.get(name) or [""])[0]
+
+    problems.check(one("Version") == version, "wheel METADATA has another version")
+    problems.check(
+        one("License-Expression") == "MIT",
+        "wheel METADATA lacks License-Expression: MIT",
+    )
+    problems.check(
+        "LICENSE" in fields.get("License-File", []),
+        "wheel METADATA lacks License-File: LICENSE",
+    )
+    problems.check(
+        one("Description-Content-Type") == "text/markdown",
+        "wheel METADATA: the long description is not text/markdown",
+    )
+    problems.check(len(body.strip()) > 500, "wheel METADATA has no long description")
+    classifiers = fields.get("Classifier", [])
+    for wanted in CLASSIFIERS:
+        problems.check(wanted in classifiers, f"wheel METADATA lacks {wanted}")
+    tested = ci_python_versions(ci)
+    declared = sorted(
+        (
+            c.rsplit(" :: ", 1)[1]
+            for c in classifiers
+            if re.fullmatch(r"Programming Language :: Python :: 3\.\d+", c)
+        ),
+        key=_key,
+    )
+    problems.check(
+        declared == tested,
+        f"Python classifiers {declared} are not the versions ci.yml tests {tested}",
+    )
+    if tested:
+        problems.check(
+            one("Requires-Python") == f">={tested[0]}",
+            f"Requires-Python is {one('Requires-Python')!r}, ci.yml tests from {tested[0]}",
+        )
+    # "pytest>=8", "pytest<10,>=8", "sqlalchemy[asyncio]>=2.0.13; extra == ..."
+    requires: dict[str, str] = {}
+    for requirement in fields.get("Requires-Dist", []):
+        name = re.match(r"[\w.-]+", requirement)
+        bound = re.search(r">=\s*([\d.]+)", requirement.split(";", 1)[0])
+        if name and bound:
+            requires.setdefault(name.group(0).lower(), bound.group(1))
+    oldest = oldest_tested(gate)
+    problems.check(
+        set(oldest) == {"pytest", "sqlalchemy"},
+        f"release-gate.yml: the oldest pytest and SQLAlchemy pins were not found "
+        f"(found {oldest})",
+    )
+    for name, oldest_version in oldest.items():
+        bound = requires.get(name)
+        if problems.check(bound, f"Requires-Dist has no lower bound for {name}"):
+            problems.check(
+                _same_version(bound, oldest_version),
+                f"Requires-Dist {name}>={bound} is not the oldest version the "
+                f"release gate tests ({oldest_version})",
+            )
+    urls = {u.split(",", 1)[0] for u in fields.get("Project-URL", [])}
+    for wanted in PROJECT_URLS:
+        problems.check(wanted in urls, f"wheel METADATA has no {wanted} URL")
+    # 1.0.0 and later finals (and their .postN) are stable; pre-releases,
+    # development releases and 0.x are not.
+    stable = re.fullmatch(rf"{FINAL}(?:\.post\d+)?", version) is not None and _release(
+        version
+    ) >= (1, 0, 0)
+    status = [c for c in classifiers if c.startswith("Development Status ::")]
+    problems.check(
+        status == [STABLE] if stable else len(status) == 1 and STABLE not in status,
+        f"{version} has Development Status {status}"
+        + (f"; a final 1.x release says {STABLE}" if stable else ""),
+    )
+    return problems
+
+
 def check_contents(wheel: Path, sdist: Path, version: str) -> list[str]:
     problems = Problems()
     with zipfile.ZipFile(wheel) as archive:
@@ -346,21 +488,12 @@ def check_contents(wheel: Path, sdist: Path, version: str) -> list[str]:
             "the wheel does not register the pytest11 entry point queryguard",
         )
         metadata = archive.read(f"{info}/METADATA").decode()
-        problems.check(
-            f"\nVersion: {version}\n" in metadata, "wheel METADATA has another version"
-        )
-        problems.check(
-            "\nLicense-Expression: MIT\n" in metadata,
-            "wheel METADATA lacks License-Expression: MIT",
-        )
-        problems.check(
-            "Requires-Python: >=3.10" in metadata,
-            "wheel METADATA lacks Requires-Python",
-        )
-        problems.check(
-            len(metadata.split("\n\n", 1)[-1].strip()) > 500,
-            "wheel METADATA has no long description",
-        )
+        problems.extend(check_metadata(metadata, version))
+        for module in CLI_MODULES:
+            problems.check(
+                f"{PACKAGE}/{module}.py" in names,
+                f"the wheel has no {PACKAGE}/{module}.py (python -m {PACKAGE}.{module})",
+            )
         sources = sorted(
             Path(n).name
             for n in names
@@ -446,12 +579,18 @@ def run(
         "PYTHONPATH",
         "VIRTUAL_ENV",
         "PIP_REQUIRE_VIRTUALENV",
+        "FORCE_COLOR",
+        "PY_COLORS",
+        "PYTHON_COLORS",
     ):
         env.pop(name, None)
+    # Plain output to match: argparse colours its usage from Python 3.14 on.
+    env["NO_COLOR"] = "1"
     return subprocess.run(
         [str(c) for c in command],
         cwd=cwd,
         env=env,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -532,9 +671,31 @@ def check_install(wheel: Path, sdist: Path, version: str) -> list[str]:
                 f"installing {artifact.name}:\n{installed.stderr}",
             ):
                 continue
-            problems.extend(
-                exercise(python, project, version, artifact.suffix.lstrip("."))
+            label = artifact.suffix.lstrip(".")
+            problems.extend(exercise(python, project, version, label))
+            problems.extend(check_clis(python, project, label))
+    return problems
+
+
+def check_clis(python: Path, project: Path, label: str) -> list[str]:
+    """Each python -m module of CLI_MODULES starts and answers --help."""
+    problems = Problems()
+    for module in CLI_MODULES:
+        command = f"{PACKAGE}.{module}"
+        try:
+            result = run(
+                [python, "-I", "-m", command, "--help"], cwd=project, timeout=60
             )
+        except subprocess.TimeoutExpired:
+            problems.append(f"{label}: python -m {command} --help did not exit in 60 s")
+            continue
+        problems.check(
+            result.returncode == 0
+            and result.stdout.startswith(f"usage: python -m {command}"),
+            f"{label}: python -m {command} --help:\n{result.stdout}{result.stderr}",
+        )
+    if not problems:
+        print(f"{label}: python -m {', '.join(CLI_MODULES)} answer --help")
     return problems
 
 

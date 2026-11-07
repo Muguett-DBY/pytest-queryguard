@@ -235,9 +235,9 @@ checks the outcome of every test of a small suite.
   `test_testjson.py`, `test_sarif.py`, `test_compare.py`,
   `test_action_args.py`) check how they behave; a change to them is reviewed
   against that section.
-- CI runs the suite on Python 3.10 to 3.14 and the 3.15 pre-release,
+- CI runs the suite on Python 3.10 to 3.15,
   SQLAlchemy 2.0 and the latest release, the oldest and the latest pytest,
   PostgreSQL 14 to 18, Windows and macOS, and under pytest-xdist. A nightly
   job tries the SQLAlchemy development branch, pytest pre-releases and Python
-  3.15; it is allowed to fail and tells maintainers about upcoming
+  3.16; it is allowed to fail and tells maintainers about upcoming
   incompatibilities early.

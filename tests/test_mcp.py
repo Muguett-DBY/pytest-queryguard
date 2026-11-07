@@ -306,3 +306,26 @@ def test_tool_list_fits_the_schema() -> None:
         schema = tool["inputSchema"]
         assert set(schema["required"]) <= set(schema["properties"])
         assert tool["description"].strip()
+
+
+def test_help_answers_instead_of_waiting_for_stdin() -> None:
+    # Without a parser, --help started the server, which then waited for
+    # JSON-RPC on the terminal (or, with stdin closed, exited 0 silently).
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest_queryguard.mcp", "--help"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("usage: python -m pytest_queryguard.mcp")
+    assert "mcp.html" in result.stdout
+
+
+def test_an_unknown_argument_is_an_error(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        mcp.main(["--port", "8000"])
+    assert exit_info.value.code == 2
+    assert "unrecognized arguments: --port 8000" in capsys.readouterr().err

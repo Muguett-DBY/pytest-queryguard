@@ -75,6 +75,10 @@ jobs:
             ls dist
             exit 1
           fi
+      # The release gate checked a build of its own; these are the files that
+      # get published. The script needs only the standard library.
+      - name: Wheel and sdist contain what they should and nothing else
+        run: uv run --no-project python scripts/release_gate.py contents dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist

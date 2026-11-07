@@ -18,6 +18,7 @@ size and says when something was cut.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import signal
@@ -446,7 +447,16 @@ def serve(stdin: IO[str], stdout: IO[str]) -> None:
             stdout.flush()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    # No options: the parser only answers --help (and rejects anything else)
+    # instead of waiting for JSON-RPC on stdin.
+    parser = argparse.ArgumentParser(
+        prog="python -m pytest_queryguard.mcp",
+        description="Experimental MCP server for coding agents: JSON-RPC 2.0 "
+        "over stdio, one message per line. Started by an MCP client, not by "
+        "hand; see https://maciejziel.github.io/pytest-queryguard/mcp.html",
+    )
+    parser.parse_args(argv)
     stdin = open(sys.stdin.fileno(), encoding="utf-8", closefd=False)  # noqa: SIM115
     stdout = open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False)  # noqa: SIM115
     with stdin, stdout:
