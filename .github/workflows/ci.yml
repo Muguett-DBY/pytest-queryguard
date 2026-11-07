@@ -18,9 +18,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# timeout-minutes: about twice the longest passing run (the test jobs take up
+# to 20 minutes on Windows), so a hung job fails instead of running for
+# GitHub's default of six hours. A hung test fails sooner, with the stacks of
+# its threads: pyproject.toml sets a per-test pytest-timeout.
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -36,6 +41,7 @@ jobs:
   # published from here.
   docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -48,6 +54,7 @@ jobs:
   # downloads pre-release interpreters when the version is named explicitly).
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +98,7 @@ jobs:
   # attributes statements from threads. tests/inapp checks both behaviors.
   free-threaded:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -105,6 +113,7 @@ jobs:
   # with the plugin measuring its own tests across workers.
   xdist:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -129,6 +138,7 @@ jobs:
   # which the other jobs skip, is run in CI.
   plugins:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -146,6 +156,7 @@ jobs:
   # and one Python version only: timing on several runners is just noise.
   bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -158,6 +169,7 @@ jobs:
   # newline handling, file locking). PostgreSQL tests skip without a server.
   os:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -196,6 +208,7 @@ jobs:
     # the matrix, so required checks that name them still match.
     name: postgres (${{ matrix.postgres }}, ${{ matrix.sqlalchemy }}${{ matrix.driver != 'pg8000' && format(', {0}', matrix.driver) || '' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -263,6 +276,7 @@ jobs:
   mysql:
     name: mysql (${{ matrix.image }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -320,6 +334,7 @@ jobs:
   # makes every pull request say "1 configuration not found" in its checks.
   action:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       # the first run compares its query counts with main and comments them,

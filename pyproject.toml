@@ -130,6 +130,12 @@ exclude-newer-package = { werkzeug = "2026-09-28T00:00:00Z", certifi = "2026-10-
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# pytest-timeout (dev group): a test that hangs fails after 10 minutes with
+# the stack of every thread, instead of holding its CI job until GitHub
+# cancels it with no trace of the test. The slowest test takes about two
+# minutes on a CI runner. pytester projects have their own configuration and
+# do not inherit this.
+timeout = 600
 
 [tool.ruff]
 src = ["src", "tests"]
