@@ -30,7 +30,7 @@ from . import (
 )
 from . import budgets as budget_files
 from . import groups as finding_groups
-from .api import NPlusOneDetected, QueryGuardFixture
+from .api import NPlusOneDetected, QueryGuardFixture, add_to_strict_error
 from .baseline import BaselineError, Identity, sorted_identities
 from .callsite import DEFAULT_STACK_DEPTH, swap_stack_depth, trim_to_user_code
 from .collector import QueryCollector, pop, push
@@ -1576,6 +1576,8 @@ def _note_blocks(
     sieve: blocks.Sieve,
     collector: QueryCollector,
     kinds: tuple[str, ...],
+    *,
+    stopped: bool = False,
 ) -> None:
     """Note the ignore() blocks of the test, for the stale-block report.
 
@@ -1583,8 +1585,10 @@ def _note_blocks(
     in the plugin's analysis or in a check run in the test (``blocks_used``).
     Not noted as entered: blocks of a test whose analysis did not run (an
     internal error, a bare allow_nplusone marker) or stopped storing events,
-    and blocks for kinds the test did not look for (``kinds``): they could
-    not have left anything out.
+    blocks for kinds the test did not look for (``kinds``): they could
+    not have left anything out, and blocks of a test queryguard_strict
+    stopped (``stopped``): they may be for a finding after the access, which
+    the test never reached, as for a test that failed on its own.
     """
     if internal_error() is not None:
         return
@@ -1595,7 +1599,7 @@ def _note_blocks(
         where = _block_site(block, root)
         if where is not None:
             settings.blocks_used.add(where)
-    if _nplusone_ignores(item)[0]:
+    if stopped or _nplusone_ignores(item)[0]:
         return
     for block in list(collector.blocks_entered.values()):
         if not any(block.matches(kind) for kind in kinds):
@@ -1789,6 +1793,26 @@ def _time_budget_report(
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "database-time budget report")
         return None
+
+
+def _budget_texts(
+    item: pytest.Item,
+    collector: QueryCollector,
+    limit: int | None,
+    time_limit: float | None,
+    source: str | None,
+) -> list[str]:
+    """The failure texts of the test's query and database-time budgets."""
+    texts: list[str] = []
+    if limit is not None:
+        budget = _budget_report(item, collector, limit, source)
+        if budget is not None:
+            texts.append(budget)
+    if time_limit is not None:
+        time_budget = _time_budget_report(item, collector, time_limit)
+        if time_budget is not None:
+            texts.append(time_budget)
+    return texts
 
 
 def _budget_report(
@@ -2634,9 +2658,17 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         # is unknown: an eager load or a column it reads after the loop is
         # not unused. The checks of what a test never reads do not apply.
         trackers = _Trackers()
+    budget_texts: list[str] = []
     try:
+        budget_texts = _budget_texts(item, collector, limit, time_limit, source)
         parts, warn_texts = _results(
-            item, collector, settings, trackers, limit, time_limit, exempt, source
+            item,
+            collector,
+            settings,
+            trackers,
+            budget_texts,
+            exempt,
+            stopped=strict_error is not None,
         )
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         record_error(exc, "end of the measurement")
@@ -2649,7 +2681,16 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         settings.stale_markers[:] = [
             entry for entry in settings.stale_markers if entry[0] != item.nodeid
         ]
-        # the failure at the access says it all; the report's text is the same N+1
+        # The failure at the access replaces the report's text, the same N+1.
+        # A budget the test went over before the access is gone over whatever
+        # the rest would have run: it goes under the N+1, not lost with the
+        # report (one it would have gone over later is unknown).
+        try:
+            for text in budget_texts:
+                add_to_strict_error(strict_error, text)
+        except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+            record_error(exc, "budget of a test stopped by strict mode")
+            _report_internal_error(item.config)
         raise strict_error
     if not parts:
         _emit_warnings(item, warn_texts)
@@ -2819,21 +2860,17 @@ def _results(
     collector: QueryCollector,
     settings: _Settings,
     trackers: _Trackers,
-    limit: int | None,
-    time_limit: float | None,
+    budget_texts: list[str],
     exempt: tuple[str, ...],
-    source: str | None = None,
+    *,
+    stopped: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """(texts that fail the test, texts that only warn); the first wins when set."""
-    parts: list[str] = []
-    if limit is not None:
-        budget = _budget_report(item, collector, limit, source)
-        if budget is not None:
-            parts.append(budget)
-    if time_limit is not None:
-        time_budget = _time_budget_report(item, collector, time_limit)
-        if time_budget is not None:
-            parts.append(time_budget)
+    """(texts that fail the test, texts that only warn); the first wins when set.
+
+    ``budget_texts`` are the failures of the test's budgets (``_budget_texts``);
+    ``stopped``: queryguard_strict stopped the test at a lazy load.
+    """
+    parts = list(budget_texts)
     fail_texts: list[str] = []
     warn_texts: list[str] = []
     if settings.mode != "off":
@@ -2842,7 +2879,7 @@ def _results(
         index = _analyse_indexes(item, collector, settings, exempt, sieve)
         try:
             kinds = _analysed_kinds(settings, collector, trackers)
-            _note_blocks(item, settings, sieve, collector, kinds)
+            _note_blocks(item, settings, sieve, collector, kinds, stopped=stopped)
         except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
             record_error(exc, "stale ignore() blocks")
         if index is not None:
