@@ -22,6 +22,7 @@ import time
 import traceback
 import warnings
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -45,6 +46,7 @@ Reporter = Callable[["RequestReport"], object]
 ReportTarget = str | Reporter
 _TARGETS = ("log", "warn")
 PAGE_REPORTS = ("off", "footer", "console")
+_BAD_REPORT = "report must be 'log', 'warn', a callable or a sequence of them, got {!r}"
 _METHOD = re.compile(r"[A-Za-z][A-Za-z-]*")  # GET, M-SEARCH, VERSION-CONTROL
 
 
@@ -167,11 +169,28 @@ class Settings:
                 f"page_report must be one of {', '.join(PAGE_REPORTS)}, "
                 f"got {self.page_report!r}"
             )
+        report = self.report
+        if not isinstance(report, str) and not callable(report):
+            # A frozen copy, as for budgets: a list changed later, or an
+            # iterator the check below would use up, must not change targets.
+            # Not a mapping (its keys) or a set (no order).
+            if isinstance(report, Mapping | AbstractSet):
+                raise ValueError(_BAD_REPORT.format(report))  # noqa: TRY004  # as the other settings
+            try:
+                report = tuple(report)
+            except TypeError:
+                raise ValueError(_BAD_REPORT.format(report)) from None
+            object.__setattr__(self, "report", report)
         for target in self.targets:
             if not callable(target) and target not in _TARGETS:
+                raise ValueError(_BAD_REPORT.format(target))
+            if callable(target) and _is_async(target):
+                # Called without await, it would never run: refuse it here,
+                # not with a "never awaited" warning in every request.
                 raise ValueError(
-                    "report must be 'log', 'warn', a callable or a sequence of "
-                    f"them, got {target!r}"
+                    f"report callables are called synchronously; {target!r} is "
+                    "a coroutine function. Use a plain function, which can "
+                    "hand the report to a queue or schedule a task."
                 )
         # A frozen copy, so a dictionary changed later does not change budgets.
         object.__setattr__(self, "budgets", dict(self.budgets))
@@ -181,7 +200,7 @@ class Settings:
         report = self.report
         if isinstance(report, str) or callable(report):
             return (report,)
-        return tuple(report)
+        return report  # type: ignore[return-value]  # a tuple since __post_init__
 
     def budget_for(
         self, method: str | None, route: str | None, path: str | None
@@ -476,6 +495,8 @@ class Tracker:
             fail(exc, "the end of a request")
             report.error = report.error or f"{type(exc).__name__}: {exc}"
             return report
+        finally:
+            self._release()
         self.warning = _emit(report, self.settings)
         return report
 
@@ -492,6 +513,23 @@ class Tracker:
             report.route = route
         _check(report, self.settings, self.active.collector, statements=False)
         return report if report.problems and report.error is None else None
+
+    def _release(self) -> None:
+        """Drop the unit's events (parameters included) once its report is made.
+
+        A context can outlive its unit: a pool worker that inherited it, a
+        task the request started and left running. Through ``current`` it
+        keeps this unit's ``Active``, so the events must not stay in it.
+        """
+        collector = self.active.collector
+        # A listener that passed live() just before the unit ended stores
+        # nothing more; it still counts.
+        collector.max_events = 0
+        collector.statements = []
+        collector.relationship_loads = []
+        collector.column_loads = []
+        collector.cartesian_loads = []
+        self.sites = {}
 
     def _evaluate(self) -> None:
         _check(self.report, self.settings, self.active.collector, statements=True)
@@ -587,7 +625,15 @@ def _emit(report: RequestReport, settings: Settings) -> Warning | None:
             if target == "log":
                 logger.warning("%s", report.message)
             elif callable(target):
-                target(report)
+                result = target(report)
+                if inspect.iscoroutine(result):
+                    result.close()  # never awaited: no RuntimeWarning per request
+                    logger.error(
+                        "queryguard: the report callback %r returned a coroutine, "
+                        "which is never awaited; report callables are called "
+                        "synchronously",
+                        target,
+                    )
         except Exception:  # a reporter must not break the app
             logger.exception("queryguard: the report callback %r raised", target)
     return raised
@@ -745,8 +791,12 @@ def _is_async(function: Callable[..., Any]) -> bool:
     """A coroutine function, or an object whose ``__call__`` is one."""
     if inspect.iscoroutinefunction(function):
         return True
-    method = type(function).__dict__.get("__call__")  # an instance with async __call__
-    return method is not None and inspect.iscoroutinefunction(method)
+    # An instance with an async __call__, its own or a base class's.
+    for klass in type(function).__mro__:
+        method = klass.__dict__.get("__call__")
+        if method is not None:
+            return inspect.iscoroutinefunction(method)
+    return False
 
 
 def _settings(settings: Settings | None, options: Mapping[str, Any]) -> Settings:
