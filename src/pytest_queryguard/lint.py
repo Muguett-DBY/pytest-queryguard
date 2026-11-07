@@ -285,9 +285,12 @@ def _comprehension_loops(
     """
     if len(node.generators) > _MAX_GENERATORS:
         return []
-    elts: tuple[ast.AST, ...] = (
-        (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
-    )
+    elts: tuple[ast.AST, ...]
+    if isinstance(node, ast.DictComp):
+        # {**d for d in ...} (Python 3.15, PEP 798) has no value
+        elts = (node.key,) if node.value is None else (node.key, node.value)
+    else:
+        elts = (node.elt,)
     gens = node.generators
     plain = [
         _Loop(gen.target, gen.iter, (*gen.ifs, *gens[i + 1 :], *elts), node.lineno)

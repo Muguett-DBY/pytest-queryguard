@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The static check (`python -m pytest_queryguard.lint`) no longer stops
+  with an `AttributeError` on a dict comprehension that unpacks
+  (`{**d for d in rows}`, new in Python 3.15).
 - Strict mode no longer drops a query or database-time budget failure: a
   budget the test (`max_queries`/`max_db_time` marker,
   `queryguard_max_queries`, the budget file) or a `max_queries()` block
