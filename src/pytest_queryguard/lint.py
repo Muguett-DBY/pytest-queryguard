@@ -34,6 +34,7 @@ import tokenize
 import warnings
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from . import sarif
 from .messages import loader_query
 
 RULE_ID = "queryguard/static-relationship-load"
+_PLUGIN_KIND = "relationship-load"  # the plugin's kind, as ignore() names it
 FORMAT_VERSION = 1
 DOCS = "https://maciejziel.github.io/pytest-queryguard/static-check.html"
 
@@ -70,6 +72,11 @@ _FILTERS = frozenset(
 )  # fmt: skip
 # Methods of a Result that return the same rows or objects.
 _RESULT_METHODS = frozenset(("all", "unique", "fetchall", "yield_per"))
+# Session methods that expire or drop what was loaded.
+_EXPIRING = frozenset(
+    ("commit", "rollback", "close", "expire", "expire_all", "expunge",
+     "expunge_all", "invalidate", "reset")
+)  # fmt: skip
 _MAX_DEPTH = 50
 _MAX_GENERATORS = 20  # "for" clauses of one comprehension that are followed
 _LIBRARIES = frozenset(("sqlalchemy", "sqlmodel"))
@@ -89,7 +96,7 @@ class LintError(Exception):
 @dataclass(frozen=True, slots=True)
 class Relationship:
     key: str
-    lazy: bool  # lazy="select": one query per parent object on first access
+    lazy: bool  # lazy="select" or "immediate": one query per parent object
     scalar: bool  # many-to-one or one-to-one
     target: str  # full name of the target class
 
@@ -100,6 +107,8 @@ class MappedClass:
     full: str  # module.qualname
     relationships: dict[str, Relationship]
     attributes: frozenset[str]  # every mapped attribute key
+    # association_proxy("rel", ...) by its key: reading it reads ``rel``
+    proxies: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -125,6 +134,7 @@ def _full_name(cls: type) -> str:
 def load_models(modules: Sequence[str]) -> Models:
     """Import the modules and read every class mapped in their registries."""
     from sqlalchemy import inspect
+    from sqlalchemy.ext.associationproxy import AssociationProxy
     from sqlalchemy.orm import Mapper, configure_mappers
 
     registries: dict[int, Any] = {}
@@ -152,11 +162,18 @@ def load_models(modules: Sequence[str]) -> Models:
             relationships = {
                 prop.key: Relationship(
                     key=prop.key,
-                    lazy=prop.lazy in ("select", True),
+                    # "immediate" runs the same SELECT per object, at load time
+                    lazy=prop.lazy in ("select", True, "immediate"),
                     scalar=not prop.uselist,
                     target=_full_name(prop.mapper.class_),
                 )
                 for prop in mapper.relationships
+            }
+            proxies = {
+                key: proxy.target_collection
+                for key, proxy in mapper.all_orm_descriptors.items()
+                if isinstance(proxy, AssociationProxy)
+                and proxy.target_collection in relationships
             }
             models.add(
                 MappedClass(
@@ -164,6 +181,7 @@ def load_models(modules: Sequence[str]) -> Models:
                     full=_full_name(mapper.class_),
                     relationships=relationships,
                     attributes=frozenset(mapper.attrs.keys()),
+                    proxies=proxies,
                 )
             )
     if not models.classes:
@@ -222,18 +240,77 @@ class _Query:
     options: tuple[ast.expr, ...]
     line: int
     filtered: bool = False  # it may return only some rows of the class
+    # the where/filter/filter_by criteria (as ast.dump), and whether anything
+    # else may leave out rows (a limit, a join, ...)
+    wheres: frozenset[str] = frozenset()
+    limited: bool = False
+    session: str | None = None  # what runs it (ast.dump of ``session``)
+    session_name: str | None = None  # the variable it is reached through
+    criteria_names: frozenset[str] = frozenset()  # the names in ``wheres``
+    refreshes: bool = False  # populate_existing: loaded attributes are reset
 
     def at(self, node: ast.expr) -> _Query:
         """The query, with the line of the call that runs it."""
         return replace(self, line=node.lineno)
 
-    def then(self, method: str, args: Sequence[ast.expr]) -> _Query:
-        """The query after ``.method(*args)`` of select() or Query."""
+    def run_by(self, call: ast.Call, receiver: ast.expr) -> _Query:
+        """The query as run by ``receiver.method(...)`` at ``call``."""
+        refreshes = self.refreshes or any(
+            k.arg == "execution_options" for k in call.keywords
+        )
+        root = receiver
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return replace(
+            self,
+            line=call.lineno,
+            session=_dump(receiver),
+            session_name=root.id if isinstance(root, ast.Name) else None,
+            refreshes=refreshes,
+        )
+
+    def then(
+        self,
+        method: str,
+        args: Sequence[ast.expr],
+        keywords: Sequence[ast.keyword] = (),
+    ) -> _Query:
+        """The query after ``.method(*args, **keywords)`` of select() or Query."""
         if method == "options":
             return replace(self, options=(*self.options, *args))
+        if method == "populate_existing" or (
+            method == "execution_options"
+            and any(k.arg in ("populate_existing", None) for k in keywords)
+        ):
+            return replace(self, refreshes=True)
+        if method in ("where", "filter", "filter_by"):
+            criteria = [_dump(a) for a in [*args, *keywords]]
+            names = {
+                n.id
+                for a in [*args, *keywords]
+                for n in ast.walk(a)
+                if isinstance(n, ast.Name)
+            }
+            return replace(
+                self,
+                filtered=True,
+                wheres=self.wheres | set(criteria),
+                criteria_names=self.criteria_names | names,
+            )
         if method in _FILTERS:
-            return replace(self, filtered=True)
+            return replace(self, filtered=True, limited=True)
         return self
+
+    def includes(self, later: _Query) -> bool:
+        """Whether this query returned (at least) the rows of ``later``, in its Session."""
+        return (
+            self.cls.full == later.cls.full
+            and self.session is not None
+            and self.session == later.session
+            and not self.limited
+            and self.wheres <= later.wheres
+            and not later.refreshes
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +320,11 @@ class _Binding:
     keys: tuple[str, ...]
     query: _Query
     loop_line: int
+    # relationships of the loop's own objects that the function sets or
+    # refreshes per object (session.refresh(obj, ["rel"]), set_committed_value)
+    by_hand: frozenset[str] = frozenset()
+    # ... and in this loop itself: (line of the call, relationship)
+    set_in_loop: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,6 +405,36 @@ def _unwrap(node: ast.expr) -> ast.expr:
     return node
 
 
+def _dump(node: ast.AST) -> str:
+    """``ast.dump``, or a string equal to no other for code nested too deeply."""
+    try:
+        return ast.dump(node)
+    except RecursionError:
+        return f"<deep {id(node)}>"
+
+
+def _mentions(node: ast.AST, name: str) -> bool:
+    return any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(node))
+
+
+_Step = tuple[str, list[ast.expr], list[ast.keyword]]
+
+
+def _method_chain(node: ast.expr, name: str) -> list[_Step] | None:
+    """For ``name.a(...).b(...)`` of select() methods, [(a, args, keywords), ...]."""
+    steps: list[_Step] = []
+    while isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr not in _SELECT_METHODS:
+            return None
+        steps.insert(0, (node.func.attr, node.args, node.keywords))
+        node = node.func.value
+    if not (steps and isinstance(node, ast.Name) and node.id == name):
+        return None
+    if any(_mentions(arg, name) for _, args, kws in steps for arg in [*args, *kws]):
+        return None
+    return steps
+
+
 class _Scope:
     """Names bound in one function (or the module) and how often."""
 
@@ -354,6 +466,7 @@ class _Scope:
             elif isinstance(child, ast.MatchMapping) and child.rest:
                 self.unknown.add(child.rest)
         self.values: dict[str, tuple[ast.expr, int]] = {}
+        self.all_values: dict[str, list[tuple[ast.expr, int]]] = {}
         for child in _children(node):
             if isinstance(child, ast.Assign) and len(child.targets) == 1:
                 target, value = child.targets[0], child.value
@@ -363,6 +476,7 @@ class _Scope:
                 continue
             if isinstance(target, ast.Name):
                 self.values[target.id] = (value, child.lineno)
+                self.all_values.setdefault(target.id, []).append((value, child.lineno))
 
     def value(self, name: str, before: int) -> tuple[ast.expr, int] | None:
         """(value, line) of a name assigned exactly once, above line ``before``.
@@ -374,6 +488,26 @@ class _Scope:
             return None
         found = self.values.get(name)
         if found is None or found[1] >= before:
+            return None
+        return found
+
+    def steps(self, name: str, before: int) -> list[tuple[ast.expr, int]] | None:
+        """``x = start`` then only ``x = x.method(...)``, all above line ``before``.
+
+        The (value, line) of each assignment in source order, or None when the
+        name is bound in any other way, or again at or below ``before``.
+        """
+        if name in self.unknown:
+            return None
+        found = self.all_values.get(name, [])
+        if len(found) < 2 or len(found) != len(self.assigned.get(name, ())):
+            return None
+        if any(line >= before for _, line in found):
+            return None
+        first, *rest = found
+        if _mentions(first[0], name) or not all(
+            _method_chain(value, name) is not None for value, _ in rest
+        ):
             return None
         return found
 
@@ -416,7 +550,20 @@ class _File:
         self.lines = re.split(r"\r\n|\r|\n", source)
         self.findings: dict[tuple[int, tuple[str, ...]], Finding] = {}
         self.loaded: dict[str, int] = {}
+        # the queries the scope runs, with what their options load
+        self.executed: list[tuple[_Query, _Covered]] = []
+        # lines of calls that may expire or drop loaded objects (commit, ...)
+        self.expiring: list[int] = []
         self.suppressed: set[tuple[int, tuple[str, ...]]] = set()
+        self.ignore_imported = any(
+            full.split(".")[0] == "pytest_queryguard"
+            for full in [*self.from_imports.values(), *self.module_imports.values()]
+        )
+        self.functions = {
+            node.name: node
+            for node in self.tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
 
     # -- names --
 
@@ -477,22 +624,59 @@ class _File:
         node = _unwrap(node)
         if isinstance(node, ast.Name):
             found = scope.value(node.id, line)
-            if found is None:
+            if found is not None:
+                return self.statement(found[0], scope, found[1], depth + 1)
+            # stmt = select(C); stmt = stmt.where(...); stmt = stmt.options(...):
+            # every step counts, also one in a branch (an option it may add is
+            # taken as added, so it can only hide a finding)
+            steps = scope.steps(node.id, line)
+            if steps is None:
                 return None
-            return self.statement(found[0], scope, found[1], depth + 1)
+            (start, start_line), *rest = steps
+            query = self.statement(start, scope, start_line, depth + 1)
+            for value, _ in rest:
+                for method, args, keywords in _method_chain(value, node.id) or ():
+                    if query is None:
+                        return None
+                    query = query.then(method, args, keywords)
+            return query
         if not isinstance(node, ast.Call):
             return None
         func = node.func
         if self.is_sqlalchemy(func, "select"):
             if len(node.args) != 1 or node.keywords:
                 return None
-            cls = self.mapped(node.args[0])
+            cls = self.entity(node.args[0], scope, line)
             return None if cls is None else _Query(cls, (), node.lineno)
         if isinstance(func, ast.Attribute) and func.attr in _SELECT_METHODS:
             base = self.statement(func.value, scope, line, depth + 1)
             if base is None:
                 return None
-            return base.then(func.attr, node.args)
+            return base.then(func.attr, node.args, node.keywords)
+        return None
+
+    def entity(self, node: ast.expr, scope: _Scope, line: int) -> MappedClass | None:
+        """The class of ``C``, ``aliased(C)`` or ``with_polymorphic(C, ...)``.
+
+        An alias is a variable assigned once in the function, or the call itself.
+        """
+        cls = self.mapped(node)
+        if cls is not None or isinstance(node, ast.Attribute):
+            return cls
+        if isinstance(node, ast.Name):
+            found = scope.value(node.id, line)
+            if found is None:
+                return None
+            node = found[0]
+        if (
+            isinstance(node, ast.Call)
+            and node.args
+            and any(
+                self.is_sqlalchemy(node.func, name)
+                for name in ("aliased", "with_polymorphic")
+            )
+        ):
+            return self.mapped(node.args[0])
         return None
 
     def source(
@@ -511,7 +695,8 @@ class _File:
             # Flask-SQLAlchemy's Model.query
             cls = self.mapped(node.value)
             if cls is not None and "query" not in cls.attributes:
-                return "query", _Query(cls, (), node.lineno)
+                # the scoped session of Flask-SQLAlchemy: the same for every class
+                return "query", _Query(cls, (), node.lineno, session="Model.query")
             return None
         if not isinstance(node, ast.Call):
             return None
@@ -528,15 +713,19 @@ class _File:
         method = func.attr
         if method in ("scalars", "stream_scalars") and node.args:
             query = self.statement(node.args[0], scope, line)
-            return None if query is None else ("entities", query.at(node))
+            if query is None:
+                return None
+            return "entities", query.run_by(node, func.value)
         if method in ("execute", "stream") and node.args:
             query = self.statement(node.args[0], scope, line)
-            return None if query is None else ("rows", query.at(node))
+            return None if query is None else ("rows", query.run_by(node, func.value))
         if method == "query":
             if len(node.args) != 1 or node.keywords:
                 return None
-            cls = self.mapped(node.args[0])
-            return None if cls is None else ("query", _Query(cls, (), node.lineno))
+            cls = self.entity(node.args[0], scope, line)
+            if cls is None:
+                return None
+            return "query", _Query(cls, (), node.lineno, session=_dump(func.value))
         base = self.source(func.value, scope, line, depth + 1)
         if base is None:
             return None
@@ -546,7 +735,7 @@ class _File:
         if method in _RESULT_METHODS:
             return ("entities" if kind == "query" else kind), query
         if kind == "query" and method in _SELECT_METHODS:
-            return kind, query.then(method, node.args)
+            return kind, query.then(method, node.args, node.keywords)
         return None
 
     # -- loops --
@@ -555,7 +744,14 @@ class _File:
         scopes = [(self.tree, "<module>"), *_functions(self.tree, "")]
         for node, function in scopes:
             scope = _Scope(node)
+            self.executed = []
+            self.expiring = [
+                child.lineno
+                for child in _children(node)
+                if isinstance(child, ast.Call) and _name(child.func) in _EXPIRING
+            ]
             self.loaded = self.queried(node, scope)
+            by_hand = self.by_hand(node)
             for child in _children(node):
                 for loop in _loops(child):
                     var, iterable = _target(loop)
@@ -565,8 +761,103 @@ class _File:
                     if found is None or found[0] == "rows":
                         continue
                     query = found[1]
-                    binding = _Binding(query.cls, (), (), query, loop.line)
+                    sets = by_hand.get(_loop_key(loop, iterable), [])
+                    binding = _Binding(
+                        query.cls,
+                        (),
+                        (),
+                        query,
+                        loop.line,
+                        frozenset(k for at, _, k in sets if at < loop.line),
+                        tuple((line, k) for at, line, k in sets if at == loop.line),
+                    )
                     self.loop(loop, var, binding, function)
+
+    def by_hand(self, node: ast.AST) -> dict[str, list[tuple[int, int, str]]]:
+        """Per variable looped over, the relationships set on each of its objects.
+
+        ``session.refresh(obj, ["rel"])`` or ``set_committed_value(obj, "rel",
+        value)`` in a loop's body, with the loop variable, directly or through
+        a function of the same module that the loop calls with it: the later
+        loops over the same variable, and the reads after that call in the
+        same loop, find it loaded. (line of the loop, line of the call, name).
+        """
+        found: dict[str, list[tuple[int, int, str]]] = {}
+        for child in _children(node):
+            for loop in _loops(child):
+                var, iterable = _target(loop)
+                if var is None or iterable is None:
+                    continue
+                for part in loop.body:
+                    for call in ast.walk(part):
+                        if isinstance(call, ast.Call):
+                            found.setdefault(_loop_key(loop, iterable), []).extend(
+                                (loop.line, call.lineno, key)
+                                for key in self.names_set(call, var)
+                            )
+        return found
+
+    def names_set(self, call: ast.Call, var: str, depth: int = 0) -> set[str]:
+        """The relationships ``call`` sets on ``var`` (see ``by_hand``)."""
+        positions = [
+            i
+            for i, arg in enumerate(call.args)
+            if isinstance(arg, ast.Name) and arg.id == var
+        ]
+        if not positions:
+            return set()
+        name = _name(call.func)
+        if name == "refresh" and positions == [0]:
+            values = [
+                *call.args[1:2],
+                *(k.value for k in call.keywords if k.arg == "attribute_names"),
+            ]
+            return set(_strings(values))
+        if name == "set_committed_value" and positions == [0]:
+            return set(_strings(call.args[1:2]))
+        function = (
+            self.functions.get(call.func.id)
+            if isinstance(call.func, ast.Name)
+            else None
+        )
+        keys: set[str] = set()
+        if depth or function is None:
+            return keys
+        params = [a.arg for a in [*function.args.posonlyargs, *function.args.args]]
+        for i in positions:
+            if i < len(params):
+                for inner in ast.walk(function):
+                    if isinstance(inner, ast.Call):
+                        keys |= self.names_set(inner, params[i], depth + 1)
+        return keys
+
+    def held(self, call: ast.AST, node: ast.AST, scope: _Scope, query: _Query) -> bool:
+        """Whether the objects a query loads stay in its Session's identity map.
+
+        Its result is assigned to a variable (the identity map holds objects
+        weakly), in a statement that always runs (not in an ``if`` or a loop),
+        and its session and the names in its filters are bound once.
+        """
+        parent = self.parents.get(call)
+        if not isinstance(parent, (ast.Assign, ast.AnnAssign)):
+            return False
+        stmt: ast.AST = parent
+        while stmt is not node:
+            up = self.parents.get(stmt)
+            if up is None or not (
+                up is node or isinstance(up, (ast.With, ast.AsyncWith, ast.Try))
+            ):
+                return False
+            if isinstance(up, ast.Try) and not any(s is stmt for s in up.body):
+                return False
+            stmt = up
+        names = {*query.criteria_names}
+        if query.session_name is not None:
+            names.add(query.session_name)
+        return all(
+            len(scope.assigned.get(name, ())) + (name in scope.unknown) <= 1
+            for name in names
+        )
 
     def queried(self, node: ast.AST, scope: _Scope) -> dict[str, int]:
         """The first line at which the scope queries all rows of each class."""
@@ -581,6 +872,9 @@ class _File:
             if query is None:
                 found = self.source(child, scope, child.lineno + 1)
                 query = None if found is None else found[1]
+                if query is not None and self.held(child, node, scope, query):
+                    covered = _coverage(query.options, self.namespaces)
+                    self.executed.append((query, covered))
             if query is not None and not query.filtered:
                 old = loaded.get(query.cls.full, child.lineno)
                 loaded[query.cls.full] = min(old, child.lineno)
@@ -661,7 +955,8 @@ class _File:
         ):
             node, parent = parent, self.parents.get(parent)
         while isinstance(parent, ast.Attribute) and parent.value is node:
-            rel = cls.relationships.get(parent.attr)
+            proxy = cls.proxies.get(parent.attr)
+            rel = cls.relationships.get(parent.attr if proxy is None else proxy)
             if rel is None or not isinstance(parent.ctx, ast.Load):
                 return
             label = f"{cls.name}.{rel.key}"
@@ -677,9 +972,34 @@ class _File:
                 and rel.target != binding.query.cls.full
                 and self.loaded.get(rel.target, 1 << 31) < binding.loop_line
             )
+            # set or refreshed per object by the function (the loop's own
+            # objects only), or loaded by an earlier query of the same rows
+            preloaded = (
+                preloaded
+                or (
+                    len(keys) == 1
+                    and (
+                        rel.key in binding.by_hand
+                        or any(
+                            line < parent.lineno and key == rel.key
+                            for line, key in binding.set_in_loop
+                        )
+                    )
+                )
+                or any(
+                    earlier.line < binding.query.line
+                    and earlier.includes(binding.query)
+                    and loads.covers(keys)
+                    and not any(
+                        earlier.line < line < binding.query.line
+                        for line in self.expiring
+                    )
+                    for earlier, loads in self.executed
+                )
+            )
             if rel.lazy and not preloaded and not covered.covers(keys):
                 self.report(parent, binding, function, path, keys)
-            if not rel.scalar:
+            if not rel.scalar or proxy is not None:
                 return
             target = self.models.classes.get(rel.target)
             if target is None:
@@ -694,6 +1014,8 @@ class _File:
         path: tuple[tuple[str, bool], ...],
         keys: tuple[str, ...],
     ) -> None:
+        if self.in_ignore_block(node):
+            return
         key = (binding.loop_line, tuple(label for label, _ in path))
         line = getattr(node, "end_lineno", None) or node.lineno
         if (
@@ -722,6 +1044,49 @@ class _File:
         if old is None or (finding.line, finding.column) < (old.line, old.column):
             self.findings[key] = finding
 
+    def in_ignore_block(self, node: ast.AST) -> bool:
+        """Whether ``node`` runs inside pytest-queryguard's ``ignore()`` for this rule.
+
+        A ``with ignore(...)`` block around it, or ``@ignore(...)`` on a function
+        around it: the plugin leaves out a relationship-load whose lazy loads
+        all ran there.
+        """
+        if not self.ignore_imported:
+            return False
+        child, parent = node, self.parents.get(node)
+        while parent is not None:
+            if isinstance(parent, (ast.With, ast.AsyncWith)):
+                blocks = [item.context_expr for item in parent.items]
+                inside = any(stmt is child for stmt in parent.body)
+            elif isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                blocks, inside = parent.decorator_list, True
+            else:
+                blocks, inside = [], False
+            if inside and any(self.ignores(block) for block in blocks):
+                return True
+            child, parent = parent, self.parents.get(parent)
+        return False
+
+    def ignores(self, node: ast.expr) -> bool:
+        """Whether ``node`` is ``ignore(...)`` of pytest-queryguard for this rule."""
+        if not isinstance(node, ast.Call):
+            return False
+        func = node.func
+        if isinstance(func, ast.Name):
+            full = self.from_imports.get(func.id, "")
+        elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            full = f"{self.module_imports.get(func.value.id, '')}.{func.attr}"
+        else:
+            return False
+        if full not in ("pytest_queryguard.ignore", "pytest_queryguard.blocks.ignore"):
+            return False
+        for arg in node.args:
+            if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)):
+                return True  # kinds it cannot read: may be this one
+            if fnmatchcase(_PLUGIN_KIND, arg.value):
+                return True
+        return False
+
     def results(self) -> list[Finding]:
         return [f for k, f in self.findings.items() if k not in self.suppressed]
 
@@ -743,6 +1108,11 @@ def _functions(node: ast.AST, prefix: str) -> Iterator[tuple[ast.AST, str]]:
             break
         else:
             stack.pop()
+
+
+def _loop_key(loop: _Loop, iterable: ast.expr) -> str:
+    """The variable a loop goes over, or the loop itself for anything else."""
+    return iterable.id if isinstance(iterable, ast.Name) else f"<loop {id(loop.iter)}>"
 
 
 def _target(loop: _Loop) -> tuple[str | None, ast.expr | None]:
@@ -992,6 +1362,15 @@ def _option(
             found += [(*current, *chain) for chain in sub[1]]
         return current, found
     return None
+
+
+def _strings(nodes: Iterable[ast.expr]) -> Iterator[str]:
+    """String constants, also inside a list, tuple or set display."""
+    for node in nodes:
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            yield from _strings(node.elts)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            yield node.value
 
 
 def _ignored_lines(source: str) -> set[int]:

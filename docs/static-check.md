@@ -80,11 +80,19 @@ A finding needs all of these:
 
    The statement, the result or the list of rows may be assigned to a
    variable first, in the same function, as long as that variable is
-   assigned exactly once there.
+   assigned exactly once there. A statement may also be built in steps,
+   `stmt = select(C)` and then only `stmt = stmt.where(...)`,
+   `stmt = stmt.options(...)` and the like, all above the loop: an option
+   added in any of the steps, also in an `if`, counts. `C` may be an
+   `aliased(C)` or `with_polymorphic(C, ...)` of the class, written in the
+   `select()` or assigned once in the same function (then only the
+   relationships of `C` itself are checked).
 2. In the loop body, `obj.rel` where `rel` is a relationship of `C` with the
-   default `lazy="select"` (or `lazy=True`). Relationships with `joined`,
-   `selectin`, `subquery`, `immediate`, `raise`, `raise_on_sql`, `noload`,
-   `write_only` or `dynamic` are not reported.
+   default `lazy="select"` (or `lazy=True`), or with `lazy="immediate"`,
+   which runs the same query per object when the objects load. Relationships
+   with `joined`, `selectin`, `subquery`, `raise`, `raise_on_sql`, `noload`,
+   `write_only` or `dynamic` are not reported. Reading an
+   `association_proxy` reads the relationship it goes through.
 3. The query has no loader option for that relationship: `joinedload`,
    `selectinload`, `subqueryload`, `immediateload`, `raiseload`, `noload` or
    `contains_eager`, on that path or with `"*"`. `lazyload()` and
@@ -116,8 +124,8 @@ These are left out on purpose, to keep false positives rare:
   `with_loader_criteria`, `selectin_polymorphic`): the query is treated as
   if it loaded everything.
 - `session.execute(select(C))` iterated as rows, selects of more than one
-  entity, `aliased()` classes, and a class name that matches two mapped
-  classes unless the file imports it with `from module import Name`.
+  entity, and a class name that matches two mapped classes unless the file
+  imports it with `from module import Name`.
 - A read that runs at most once per loop: in a block that ends with
   `return`, `raise` or (for the loop itself) `break`, or inside a `lambda` or
   a nested function.
@@ -125,6 +133,24 @@ These are left out on purpose, to keep false positives rare:
   target class (no `where`, `filter`, `join` or `limit`) before the loop:
   those objects usually come from the identity map, without a query. This
   does not apply when the target is the class of the loop's own query.
+- A read inside pytest-queryguard's `ignore()` for `relationship-load`
+  (or a pattern that matches it): a `with ignore(...)` block around the
+  read, or `@ignore(...)` on a function around it, as the plugin leaves
+  those out.
+- A relationship that the function sets or refreshes on each object before
+  reading it: `session.refresh(obj, ["rel"])` (or `attribute_names=`) or
+  `set_committed_value(obj, "rel", value)` in an earlier loop over the same
+  variable, or earlier in the same loop, directly or in a function of the
+  same module that the loop calls with the object.
+- A relationship that an earlier query of the same function loaded on the
+  same rows: a query of the same class with a loader option for it, no
+  `limit`, `join` or similar, and only filters that the loop's query has too
+  (so it loaded at least those rows, which the identity map hands back). Its
+  result is assigned to a variable, outside any `if` or loop, the session
+  variable and the names in its filters are bound once, and no `commit()`,
+  `rollback()`, `close()`, `expire...()` or `expunge...()` call comes between
+  the two queries. Not when the loop's query uses `populate_existing`, which
+  loads them again.
 - `lazy="dynamic"` and `write_only` relationships, even when each one is
   queried per row; the plugin reports those at runtime.
 - Django, SQLAlchemy 1.x `Query` features beyond the ones above, and Core
@@ -133,6 +159,55 @@ These are left out on purpose, to keep false positives rare:
 It cannot know how many rows a query returns, whether the objects were
 already in the Session, or whether a branch runs: a finding means "likely
 N+1", not a measured one. The pytest plugin measures.
+
+## Accuracy
+
+Measured on the [accuracy corpus](accuracy.md), the same scenarios that
+measure the plugin, without running them: each scenario module is linted with
+its own models (the domain modules it imports and the module itself, as
+`--models`). A relationship-load BUG scenario is a positive; every other
+scenario, CLEAN or a BUG of another kind, is a negative; a scenario counts as
+reported when the check has any finding in it. Findings in a scenario's
+`setup` (its seeding code, which the corpus does not measure) are left out.
+`uv run python scripts/lint_accuracy_report.py` prints the numbers and every
+disagreement, and `tests/corpus/test_lint_accuracy.py` fails when they
+change.
+
+On 2026-11-07, 266 scenarios (SQLModel not installed), 51 of them
+positives:
+
+| | TP | FP | FN | precision | recall |
+|---|---|---|---|---|---|
+| before | 30 | 5 | 21 | 86% | 59% |
+| after | 35 | 0 | 16 | 100% | 69% |
+
+"Before" is the check before these changes, on the same 266 scenarios. The 14
+scenarios added for it are shapes reported to other static checks (a nested loop
+covered by the outer query's option chain, orm-lens #146; loops over mapped
+classes and over objects read only through columns and properties, orm-lens
+#72 and #85) and common ones: a repository with a service, a FastAPI
+endpoint that builds its list, Pydantic `model_validate` of a dict per row,
+an HTML fragment built like a template loop, a statement built over several
+lines, an `aliased()` entity, a search loop with an early `return`, an `if`
+guard.
+
+The five false positives were a read inside `ignore()`, a relationship
+refreshed or set per object before the loop (two), the same rows loaded with
+the option by an earlier query, and a loop in a scenario's `setup` (now left
+out of the count; the check is right that it is an N+1 there). The five
+misses that were fixed: `aliased()`, `with_polymorphic()`, a statement built
+over several lines, `lazy="immediate"` and an `association_proxy`. Of the
+16 misses left, 14 cross a function (a serializer, Pydantic or FastAPI
+reading the objects, a property, `__str__`, `__repr__`, a hybrid, a
+recursive walk, a query in a repository or a fixture), one is a Jinja
+template and one a `session.delete()` whose cascade loads the children.
+The labels of the 35 true positives are the plugin's but one: for a concrete
+inheritance hierarchy the check names the base class (`Payment.store`), the
+plugin the subclass (`CardPayment.store`).
+
+As for the plugin, the corpus is small and written by one person, and these
+shapes were written with the check in mind: read the numbers as a regression
+baseline, not as what the check finds in your code.
 
 ## Ignoring a finding
 

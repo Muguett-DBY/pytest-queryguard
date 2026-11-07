@@ -29,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fail: "yes"` let a failed test run pass the job, and an invalid `trend`
   was only a warning. A workflow that passes an empty value (an unset
   matrix or `workflow_call` input) must now pass `"false"`.
+- The experimental static check (`python -m pytest_queryguard.lint`) is
+  measured on the accuracy corpus: `scripts/lint_accuracy_report.py` and
+  `tests/corpus/test_lint_accuracy.py`, with 14 new scenarios for it
+  (268 in all). On 266 scenarios its relationship-load precision went from
+  86% to 100% and its recall from 59% to 69%. It no longer reports a read
+  inside pytest-queryguard's `ignore()` for relationship-load (a `with`
+  block or a decorator), a relationship that a loop over the same objects
+  refreshed or set first (`session.refresh(obj, ["rel"])`,
+  `set_committed_value`, also through a helper of the module), or one that
+  an earlier query of the same rows in the same session loaded. It now
+  reports `aliased()` and `with_polymorphic()` entities, statements built in
+  steps (`stmt = stmt.options(...)`, an option in any step counts),
+  `lazy="immediate"` relationships and reads through an `association_proxy`.
+  See docs/static-check.md#accuracy.
 - The accuracy corpus has 57 more scenarios (254): inheritance (single,
   concrete, `selectin_polymorphic`, polymorphic collections), association
   proxies, `deferred_group`, `query_expression`, `WriteOnlyMapped`,
