@@ -10,10 +10,9 @@ Behaviour these tests pin down (observed with pytest-xdist 3.8):
 * The same tests pass and fail as in a serial run.
 * Measurement state is per worker process and per test: nothing leaks from
   one test to the next on a worker, or between workers.
-* The controller cannot see the workers' counts, so ``--queryguard-report``
-  prints a single "not available with pytest-xdist" line, and the summary
-  sections that need the run's state (index-check notices, stale ignores) are
-  not shown at all.
+* The workers send their counts, ignores and index-check notes to the
+  controller, so ``--queryguard-report`` and the summary sections are those of
+  a serial run (tests/test_xdist_parity.py compares the two).
 """
 
 from __future__ import annotations
@@ -204,17 +203,18 @@ def test_warn_mode_under_workers_fails_nothing_on_n_plus_one(
 
 
 @WORKERS
-def test_report_is_not_available_with_workers(
+def test_report_lists_the_tests_the_workers_ran(
     project: pytest.Pytester, workers: int
 ) -> None:
     project.makepyfile(test_mixed=MIXED)
     result = project.runpytest_subprocess(
         "-n", str(workers), "--queryguard-report", "-p", "no:cacheprovider"
     )
-    result.stdout.fnmatch_lines(
-        ["*queryguard report*", "queryguard report: not available with pytest-xdist"]
-    )
-    assert "no tests were measured" not in result.stdout.str()
+    result.stdout.fnmatch_lines(["*queryguard report*", "*test_mixed.py::*"])
+    out = result.stdout.str()
+    assert "not available with pytest-xdist" not in out
+    assert "incomplete" not in out
+    assert "no tests were measured" not in out
 
 
 def test_report_works_with_n_0(project: pytest.Pytester) -> None:
@@ -229,7 +229,7 @@ def test_report_works_with_n_0(project: pytest.Pytester) -> None:
 
 
 @WORKERS
-def test_stale_ignores_are_not_reported_by_the_controller(
+def test_stale_ignores_are_reported_by_the_controller(
     project: pytest.Pytester, workers: int
 ) -> None:
     project.makepyfile(test_mixed=MIXED)
@@ -243,9 +243,11 @@ def test_stale_ignores_are_not_reported_by_the_controller(
     parallel = project.runpytest_subprocess(
         "-n", str(workers), "-p", "no:cacheprovider"
     )
-    assert "stale ignores" not in parallel.stdout.str()
+    parallel.stdout.fnmatch_lines(
+        ["*stale ignores*", "  relationship-load Nothing.here"]
+    )
     serial = project.runpytest_subprocess("-p", "no:cacheprovider")
-    assert "stale ignores" in serial.stdout.str()
+    serial.stdout.fnmatch_lines(["*stale ignores*", "  relationship-load Nothing.here"])
 
 
 @WORKERS

@@ -131,6 +131,7 @@ After an interrupted run (a collection error, Ctrl-C, a usage error or an
 internal pytest error) the file is not written and an existing one is left as
 it was: a report from the tests that did run would close the alerts of the
 tests that did not. The summary says so.
+`--collect-only` runs no test, so it does not write the file either.
 
 A collection error counts as an interrupted run also when the run goes on,
 with `--continue-on-collection-errors` or under pytest-xdist, so such a run

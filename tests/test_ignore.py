@@ -325,20 +325,6 @@ def test_no_stale_report_when_measurement_is_off(project: pytest.Pytester) -> No
     result.stdout.no_fnmatch_line("*stale ignores*")
 
 
-def test_no_stale_report_on_an_xdist_controller(project: pytest.Pytester) -> None:
-    # The patterns match in the workers, so the controller would call all stale.
-    project.makeconftest(
-        """
-        def pytest_configure(config):
-            config.pluginmanager.register(object(), "dsession")
-        """
-    )
-    project.makepyfile(test_a="def test_ok():\n    pass\n")
-    _ini(project, "relationship-load Gone.relation")
-    result = project.runpytest()
-    result.stdout.no_fnmatch_line("*stale ignores*")
-
-
 def test_bad_ini_pattern_is_a_usage_error(project: pytest.Pytester) -> None:
     _ini(project, "relationship-load")
     result = project.runpytest()
