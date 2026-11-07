@@ -3,7 +3,7 @@
 A user and their roles and verified e-mail addresses, for the session of a
 login: the product is at most 2 x 2 rows per user, and one round trip is
 the point. A reviewer would not ask for a ``selectinload`` here. The
-cartesian-load rule reads loader options, not row counts, so it warns.
+cartesian-load rule reads loader strategies, not row counts, so it warns.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from ..kit import CLEAN, Ctx
 VERDICT = CLEAN
 KINDS = frozenset()
 KNOWN = {
-    "*": "the cartesian-load rule reads the loader options, not how many rows "
+    "*": "the cartesian-load rule reads the loader strategies, not how many rows "
     "the collections hold; two joined collections are reported whatever their size",
 }
 

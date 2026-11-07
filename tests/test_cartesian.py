@@ -6,15 +6,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import ForeignKey, select
+from sqlalchemy import ForeignKey, func, select, text
 from sqlalchemy.orm import (
     DeclarativeBase,
+    Load,
     Mapped,
+    aliased,
     contains_eager,
     defaultload,
     joinedload,
     lazyload,
     mapped_column,
+    raiseload,
     relationship,
     selectinload,
     subqueryload,
@@ -352,3 +355,173 @@ def test_a_load_in_an_ignore_block_carries_the_block() -> None:
     assert outside.ignores == ()
     assert inside.ignores == (block,)
     assert log._collector.statements[-1].ignores == (block,)
+
+
+# Loader strategies set on the mapping: relationship(lazy="joined") joins the
+# collection into every query of the class, as a joinedload() option would.
+
+
+class MappedBase(DeclarativeBase):
+    pass
+
+
+class Board(MappedBase):
+    __tablename__ = "cm_board"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    projects: Mapped[list[Project]] = relationship()
+
+
+class Project(MappedBase):
+    __tablename__ = "cm_project"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    board_id: Mapped[int] = mapped_column(ForeignKey("cm_board.id"))
+    board: Mapped[Board] = relationship(back_populates="projects")
+    members: Mapped[list[Member]] = relationship(lazy="joined")
+    milestones: Mapped[list[Milestone]] = relationship(lazy="joined")
+
+
+class Member(MappedBase):
+    __tablename__ = "cm_member"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("cm_project.id"))
+
+
+class Milestone(MappedBase):
+    __tablename__ = "cm_milestone"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("cm_project.id"))
+
+
+class Folder(MappedBase):
+    __tablename__ = "cm_folder"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("cm_folder.id"))
+    # self-referential: SQLAlchemy joins it only as deep as join_depth says
+    children: Mapped[list[Folder]] = relationship(lazy="joined", join_depth=1)
+    files: Mapped[list[File]] = relationship(lazy="select")
+
+
+class File(MappedBase):
+    __tablename__ = "cm_file"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    folder_id: Mapped[int] = mapped_column(ForeignKey("cm_folder.id"))
+    versions: Mapped[list[Version]] = relationship(lazy="joined")
+
+
+class Version(MappedBase):
+    __tablename__ = "cm_version"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    file_id: Mapped[int] = mapped_column(ForeignKey("cm_file.id"))
+
+
+def _found_with_mapping(statement: Any) -> str | None:
+    from pytest_queryguard.cartesian import _roots
+
+    result = _collections(statement._with_options, _roots(statement))
+    return None if result is None else label(result[1])
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    [
+        (select(Project), "Project.members + Project.milestones"),
+        (
+            select(Project).where(Project.id == 1).limit(1),
+            "Project.members + Project.milestones",
+        ),
+        (select(aliased(Project)), "Project.members + Project.milestones"),
+        (
+            # an option for another relationship keeps the mapping's joins
+            select(Project).options(joinedload(Project.board)),
+            "Project.members + Project.milestones",
+        ),
+        (
+            # the mapping's joins run inside the selectinload's own SELECT
+            select(Board).options(selectinload(Board.projects)),
+            "Project.members + Project.milestones",
+        ),
+        (
+            # a joinedload() option next to a collection joined by the mapping
+            select(Folder).options(joinedload(Folder.files)),
+            "Folder.children + Folder.files",
+        ),
+    ],
+    ids=[
+        "plain-select",
+        "one-row-lookup",
+        "aliased",
+        "option-for-another-relationship",
+        "under-selectinload",
+        "option-next-to-mapping",
+    ],
+)
+def test_collections_joined_by_the_mapping_are_found(
+    statement: Any, expected: str
+) -> None:
+    assert _found_with_mapping(statement) == expected
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        select(Project).options(selectinload(Project.members)),
+        select(Project).options(raiseload(Project.milestones)),
+        select(Project).options(lazyload("*")),
+        select(Project).options(Load(Project).raiseload("*")),
+        select(Project.id, Project.name),
+        select(func.count()).select_from(Project),
+        select(Board),
+        select(Folder),
+        select(File),
+        select(Folder).options(lazyload(Folder.children), joinedload(Folder.files)),
+        select(Project).from_statement(text("SELECT * FROM cm_project")),
+    ],
+    ids=[
+        "selectin-option-overrides",
+        "raiseload-option-overrides",
+        "unbound-wildcard",
+        "bound-wildcard",
+        "columns-only",
+        "count",
+        "lazy-relationship-not-followed",
+        "self-referential-cycle",
+        "one-collection",
+        "chain-through-the-mapping",
+        "from-statement",
+    ],
+)
+def test_the_mapping_alone_is_no_product(statement: Any) -> None:
+    assert _found_with_mapping(statement) is None
+
+
+def test_eager_loads_switched_off_on_the_query_are_no_product() -> None:
+    from sqlalchemy.orm import Session
+
+    query = Session().query(Project).enable_eagerloads(False)
+    assert _found_with_mapping(query._statement_20()) is None
+
+
+@pytest.mark.allow_nplusone
+def test_a_select_without_options_is_checked_for_the_mapping() -> None:
+    # Each run is recorded, the second from the result kept per entity.
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from pytest_queryguard import cartesian, listeners, record_queries
+
+    engine = create_engine("sqlite://")
+    MappedBase.metadata.create_all(engine)
+    listeners.install()
+    cartesian.enable()
+    try:
+        with Session(engine) as session, record_queries() as log:
+            for _ in range(2):
+                session.scalars(select(Project)).unique().all()
+            session.scalars(select(Board)).all()
+    finally:
+        cartesian.disable()
+    loads = log._collector.cartesian_loads
+    assert [label(load.collections) for load in loads] == [
+        "Project.members + Project.milestones"
+    ] * 2

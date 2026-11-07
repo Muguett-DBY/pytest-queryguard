@@ -378,11 +378,78 @@ def test_it():
     session.add(account)
     session.flush()
     session.expire(account, ["name"])
-    stmt = select(Account).where(Account.id == 9).options(load_only(Account.name))
+    stmt = select(Account).where(Account.id >= 9).options(load_only(Account.name))
     (found,) = session.scalars(stmt).all()
     assert found.name == "new"
 """
     run(pytester, body, *ON).assert_outcomes(passed=1)
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        "session.get(Account, 2)",
+        "session.scalars(select(Account).where(Account.id == 2)).one()",
+        "session.scalars(select(Account).filter_by(name='account 2', id=2)).one()",
+        "session.query(Account).filter(Account.id == 2).one()",
+    ],
+    ids=["get", "where-primary-key", "filter-by", "legacy-query"],
+)
+def test_a_primary_key_lookup_is_not_reported(
+    pytester: pytest.Pytester, lookup: str
+) -> None:
+    # one row by construction: trimming its columns saves one row's width;
+    # a lookup per item is the repeat rule's finding
+    body = f"""
+def test_it():
+    session = make_sync_session()
+    account = {lookup}
+    assert account.name == "account 2"
+"""
+    run(pytester, body, *ON).assert_outcomes(passed=1)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "select(Account).where(Account.id > 1)",
+        "select(Account).where(or_(Account.id == 2, Account.id == 3))",
+        "select(Account).where(Account.owner_id == 1)",
+        "select(Account).join(Other, Other.id == Account.id).where(Other.id == 2)",
+    ],
+    ids=["range", "or", "other-column", "pinned-alias"],
+)
+def test_a_query_that_can_return_several_rows_is_still_reported(
+    pytester: pytest.Pytester, query: str
+) -> None:
+    body = f"""
+from sqlalchemy import or_
+from sqlalchemy.orm import aliased
+
+Other = aliased(Account)
+
+
+def test_it():
+    session = make_sync_session()
+    rows = session.scalars({query}).all()
+    assert [a.name for a in rows]
+"""
+    reported(run(pytester, body, *ON))
+
+
+def test_a_lookup_next_to_a_list_in_one_function_is_reported(
+    pytester: pytest.Pytester,
+) -> None:
+    # the group is the class and the function: one query of several rows in
+    # it is enough
+    body = """
+def test_it():
+    session = make_sync_session()
+    first = session.get(Account, 1)
+    rows = session.scalars(select(Account).where(Account.id > 1)).all()
+    assert [a.name for a in [first, *rows]]
+"""
+    reported(run(pytester, body, *ON))
 
 
 def test_async_session(pytester: pytest.Pytester) -> None:

@@ -12,16 +12,7 @@ from ..domains import content
 from ..kit import CLEAN, Ctx
 
 VERDICT = CLEAN
-_ONE_ROW = (
-    "the unused-columns check has no minimum number of rows: a single article "
-    "page that reads a few of its 12 columns is reported, which no reviewer "
-    "would ask to change"
-)
 KINDS = frozenset()
-KNOWN = {
-    "unused-columns": _ONE_ROW,
-    "all-opt-in": _ONE_ROW,
-}
 setup = content.setup
 
 

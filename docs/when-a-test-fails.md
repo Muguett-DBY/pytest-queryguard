@@ -167,6 +167,12 @@ It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
   findings.
 - Code that catches `AssertionError` around the loop does not hide the N+1:
   the report at the end still fails the test.
+- A library that catches the exception at the access and raises its own,
+  such as Pydantic's `from_attributes` validation or FastAPI's
+  `response_model`, fails the test with its error, which holds the strict
+  message. The plugin then sees a test that failed on its own, so the report
+  at the end, SARIF, `--queryguard-json` and the summary leave the N+1 out.
+  To get them for such a test, run it without strict mode.
 - It raises before the lazy load's `SELECT` is prepared: nothing is
   flushed, no connection is used, and engine listeners such as
   `handle_error` never see the exception. For that, strict mode adds a

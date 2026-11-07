@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The cartesian-load check now sees collections joined by the mapping.
+  Two collections with `relationship(lazy="joined")` make one row per pair
+  of their items on every `select()` of the class, as two `joinedload()`
+  options do, but the check read only the options of the query and missed
+  them. It now follows the loader strategies of the mapping for each entity
+  a SELECT loads, the way SQLAlchemy applies them: an option or a wildcard
+  (`lazyload("*")`) of the query wins, a lazy relationship is not followed,
+  and a self-referential one only as deep as its `join_depth`. Like the
+  rest of the check, it warns by default.
+- The unused-columns check (experimental) no longer reports a query that
+  pins the whole primary key of the class with `=` (`session.get()`, a
+  detail page's `where(Article.id == id)`): it returns one row, so
+  `load_only()` would save one row's width. A group of the class and the
+  function with any query that can return more rows is still reported.
 - The column-load report no longer says that subclass columns were expired
   by `commit()` or `expire()`. A query of the base class of a joined- or
   single-table hierarchy (`select(Employee)`) leaves the subclass columns out,

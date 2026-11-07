@@ -15,10 +15,6 @@ from ..kit import BUG, CARTESIAN, Ctx
 
 VERDICT = BUG
 KINDS = frozenset({CARTESIAN})
-KNOWN = {
-    "*": "loader strategies set on the mapping (lazy='joined') are not options "
-    "of the query, and the cartesian-load rule reads only the query's options",
-}
 
 
 class Base(DeclarativeBase):
