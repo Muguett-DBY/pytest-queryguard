@@ -85,6 +85,9 @@ class ParentLoad:
     # when the way is unknown or cannot be written as a loader option chain.
     root: str | None = None
     path: tuple[tuple[str, bool], ...] = ()
+    # The collector generation its origin was noted in: a measurement that
+    # started later (a record_queries() block) does not use it.
+    noted: int = field(default=0, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

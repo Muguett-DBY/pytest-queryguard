@@ -8,7 +8,7 @@ import sys
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, NamedTuple
 
 from sqlalchemy import event
@@ -473,25 +473,51 @@ def _loader_path(
     return found
 
 
-def _current_origin(state: Any) -> tuple[Any, ...] | None:
-    """(call site, load path, generation) of an instance, if noted in this
-    measurement."""
+def _current_origin(state: Any, *, oldest: bool = False) -> tuple[Any, ...] | None:
+    """(call site, load path, generation) of an instance, if noted while the
+    innermost measurement that wants loads was running (``oldest``: the
+    outermost one).
+
+    Compared with the generation that measurement started in, not with the
+    current one: another measurement starting or ending (a
+    ``record_queries()`` block, in the test or in any other thread) changes
+    the generation and must not take the test's origins away. The origins
+    noted from now on use the innermost measurement, so a block never builds
+    on an origin from before it; a lazy load's parent uses the outermost one,
+    and ``_for_target`` leaves it out for each measurement that started later.
+    """
     origin = state.__dict__.get(_ORIGIN_ATTR)
-    if origin is None or origin[2] != collector._generation:
+    if origin is None:
+        return None
+    full = collector._active_full  # one read: another thread may push or pop
+    # pushed in order: [0] is the oldest, [-1] the innermost
+    if not full or origin[2] < full[0 if oldest else -1].since:
         return None
     return origin  # type: ignore[no-any-return]
 
 
+def _for_target(
+    load: RelationshipLoadEvent, target: collector.QueryCollector
+) -> RelationshipLoadEvent:
+    """``load`` as ``target`` records it: without the parent's origin when that
+    was noted before ``target`` started (an object loaded before a
+    ``record_queries()`` block has none there)."""
+    parent = load.parent
+    if parent is None or parent.noted >= target.since:
+        return load
+    return replace(load, parent=None)
+
+
 def _parent_load(parent: Any, prop: Any) -> ParentLoad | None:
     """Where the parent of this lazy load came from; None when unknown."""
-    origin = _current_origin(parent)
+    origin = _current_origin(parent, oldest=True)
     if origin is None:
         return None
-    site, path, _ = origin
+    site, path, noted = origin
     root, chain = _loader_path(path, prop)
     if site is None and root is None:
         return None
-    return ParentLoad(site, root, chain)
+    return ParentLoad(site, root, chain, noted)
 
 
 def _reset_for_tests() -> None:
@@ -743,7 +769,7 @@ def _orm_load(
         session = _loader_session(orm.execution_options)
     load = _relationship_load(prop, parent, session, conn, ignores, sites, parents)
     for target in targets:
-        target.add_relationship_load(load)
+        target.add_relationship_load(_for_target(load, target))
     return _Labels(load.relationship, None, parent is not None, load.callsite)
 
 
@@ -867,12 +893,12 @@ def _on_orm_execute_strict(state: ORMExecuteState) -> None:
             if target.strict is not None:
                 # every strict collector counts the load; the first error wins
                 # (strict_check skips a load its ignore() blocks cover)
-                error = target.strict_check(load)
+                error = target.strict_check(_for_target(load, target))
                 if strict is None:
                     strict = error
         if strict is not None:
             for target in full:
-                target.add_relationship_load(load)
+                target.add_relationship_load(_for_target(load, target))
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         _fail(exc, "do_orm_execute listener (strict mode)")
         return
