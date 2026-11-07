@@ -282,6 +282,13 @@ def _chain(rng: random.Random, case: Case, style: str, multiline: bool) -> list[
         f".order_by({entity}.id)",
     ]
     parts = [rng.choice(filters) for _ in range(rng.randint(0, 2))]
+    if _pick(rng, 0.08):
+        # FOR UPDATE, GROUP BY and DISTINCT take a selectinload, not a joinedload
+        parts.append(
+            rng.choice([".with_for_update()", f".group_by({entity}.id)", ".distinct()"])
+        )
+        if "joinedload" in _loaders(case):
+            case.negative.append("joined-load-of-a-locked-or-grouped-query")
     first = case.path[0][0] if case.path else case.relationship
     options: list[tuple[str, str | None]] = [
         ("", None),
@@ -297,13 +304,21 @@ def _chain(rng: random.Random, case: Case, style: str, multiline: bool) -> list[
         (f".options(lazyload({first}))", "negative:option-for-the-relationship"),
         (".options(a()).options(b())", "negative:two-options-calls"),
     ]  # fmt: skip
+    # a loader whose relationship the code does not name: it may be this one
+    owner, _, attribute = first.partition(".")
+    unnamed = [
+        (".options(noload(REL))", "negative:loader-of-a-variable"),
+        (f".options(noload({owner}.RELATIONSHIP))", "negative:loader-of-a-constant"),
+        (f'.options(noload("{attribute}"))', "negative:loader-of-a-string"),
+        (f".options(selectinload(getattr({entity}, name)))", "negative:computed-attribute"),
+    ]  # fmt: skip
     if multiline:
         options += [
             (f".options(\n    selectinload({entity}.extra),\n)", None),
             (f".options(selectinload({entity}.extra)  # keep\n)", None),
             (f".options(\n    (selectinload({entity}.extra))\n)", "unsure:parenthesized-option"),
         ]  # fmt: skip
-    text, mark = rng.choice(options)
+    text, mark = rng.choice(unnamed if _pick(rng, 0.06) else options)
     if mark is not None:
         kind, _, reason = mark.partition(":")
         (case.negative if kind == "negative" else case.unsure).append(reason)
@@ -353,6 +368,9 @@ def _statement(
         # 3.12 parses f-strings into exact positions; earlier versions too
         return [f'print(f"{{ {run(one_line)}.all() }}")'], [0]
     if shape == "await":
+        if style != "select":
+            # a Query is not awaitable: this is not what ran
+            case.negative.append("awaited-query")
         return [f"rows = (await {run(one_line)}).all()"], [0]
     if shape == "variable":
         if style != "select":
@@ -394,6 +412,44 @@ def _statement(
     other = (
         "select(Customer.id)" if style == "select" else "db_session.query(Customer.id)"
     )
+    if style == "select":
+        # the select is not the statement that runs, or not as it is
+        shapes = [
+            (
+                "in-a-union",
+                f"rows = session.execute(union_all({one_line}, other)).all()",
+            ),
+            ("in-an-exists", f"found = session.scalar(exists({one_line}).select())"),
+            (
+                "a-subquery",
+                f"rows = session.execute({one_line}.subquery().select()).all()",
+            ),
+            ("a-cte", f"rows = session.execute({one_line}.cte().select()).all()"),
+            ("a-helper", f"rows = session.scalars(paginate({one_line})).all()"),
+            (
+                "other-columns",
+                f"rows = session.execute({one_line}.with_only_columns({entity}.id)).all()",
+            ),
+            (
+                "insert-from-select",
+                f'session.execute(insert(Archive).from_select(["id"], {one_line}))',
+            ),
+            ("not-run-by-a-session", f"rows = repository.scalars({one_line}).all()"),
+            ("not-run", f"subquery = {one_line}.scalar_subquery()"),
+        ]
+    else:
+        shapes = [
+            ("other-entities", f"rows = {one_line}.with_entities({entity}.id).all()"),
+            ("its-statement", f"rows = session.execute({one_line}.statement).all()"),
+            ("a-helper", f"rows = paginate({one_line})"),
+            ("a-union", f"rows = {one_line}.union_all(others).all()"),
+            ("a-subquery", f"subquery = {one_line}.subquery()"),
+            ("not-run", f"return {one_line}"),
+        ]
+    if _pick(rng, 0.5):
+        reason, line = rng.choice(shapes)
+        case.negative.append(reason)
+        return [line], [0]
     reason, line = rng.choice(
         [
             ("two-statements", f"n = 0; rows = {run(one_line)}.all()"),

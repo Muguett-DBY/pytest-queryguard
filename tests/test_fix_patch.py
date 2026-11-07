@@ -513,6 +513,229 @@ def test_no_patch_when_the_line_is_not_certain(
     assert _make(tmp_path, _finding(file)) is None
 
 
+SQL_HEADER = (
+    HEADER
+    + "from sqlalchemy import exists, insert, text, union_all, update\n"
+    + "from sqlalchemy.orm import Load, lazyload, noload, raiseload, selectinload\n"
+    + "from app import rels\n"
+    + "from app.models import Archive\n"
+    + "from app.helpers import REL, defaults, paginate\n"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # the select is not the statement that runs
+        pytest.param(
+            "return session.execute(union_all(select(Order), other)).all()",
+            id="in-a-union-all",
+        ),
+        pytest.param(
+            "return session.scalar(exists(select(Order)).select())",
+            id="in-an-exists",
+        ),
+        pytest.param(
+            "return session.scalar(select(Order).exists().select())",
+            id="turned-into-an-exists",
+        ),
+        pytest.param(
+            "return session.execute(select(Order).subquery().select()).all()",
+            id="turned-into-a-subquery",
+        ),
+        pytest.param(
+            "return session.scalars(Customer.__table__.select()"
+            ".where(Customer.id.in_(select(Order).scalar_subquery()))).all()",
+            id="a-scalar-subquery-in-another-statement",
+        ),
+        pytest.param(
+            "return session.execute(update(Customer).where(Customer.id.in_("
+            "select(Order).with_only_columns(Order.customer_id))))",
+            id="in-an-orm-update",
+        ),
+        pytest.param(
+            "return session.execute(select(Order).cte().select()).all()",
+            id="turned-into-a-cte",
+        ),
+        pytest.param(
+            'return session.execute(insert(Archive).from_select(["id"], select(Order)))',
+            id="in-an-insert-from-select",
+        ),
+        pytest.param(
+            "return session.scalars(paginate(select(Order))).all()",
+            id="passed-to-a-helper",
+        ),
+        pytest.param(
+            "return session.execute(select(Order).with_only_columns(Order.id)).all()",
+            id="other-columns",
+        ),
+        pytest.param(
+            "return session.execute(select(Order).add_columns(Customer.name)).all()",
+            id="more-columns",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).union(other)).all()",
+            id="a-union-method",
+        ),
+        pytest.param(
+            'return session.scalars(select(Order).from_statement(text("SELECT 1"))).all()',
+            id="from-a-textual-statement",
+        ),
+        pytest.param(
+            "return repository.scalars(select(Order)).all()",
+            id="run-by-something-not-a-session",
+        ),
+        pytest.param(
+            "return session.scalars(statement=select(Order)).all()",
+            id="a-keyword-argument",
+        ),
+        pytest.param(
+            "return session.query(Order).with_entities(Order.id).all()",
+            id="query-with-other-entities",
+        ),
+        pytest.param(
+            'return session.query(Order).from_statement(text("SELECT 1")).all()',
+            id="query-from-a-textual-statement",
+        ),
+        pytest.param(
+            "return session.execute(session.query(Order).statement).scalars().all()",
+            id="the-statement-of-a-query",
+        ),
+        pytest.param(
+            "return session.query(Order).union_all(others).all()",
+            id="query-union",
+        ),
+        pytest.param(
+            "return session.query(Customer).filter("
+            "Customer.id.in_(session.query(Order).subquery()))",
+            id="query-subquery",
+        ),
+        pytest.param(
+            "return paginate(session.query(Order))",
+            id="query-passed-to-a-helper",
+        ),
+        pytest.param(
+            "return session.query(Order).enable_eagerloads(False).all()",
+            id="query-without-eager-loads",
+        ),
+        # an option of the statement may already load the relationship
+        pytest.param(
+            "return session.scalars(select(Order).options(noload(REL))).all()",
+            id="a-loader-of-a-variable",
+        ),
+        pytest.param(
+            'return session.scalars(select(Order).options(noload("customer"))).all()',
+            id="a-loader-of-a-string",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).options(defaults())).all()",
+            id="options-from-a-helper",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).options(lazyload(rels.CUSTOMER))).all()",
+            id="a-loader-of-a-module-constant",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).options("
+            "selectinload(getattr(Order, name)))).all()",
+            id="a-loader-of-a-computed-attribute",
+        ),
+        # a joined load the statement does not take
+        pytest.param(
+            "return session.scalars(select(Order).with_for_update()).all()",
+            id="joined-for-update",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).group_by(Order.id)).all()",
+            id="joined-group-by",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).distinct()).all()",
+            id="joined-distinct",
+        ),
+        pytest.param(
+            "return session.query(Order).with_for_update().all()",
+            id="query-joined-for-update",
+        ),
+        # already safe: no select of the class runs
+        pytest.param(
+            "return session.execute(update(Order).where(Order.id > 0).values(n=1))",
+            id="an-orm-update",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order.id)).all()",
+            id="a-column-select",
+        ),
+        pytest.param(
+            "return session.scalars(select(aliased(Order))).all()",
+            id="an-aliased-class",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).options("
+            "selectinload(Order.items).raiseload(Order.customer))).all()",
+            id="a-chained-loader-for-the-relationship",
+        ),
+    ],
+)
+def test_no_patch_unless_the_select_is_the_statement_that_runs(
+    tmp_path: Path, body: str
+) -> None:
+    file = _write(
+        tmp_path,
+        f"def load(session, other, others, repository, name):\n    {body}  # parents\n",
+        header=SQL_HEADER,
+    )
+    assert _make(tmp_path, _finding(file)) is None
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param(
+            "return session.scalars(select(Order).group_by(Order.id)).all()",
+            "select(Order).options(selectinload(Order.items)).group_by(Order.id)",
+            id="selectin-group-by",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).with_for_update()).all()",
+            "select(Order).options(selectinload(Order.items)).with_for_update()",
+            id="selectin-for-update",
+        ),
+        pytest.param(
+            "return session.scalars(select(Order).options("
+            "Load(Order).raiseload('*'), selectinload(models.Order.tags))).all()",
+            "Load(Order).raiseload('*'), selectinload(models.Order.tags), "
+            "selectinload(Order.items))",
+            id="loaders-of-other-relationships",
+        ),
+        pytest.param(
+            "return session.query(Order).filter(Order.id > 0).first()",
+            "session.query(Order).options(selectinload(Order.items)).filter(",
+            id="query-first",
+        ),
+        pytest.param(
+            "return sorted(session.query(Order).limit(3))",
+            "sorted(session.query(Order).options(selectinload(Order.items)).limit(3))",
+            id="query-sorted",
+        ),
+    ],
+)
+def test_a_select_that_runs_as_it_is_is_patched(
+    tmp_path: Path, body: str, expected: str
+) -> None:
+    file = _write(
+        tmp_path,
+        f"def load(session):\n    {body}  # parents\n",
+        header=SQL_HEADER + "from app import models\n",
+    )
+    finding = _finding(file, relationship="Order.items", scalar=False)
+    fix = _make(tmp_path, finding)
+    assert fix is not None
+    after = _patched(tmp_path, fix)
+    assert expected in after
+    compile(after, "views.py", "exec")
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -817,11 +1040,12 @@ def test_a_class_named_through_its_module(
     path: tuple[tuple[str, bool], ...],
     option: str,
 ) -> None:
+    run = f"session.scalars({query})" if query.startswith("select") else query
     file = _write(
         tmp_path,
         f"""\
         def load(session):
-            return list({query})  # parents
+            return list({run})  # parents
         """,
         header=MODULE_HEADER,
     )

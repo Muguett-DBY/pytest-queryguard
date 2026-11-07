@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only there; and `session.execute(select(Order)).scalars()`, whose
   `.scalars()` of the result was taken for a second query. Every other shape
   still gets no patch.
+- The fix patch no longer adds the loader to a statement it would not fix
+  or would break. The `select(Order)` (or `session.query(Order)`) of the
+  parent line must now be the statement the line runs, with only methods that
+  keep its entities: not one inside `union_all()`, `exists()`, a subquery, a
+  CTE, an `insert().from_select()` or another statement, passed to a helper,
+  turned into other columns (`with_only_columns`, `with_entities`), a union
+  or `from_statement`, nor run by something not named like a session. An
+  existing `.options(...)` must name every relationship it loads
+  (`noload(REL)` or `noload("customer")` may be the relationship of the patch,
+  which SQLAlchemy rejects as a conflicting loader), and a `joinedload` no
+  longer goes on a statement with `with_for_update()` (PostgreSQL refuses
+  `FOR UPDATE` on an outer join's nullable side), `group_by()`, `having()`,
+  `distinct()` or a prefix or suffix. These get the `fix:` hint only.
 - Strict mode no longer drops a query or database-time budget failure: a
   budget the test (`max_queries`/`max_db_time` marker,
   `queryguard_max_queries`, the budget file) or a `max_queries()` block
