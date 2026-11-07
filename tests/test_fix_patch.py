@@ -520,6 +520,7 @@ SQL_HEADER = (
     + "from app import rels\n"
     + "from app.models import Archive\n"
     + "from app.helpers import REL, defaults, paginate\n"
+    + "import sqlalchemy_utils as orm\n"
 )
 
 
@@ -675,6 +676,10 @@ SQL_HEADER = (
             "selectinload(Order.items).raiseload(Order.customer))).all()",
             id="a-chained-loader-for-the-relationship",
         ),
+        pytest.param(
+            "return session.scalars(select(Order).options(orm.load_all(Order.tags))).all()",
+            id="a-loader-of-a-module-not-sqlalchemy",
+        ),
     ],
 )
 def test_no_patch_unless_the_select_is_the_statement_that_runs(
@@ -686,6 +691,26 @@ def test_no_patch_unless_the_select_is_the_statement_that_runs(
         header=SQL_HEADER,
     )
     assert _make(tmp_path, _finding(file)) is None
+
+
+def test_a_joined_load_of_the_selectin_query_takes_for_update(
+    tmp_path: Path,
+) -> None:
+    file = _write(
+        tmp_path,
+        "def load(session):\n"
+        "    return session.scalars(select(Order).with_for_update()).all()  # parents\n",
+        header=HEADER.replace("import Customer, Order", "import Customer, Item, Order"),
+    )
+    finding = _finding(
+        file, relationship="Item.product", path=(("Order.items", False),)
+    )
+    fix = _make(tmp_path, finding)
+    assert fix is not None
+    assert (
+        "select(Order).options(selectinload(Order.items).joinedload(Item.product))"
+        ".with_for_update()"
+    ) in _patched(tmp_path, fix)
 
 
 @pytest.mark.parametrize(
@@ -712,6 +737,11 @@ def test_no_patch_unless_the_select_is_the_statement_that_runs(
             "return session.query(Order).filter(Order.id > 0).first()",
             "session.query(Order).options(selectinload(Order.items)).filter(",
             id="query-first",
+        ),
+        pytest.param(
+            "return session.exec(select(Order)).all()",
+            "session.exec(select(Order).options(selectinload(Order.items)))",
+            id="sqlmodel-exec",
         ),
         pytest.param(
             "return sorted(session.query(Order).limit(3))",

@@ -25,11 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep its entities: not one inside `union_all()`, `exists()`, a subquery, a
   CTE, an `insert().from_select()` or another statement, passed to a helper,
   turned into other columns (`with_only_columns`, `with_entities`), a union
-  or `from_statement`, nor run by something not named like a session. An
+  or `from_statement`, nor run by something not named like a session
+  (`db.scalars(select(Order))` now gets only the hint, as a statement in a
+  variable already did; SQLModel's `session.exec()` counts as a session). An
   existing `.options(...)` must name every relationship it loads
   (`noload(REL)` or `noload("customer")` may be the relationship of the patch,
   which SQLAlchemy rejects as a conflicting loader), and a `joinedload` no
-  longer goes on a statement with `with_for_update()` (PostgreSQL refuses
+  longer goes on the parent query of a statement with `with_for_update()` (PostgreSQL refuses
   `FOR UPDATE` on an outer join's nullable side), `group_by()`, `having()`,
   `distinct()` or a prefix or suffix. These get the `fix:` hint only.
 - Strict mode no longer drops a query or database-time budget failure: a

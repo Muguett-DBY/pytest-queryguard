@@ -65,7 +65,10 @@ _SELECT_MODULES = ("sqlalchemy", "sqlmodel")
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 _NAMED = (*_SCOPES, ast.ExceptHandler, ast.MatchAs, ast.MatchStar)
 # Session methods that run the statement given as their first argument.
-_EXECUTES = frozenset({"execute", "scalars", "scalar", "stream", "stream_scalars"})
+# (``exec`` is SQLModel's.)
+_EXECUTES = frozenset(
+    {"execute", "exec", "scalars", "scalar", "stream", "stream_scalars"}
+)
 # Session methods that run a statement. On the parent line, one of them with
 # an argument that is not the select() call means another query may have run.
 _RUNS = _EXECUTES | {"get", "get_one", "merge", "refresh"}
@@ -795,8 +798,9 @@ def _plain_loader(option: ast.expr, names: dict[str, str], local: set[str]) -> b
         # orm.selectinload(...) of "import sqlalchemy.orm as orm"
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
             origin = names.get(func.value.id, "")
-            return func.value.id not in local and origin.startswith(
-                f"{_IMPORTED}sqlalchemy"
+            return func.value.id not in local and origin in (
+                f"{_IMPORTED}sqlalchemy",
+                f"{_IMPORTED}sqlalchemy.orm",
             )
         return False
     return False
@@ -933,8 +937,9 @@ def make(finding: RelationshipFinding, root: Path, since: float) -> SourceFix | 
     for loader in loaders:
         if loader in names and names[loader] != _ORM:
             return None
-    # a joined load would change the SQL of FOR UPDATE, GROUP BY or DISTINCT
-    if "joinedload" in loaders and any(
+    # a joined load of the parent query (not one under a selectinload, which
+    # runs its own query) would change the SQL of FOR UPDATE, GROUP BY, DISTINCT
+    if steps[0][0] == "joinedload" and any(
         method in _NOT_JOINED for method, _ in _chain(module, call)
     ):
         return None

@@ -271,7 +271,7 @@ certain, and otherwise only the `fix:` hint:
   `or`, a comprehension) gets no patch;
 - that call is the statement the line runs, as it is: a `select(...)`, with
   only methods that keep its entities chained to it, is the first argument of
-  `execute`, `scalars`, `scalar` or `stream` on something named like a
+  `execute`, `scalars`, `scalar`, `stream` or SQLModel's `exec` on something named like a
   session; a `session.query(...)` with such methods is run by `.all()`,
   `.first()`, `.one()` or `.one_or_none()`, or iterated (`for`, `list(...)`).
   A select inside a `union_all(...)`, an `exists(...)`, a subquery, a CTE, an
