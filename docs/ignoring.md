@@ -229,7 +229,9 @@ relationship already loaded.
 
 A library installed in editable mode (`pip install -e`) or vendored into the
 repository is not under `site-packages`: its frames are call sites like your
-own, and `file`, `function` and `stack` match its lines.
+own, and `file`, `function` and `stack` match its lines. The methods of a
+`Session` subclass are the exception: the call site is the line that called
+the session (see [How detection works](how-detection-works.md#what-is-measured)).
 
 ## The `ignore()` block
 

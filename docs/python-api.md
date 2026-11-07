@@ -40,7 +40,8 @@ ran. The log is also sized, iterable and indexable (`len(log)`,
 - `sql`: the statement as SQLAlchemy sent it to the driver;
 - `callsite`: a `CallSite` with `filename`, `lineno` and `function`, the
   first frame outside SQLAlchemy, pytest, the standard library,
-  `site-packages` and the plugin, or `None`. Its `callers` are the
+  `site-packages`, the plugin and the methods of a `Session` subclass, or
+  `None`. Its `callers` are the
   `CallSite`s of the application lines that called it, innermost first, up
   to the test (`queryguard_stack_depth` of them, 3 by default), as seen the
   first time that line ran in the block or test; they are not part of the

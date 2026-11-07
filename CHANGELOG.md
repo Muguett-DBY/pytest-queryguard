@@ -153,6 +153,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sending one (a loader option conflict) raised `NPlusOneDetected`, while the
   report, which counts the `SELECT`s, found no N+1. A load now counts for
   strict mode once its `SELECT` runs. Found by the new runtime fuzzer.
+- The relationship-load rule groups the parents whose query is unknown
+  (objects the test created, loaded before the test body or read by two
+  queries) by the line that read the relationship, as it groups the others by
+  the line of their query. Code that creates a few objects and reads each
+  one's relationship on a line of its own is no longer an N+1; a loop over
+  them still is, and so is a loop over such objects mixed with the rows of a
+  query. All 9 findings of the real-world run in SQLModel's tutorials were
+  of this kind. Strict mode's report site follows the same grouping.
+- A method of a `Session` or `AsyncSession` subclass outside
+  `site-packages` (SQLModel's `Session` in an editable install, an
+  application's own override of `execute()`) is no longer the call site of
+  the queries that go through it; the line that called the session is. Every
+  query had the override's `super().execute()` line as call site: findings
+  pointed there (all of SQLModel's in the real-world workflow), and
+  single-object lookups at different lines were grouped as one query line
+  and reported as a relationship-load.
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
   `response_model`), or that the code swallowed before the test failed on
@@ -385,6 +401,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relationship-load, that strict mode raises exactly when the report has a
   relationship-load, and that two runs give the same findings. Seeded and
   bounded; `QUERYGUARD_FUZZ=1` runs 40 batches instead of 2.
+- The real-world workflow (`.github/workflows/realworld.yml`) resolves
+  `plugin-ref` to a commit once, so a branch deleted or pushed to while the
+  matrix runs no longer breaks the plugin checkout. Its summary tells a
+  project whose tests did not run without the plugin (a harness problem) from
+  one the plugin broke, never fails a job for findings, shows the pass/fail
+  delta, and a report job puts one table of all projects on the run's page.
+  The full-stack template's tests path is fixed (`app/tests`).
 - `tests/test_public_api.py` also snapshots the keys and format numbers of
   the files the plugin writes (`--queryguard-json`, baseline, budget file,
   SARIF rule ids, fingerprint key and properties), the finding kinds, the

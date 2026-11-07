@@ -235,24 +235,47 @@ class QueryCollector:
         ``queryguard_repeat_scope = session``) from the query lines whose
         parents make an N+1, located at its first lazy load; ignore patterns
         and the baseline must match that line, not the first load of this
-        group's line. Loads of parents whose query is unknown join every
-        line, as in the report. When parents of other lines are in it, the
+        group's line. Loads of parents whose query is unknown join it when
+        read where its parents were read (or where no line is known), or when
+        those read at their line are an N+1 of their own, as in the report.
+        When parents of other lines are in it, the
         report's finding has no patch, so neither has the strict error.
         Computed once per group, when it reaches the threshold.
         """
         here = load.parent.callsite if load.parent is not None else None
         first: CallSite | None = None
         other_lines = False
-        for earlier in self.relationship_loads:
-            if (
-                earlier.relationship != load.relationship
-                or earlier.parent_key is None
-                or (scope is not None and earlier.scope != scope)
-            ):
-                continue
+        loads = [
+            earlier
+            for earlier in self.relationship_loads
+            if earlier.relationship == load.relationship
+            and earlier.parent_key is not None
+            and (scope is None or earlier.scope == scope)
+        ]
+        # the lines that read this group's relationship: a parent of unknown
+        # origin joins the group when read at one of them (or at no known line)
+        reads = {
+            earlier.callsite
+            for earlier in loads
+            if earlier.parent is not None and earlier.parent.callsite == here
+        }
+        reads.add(load.callsite)
+        # the parents of unknown origin per reading line, as the report groups
+        # them; one read at no known line counts for every line
+        unknown: dict[CallSite | None, set[object]] = {}
+        for earlier in loads:
+            if earlier.parent is None or earlier.parent.callsite is None:
+                unknown.setdefault(earlier.callsite, set()).add(earlier.parent_key)
+        anywhere = unknown.get(None, set())
+        for earlier in loads:
             parent = earlier.parent
             line = None if parent is None else parent.callsite
-            if line is not None and line != here:
+            if line is None and earlier.callsite is not None:
+                if earlier.callsite not in reads and (
+                    len(unknown[earlier.callsite] | anywhere) < self.strict_threshold
+                ):
+                    continue  # read elsewhere, too few to be an N+1 of its own
+            elif line is not None and line != here:
                 group = self.strict_groups.get((load.relationship, line, scope))
                 if group is None or len(group.parents) < self.strict_threshold:
                     continue  # a line with too few parents is no N+1

@@ -10,7 +10,12 @@
   with `--queryguard-report`: a test that shows 0 statements was not seen. For
   Django see the [comparison](comparison.md).
 - The repeat rules count per test by default, so a test that makes several
-  independent requests can report a repeat that is no loop. Set
+  independent requests can report a repeat that is no loop. The same holds
+  for a service that opens a `Session` per call and is called on several
+  lines of a test: the relationship-load rule groups the parents by the query
+  line inside the service, not by the lines that called it, so two calls for
+  two objects look like one query returning two rows (MLflow's tracking
+  store, see [Real projects](accuracy.md#real-projects)). Set
   `queryguard_scope = session` to count per `Session`; that has limits
   of its own, listed in [Tests with several sessions or
   requests](several-sessions.md).
