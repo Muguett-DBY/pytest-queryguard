@@ -195,6 +195,17 @@ console output falls back to it by itself when the console cannot print the
 blocks (a Windows console with cp1252). The exit status is 2 when a file
 cannot be read (`--skip-unreadable` leaves it out instead), otherwise 0.
 
+`--format json` prints one object with `"format": 1` (the number goes up when
+a key changes meaning; new keys may be added): `runs` (per file, oldest first:
+`label`, `tests`, `statements`, `complete`), `complete`, `changed` (the tests
+whose count changed most, up to `--top`: `nodeid`, `counts` per run, null
+where the test did not run, `first`, `last`, `change`), `changed_total`,
+`added_tests` and `gone_tests` (how many tests are in the last run but not
+the first, and in an earlier run but not the last), `new_findings` and `gone_findings` (`kind`,
+`label`, `file`, `function`, `count`, `tests`; a new finding also has
+`since`, the label of the run from which on it is in every run). Like the
+rest of the trend it is experimental (see [Stability](stability.md#experimental)).
+
 A typical rollout: run once with `fail: "false"` to see the alerts, create a
 [baseline](baseline.md) for what you cannot fix yet, then switch to
 `fail: "true"` (the default).
@@ -279,8 +290,7 @@ tests started running more queries before anything fails.
   lines of your code that called `file:line`, innermost first, as the
   terminal report's `called from` lines (`queryguard_stack_depth`). Findings in the
   baseline are listed too, with `"baselined": true`, so the file is the same
-  whether or not the baseline is being updated. `message` (since 0.8.0; the
-  sample above is from `main`) is the finding's
+  whether or not the baseline is being updated. `message` (since 0.8.0) is the finding's
   text as the terminal report shows it, without the indent; like every
   message, its wording is not stable. `db_time` is null when no
   statement was timed.

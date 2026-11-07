@@ -46,6 +46,7 @@ A test fails when, inside the test function, one of these finding kinds is found
 - `repeated-statement`: one `SELECT` (parameters and literals removed; ORM, Core and `text()`) runs 5 or more times; `INSERT`, `UPDATE` and `DELETE` never count towards it. With `queryguard_small_repeat_threshold` (off by default), 2 to 4 runs from one source line with different parameters count too;
 - `column-load`: 5 or more instances of one class each reload a deferred column (hint: `undefer`) or attributes expired by `commit()`/`expire()` (hint: `expire_on_commit=False`);
 - `write-loop` (opt-in, `queryguard_write_loop_threshold`): the same single-row `INSERT`, `UPDATE` or `DELETE` run many times from one source line;
+- `cartesian-load` (warns by default, `queryguard_cartesian_load = off|warn|fail`): one `SELECT` that joins two collections side by side, whose rows grow as their product;
 - `unused-eager-load` (experimental, off by default, `queryguard_unused_eager_load = off|warn|fail`): a relationship loaded with `selectinload`, `joinedload`, `subqueryload` or `immediateload` and never read. See docs/unused-eager-load.md;
 - `unused-columns` (experimental, off by default, `queryguard_unused_columns = off|warn|fail`): a query loads rows of a class with at least 8 columns and the test reads at most half of them (keys the ORM needs count as read); the fix line suggests `.options(load_only(...))`. See docs/unused-columns.md;
 - `missing-index` (opt-in): see below.
@@ -148,10 +149,15 @@ Ini options, read from `[tool.pytest.ini_options]`, pytest 9's `[tool.pytest]`, 
 | `queryguard_scope` | since 0.8.0 (before: `queryguard_repeat_scope`, deprecated); `test` (everything a test runs counts together) or `session` (each Session or connection checkout on its own) | `test` |
 | `queryguard_unused_eager_load` | `off`, `warn`, `fail` | `off` |
 | `queryguard_unused_columns` | `off`, `warn`, `fail` | `off` |
+| `queryguard_cartesian_load` | `off`, `warn`, `fail`: one SELECT that joins two collections side by side (kind `cartesian-load`) | `warn` |
+| `queryguard_strict` | `true`, `false`: raise `NPlusOneDetected` at the lazy load that makes the N+1 | `false` |
 | `queryguard_fail_on` | finding kinds (`fnmatch`) per line; other kinds only warn | empty (every kind fails, except `cartesian-load`, `unused-eager-load` and `unused-columns` unless their own option is `fail`) |
 | `queryguard_max_events` | integer >= 0 (`0`: no limit) | `10000` |
+| `queryguard_stack_depth` | integer >= 0: callers shown under a finding's first location (`0`: none) | `3` |
 | `queryguard_ignore` | `KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB]` per line (`stack`: any reported frame, `file` or `file:function`, up to `queryguard_stack_depth` callers) | empty |
 | `queryguard_baseline` | path relative to the rootdir | empty |
+| `queryguard_budgets` | budget file, path relative to the rootdir | empty |
+| `queryguard_max_queries` | integer >= 0: default budget of a test without a marker or budget-file entry | empty (none) |
 | `queryguard_show_patch` | experimental, since 0.8.0; `true`, `false`: print a patch that adds the loader option to the parent query, when that line is certain | `false` |
 | `queryguard_index_check` | `true`, `false` | `false` |
 | `queryguard_index_advisor` | `true`, `false` | `true` |
@@ -169,8 +175,11 @@ queryguard_index_ignore_tables = ["countries", "lookup_*"]
 Command-line options:
 
 - `--queryguard-mode=fail|warn|off`: overrides `queryguard_mode` for this run.
+- `--queryguard-strict`: turns `queryguard_strict` on for this run.
 - `--queryguard-report`: prints the 10 tests with the most queries at the end of the session.
 - `--queryguard-baseline=PATH`: findings listed in the baseline file do not fail or warn; `--queryguard-update-baseline` writes the file from this run (docs/baseline.md).
+- `--queryguard-budgets=PATH`: the budget file (each listed test fails above its count); `--queryguard-update-budgets` writes this run's counts to it (docs/budgets.md).
+- `--queryguard-json=PATH`: writes each test's statement counts and findings as JSON (`"format": 1`), for `python -m pytest_queryguard.compare BASE HEAD` (docs/ci.md).
 - `--queryguard-sarif=PATH`: writes the findings as SARIF 2.1.0 for GitHub code scanning (docs/sarif.md); a `relationship-load` result with a certain parent query line has a `fixes` entry.
 - `--queryguard-show-patch` / `--queryguard-write-patch=PATH` (experimental, since 0.8.0): print under each `relationship-load` finding, or write to one file for `git apply` from the rootdir, a patch that adds the loader option (and its import) to the `select(Entity)` or `session.query(Entity)` call of the parent query line; only when that line is certain (docs/when-a-test-fails.md#a-patch-for-the-parent-query).
 - `--queryguard-index-check` / `--no-queryguard-index-check`: turn the missing-index check on or off for this run.

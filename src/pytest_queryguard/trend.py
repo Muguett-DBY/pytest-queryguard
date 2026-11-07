@@ -32,6 +32,9 @@ from typing import Any
 
 from .compare import CompareError, FindingRow, _code, _findings, _where, compare, load
 
+# The "format" key of the JSON output; it goes up when a key changes meaning.
+FORMAT_VERSION = 1
+
 _TOP = 10
 _ROWS = 25
 BLOCKS = "▁▂▃▄▅▆▇█"
@@ -313,6 +316,7 @@ def as_json(result: Trend, *, top: int = _TOP) -> str:
         }
 
     doc = {
+        "format": FORMAT_VERSION,
         "runs": [
             {
                 "label": run.label,
