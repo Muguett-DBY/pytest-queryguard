@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -203,6 +204,21 @@ def _transaction(cursor: Any) -> tuple[Any, ...]:
     return tuple(cursor.fetchall())
 
 
+def _transaction_settled(cursor: Any) -> tuple[Any, ...]:
+    """``_transaction`` once the server's cache of innodb_trx has caught up.
+
+    The server refreshes that table at most every 0.1 s, so an internal
+    data-dictionary transaction of the explain (no rows, no locks, already
+    over) can still be listed right after it: read it again after the
+    refresh before trusting a non-empty answer.
+    """
+    state = _transaction(cursor)
+    if state:
+        time.sleep(0.2)
+        state = _transaction(cursor)
+    return state
+
+
 WRITES = ["update_where", "delete_where", "update_pk"]
 
 
@@ -250,7 +266,7 @@ def test_explain_does_not_begin_a_transaction(server: Server) -> None:
         _live(conn, "eq_unindexed")
         _live(conn, "update_where")
         assert not conn.server_status & 1
-        assert _transaction(cursor) == ()
+        assert _transaction_settled(cursor) == ()
     finally:
         conn.close()
 
