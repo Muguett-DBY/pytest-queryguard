@@ -773,6 +773,7 @@ def test_strict_mode_raises_in_the_thread_and_the_report_still_fails_the_test(
     )
     # the in-test asserts pass; each test then fails with the report
     result.assert_outcomes(failed=2)
-    text = result.stdout.str()
+    # the short summary repeats each message in full when CI is set
+    text = result.stdout.str().split("short test summary info")[0]
     assert "AssertionError" not in text, text[-3000:]
     assert text.count("queryguard: N+1 detected") == 2, text[-3000:]
