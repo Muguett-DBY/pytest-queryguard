@@ -8,8 +8,10 @@ shows the same lines, so a README that drifts from the real output fails here.
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -251,3 +253,66 @@ def test_in_app_example() -> None:
     docs = (ROOT / "docs" / "in-app.md").read_text(encoding="utf-8")
     for line in lines:
         assert line in docs, f"{line!r} is not in docs/in-app.md"
+
+
+# The pages and examples whose pytest.ini quiets Starlette's test client warning.
+_INI_BLOCK = re.compile(r"^```ini\n(.*?)^```", re.DOTALL | re.MULTILINE)
+
+# conftest.py of the check: httpx2 hidden, so a Starlette 1.2+ test client warns
+_IMPORTS_TESTCLIENT = """\
+import sys
+
+sys.modules["httpx2"] = None
+import fastapi.testclient  # noqa: E402,F401
+"""
+
+
+def _testclient_filters() -> dict[tuple[str, ...], list[str]]:
+    """{the filterwarnings lines: the pages and examples that have them}."""
+    texts = [
+        (str(path.relative_to(ROOT)), path.read_text(encoding="utf-8"))
+        for path in sorted(EXAMPLES.glob("*/pytest.ini"))
+    ]
+    for page in sorted((ROOT / "docs").glob("*.md")):
+        text = page.read_text(encoding="utf-8")
+        texts += [(page.name, block) for block in _INI_BLOCK.findall(text)]
+    found: dict[tuple[str, ...], list[str]] = {}
+    for name, text in texts:
+        if "starlette.testclient" not in text:
+            continue
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(text)
+        lines = parser.get("pytest", "filterwarnings").splitlines()
+        filters = tuple(line.strip() for line in lines if line.strip())
+        found.setdefault(filters, []).append(name)
+    return found
+
+
+def _run_with_filters(tmp_path: Path, filters: tuple[str, ...]) -> int:
+    """Exit code of a pytest run with ``error`` and then these filters."""
+    project = tmp_path / str(len(list(tmp_path.iterdir())))
+    project.mkdir()
+    (project / "conftest.py").write_text(_IMPORTS_TESTCLIENT, encoding="utf-8")
+    (project / "test_nothing.py").write_text(
+        "def test_nothing():\n    pass\n", encoding="utf-8"
+    )
+    lines = "".join(f"    {line}\n" for line in ("error", *filters))
+    (project / "pytest.ini").write_text(
+        f"[pytest]\nfilterwarnings =\n{lines}", encoding="utf-8"
+    )
+    return run(project, "-p", "no:cacheprovider", "-p", "no:queryguard").returncode
+
+
+def test_the_documented_filter_quiets_starlettes_test_client(tmp_path: Path) -> None:
+    # Starlette 1.2+ warns (StarletteDeprecationWarning) when its test client
+    # finds httpx without httpx2. A reader with filterwarnings = error, then
+    # the page's lines, must not fail on it.
+    for module in ("fastapi", "httpx"):
+        pytest.importorskip(module)
+    found = _testclient_filters()
+    names = {name for pages in found.values() for name in pages}
+    assert {"recipes-fastapi.md", "recipes-test-transaction.md"} <= names
+    if _run_with_filters(tmp_path, ()) == 0:
+        pytest.skip("this Starlette does not warn about httpx")
+    for filters, pages in found.items():
+        assert _run_with_filters(tmp_path, filters) == 0, pages

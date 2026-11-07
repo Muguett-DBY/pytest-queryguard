@@ -55,6 +55,8 @@ call; the [recipes](https://maciejziel.github.io/pytest-queryguard/recipes-budge
 The in-memory SQLite engine for the sync test is created with
 `connect_args={"check_same_thread": False}` and `StaticPool`: a sync endpoint
 runs in a worker thread, and without the argument SQLite refuses the
-connection from it. The `filterwarnings` entry in `pytest.ini` hides a
-Starlette warning about its test client and `httpx`; it is not about
-pytest-queryguard.
+connection from it. The `filterwarnings` entry in `pytest.ini` hides the
+warning of Starlette 1.2 and later about its test client finding `httpx`
+without `httpx2`; it is not about pytest-queryguard. Installing `httpx2` as
+well removes the warning; see the
+[FastAPI recipe](https://maciejziel.github.io/pytest-queryguard/recipes-fastapi.html).

@@ -40,8 +40,9 @@ pip install pytest-queryguard fastapi httpx
 ## The application
 
 `pytest.ini` counts each `Session` on its own. The `filterwarnings` line
-hides a Starlette deprecation warning about its test client and `httpx`; leave
-it out if your Starlette does not print it:
+hides the warning of Starlette 1.2 and later about its test client finding
+`httpx` without `httpx2`; the [FastAPI recipe](recipes-fastapi.md) explains it
+and its alternative, installing `httpx2`:
 
 ```ini
 [pytest]
