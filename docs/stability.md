@@ -78,7 +78,8 @@ The command-line tools:
 The GitHub Action (`action/action.yml`, see [CI](ci.md#the-action)): its
 inputs with their defaults and accepted values, its outputs (`exit-code`,
 `sarif-file`, `json-file`), and the name of the artifact it uploads,
-`queryguard-json-<category>`, which later runs of older and newer versions of
+`queryguard-json-<category>` (with `" : < > | * ? \ /` and line breaks of
+the category turned into `-`), which later runs of older and newer versions of
 the action download, and the pull-request comment it updates in place (found
 by the compare marker above). The action is versioned with the package: pin it to a
 release tag or a commit. The `trend` input and the `trend-report` output are

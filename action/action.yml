@@ -40,7 +40,10 @@ inputs:
   fail:
     description: >-
       "true": the step fails when pytest fails, as in a normal run. "false":
-      the step never fails, findings are only uploaded.
+      a failed test run does not fail the step, findings are only uploaded.
+      An invalid input or a failed install still fails it. The switches
+      (fail, upload, compare, comment) take "true" or "false" only; anything
+      else stops the action.
     required: false
     default: "true"
   working-directory:
@@ -60,8 +63,10 @@ inputs:
     default: "true"
   category:
     description: >-
-      Code scanning category; use one per job when several jobs upload. It
-      also names the job's query-count artifact and pull-request comment.
+      Code scanning category; use one per job when several jobs upload,
+      including each job of a matrix. It also names the job's query-count
+      artifact (characters an artifact name cannot hold, such as / and :,
+      become -) and pull-request comment.
     required: false
     default: pytest-queryguard
   json-file:
@@ -120,6 +125,64 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Check the inputs
+      id: inputs
+      shell: bash
+      env:
+        QG_FAIL: ${{ inputs.fail }}
+        QG_UPLOAD: ${{ inputs.upload }}
+        QG_COMPARE: ${{ inputs.compare }}
+        QG_COMMENT: ${{ inputs.comment }}
+        QG_TREND: ${{ inputs.trend }}
+        QG_CATEGORY: ${{ inputs.category }}
+      run: |
+        # A typo must not quietly turn a switch off: the later steps test
+        # `inputs.fail == 'true'`, so "yes" or "1" would mean false. GitHub
+        # compares strings ignoring case, so "True" is accepted here too.
+        lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+        bad=0
+        for pair in "fail=$QG_FAIL" "upload=$QG_UPLOAD" "compare=$QG_COMPARE" "comment=$QG_COMMENT"; do
+          name="${pair%%=*}"
+          value="${pair#*=}"
+          case "$(lower "$value")" in
+            true | false) ;;
+            *)
+              echo "::error::input $name must be \"true\" or \"false\", not \"$value\""
+              bad=1
+              ;;
+          esac
+        done
+        # trend-runs: the number of runs, empty for no trend
+        runs=""
+        trend="$(lower "$QG_TREND")"
+        case "$trend" in
+          "" | false) ;;
+          true) runs=10 ;;
+          *)
+            # at most three digits, so that the arithmetic cannot overflow;
+            # 10#: "08" is eight, not an octal error
+            if [[ "$trend" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$trend))" -ge 2 ] && [ "$((10#$trend))" -le 100 ]; then
+              runs="$((10#$trend))"
+            else
+              echo "::error::input trend must be \"false\", \"true\" or a number of runs from 2 to 100, not \"$QG_TREND\""
+              bad=1
+            fi
+            ;;
+        esac
+        if [ -z "$QG_CATEGORY" ]; then
+          echo "::error::input category must not be empty"
+          bad=1
+        fi
+        if [ "$bad" != 0 ]; then
+          exit 1
+        fi
+        # The category names the artifact too, and an artifact name cannot
+        # hold " : < > | * ? \ / or a line break, which a code scanning
+        # category may (/language:python). Those become "-".
+        artifact="queryguard-json-$(printf '%s' "$QG_CATEGORY" | tr '":<>|*?\\/\r\n' '-----------')"
+        echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+        echo "trend-runs=$runs" >> "$GITHUB_OUTPUT"
+
     - name: Set up Python
       if: inputs.python-version != ''
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -152,7 +215,11 @@ runs:
       run: |
         # The inputs reach the shell as environment variables, never spliced into
         # the script. pytest-args is split into words with Python's shlex; no
-        # shell evaluates it, so $(...) and backticks stay literal text.
+        # shell evaluates it, so $(...) and backticks stay literal text. The
+        # words go through a file so that a value shlex cannot split (an
+        # unclosed quote) stops the step instead of running pytest without
+        # them; as bytes, so no console encoding or newline translation of
+        # Windows touches them.
         extra=()
         if [ -n "$QG_BASELINE" ]; then
           extra+=("--queryguard-baseline=$QG_BASELINE")
@@ -162,15 +229,32 @@ runs:
         fi
         args=()
         if [ -n "$QG_ARGS" ]; then
+          words="$(mktemp)"
+          if ! python -c 'import os,shlex,sys; sys.stdout.buffer.write(b"".join(os.fsencode(w) + b"\0" for w in shlex.split(os.environ["QG_ARGS"])))' > "$words"; then
+            rm -f "$words"
+            echo "::error::pytest-args cannot be split into words (an unclosed quote?): $QG_ARGS"
+            exit 1
+          fi
           while IFS= read -r -d '' word; do
             args+=("$word")
-          done < <(python -c 'import os,shlex,sys; sys.stdout.write("".join(w + "\0" for w in shlex.split(os.environ["QG_ARGS"])))')
+          done < "$words"
+          rm -f "$words"
         fi
         set +e
         python -m pytest "--queryguard-sarif=$QG_SARIF" "${extra[@]}" "${args[@]}"
         code=$?
         set -e
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        # 1 is failed tests (a finding fails its test); the others mean that
+        # pytest did not run the tests as asked, which fail: "false" hides.
+        case "$code" in
+          0 | 1) ;;
+          2) echo "::warning::pytest was interrupted (exit code 2)" ;;
+          3) echo "::warning::pytest stopped on an internal error (exit code 3)" ;;
+          4) echo "::warning::pytest could not use its arguments or configuration (exit code 4)" ;;
+          5) echo "::warning::pytest collected no tests (exit code 5)" ;;
+          *) echo "::warning::pytest exited with code $code" ;;
+        esac
         if [ ! -f "$QG_SARIF" ]; then
           echo "::warning::pytest did not write $QG_SARIF (exit code $code)"
         fi
@@ -182,13 +266,19 @@ runs:
       env:
         QG_SARIF: ${{ inputs.sarif-file }}
       run: |
+        # The path goes to JavaScript actions, which on Windows need D:\a\...,
+        # not the /d/a/... of Git Bash.
         if [ -f "$QG_SARIF" ]; then
-          echo "path=$(realpath "$QG_SARIF")" >> "$GITHUB_OUTPUT"
+          path="$(realpath "$QG_SARIF")"
+          if command -v cygpath > /dev/null; then
+            path="$(cygpath -w "$path")"
+          fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Upload SARIF to code scanning
       if: >-
-        always() && inputs.upload == 'true' && steps.sarif.outputs.path != ''
+        !cancelled() && inputs.upload == 'true' && steps.sarif.outputs.path != ''
         && github.actor != 'dependabot[bot]'
         && !(github.event_name == 'pull_request'
         && github.event.pull_request.head.repo.full_name != github.repository)
@@ -202,7 +292,7 @@ runs:
 
     - name: Find the JSON file
       id: json
-      if: always()
+      if: "!cancelled() && steps.pytest.outcome == 'success'"
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -212,17 +302,21 @@ runs:
           exit 0
         fi
         if [ -f "$QG_JSON" ]; then
-          echo "path=$(realpath "$QG_JSON")" >> "$GITHUB_OUTPUT"
+          path="$(realpath "$QG_JSON")"
+          if command -v cygpath > /dev/null; then
+            path="$(cygpath -w "$path")"
+          fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
         else
           echo "::warning::pytest did not write $QG_JSON; the query counts are not uploaded or compared"
         fi
 
     - name: Upload the query counts
-      if: always() && steps.json.outputs.path != ''
+      if: "!cancelled() && steps.json.outputs.path != ''"
       continue-on-error: true
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: queryguard-json-${{ inputs.category }}
+        name: ${{ steps.inputs.outputs.artifact }}
         path: ${{ steps.json.outputs.path }}
         retention-days: 30
         overwrite: true
@@ -230,7 +324,7 @@ runs:
     - name: Compare the query counts with the base branch
       id: compare
       if: >-
-        always() && inputs.compare == 'true' && steps.json.outputs.path != ''
+        !cancelled() && inputs.compare == 'true' && steps.json.outputs.path != ''
         && github.event_name == 'pull_request'
       # The comparison is information: it never fails the job.
       continue-on-error: true
@@ -241,6 +335,7 @@ runs:
         QG_BASE: ${{ github.event.pull_request.base.ref }}
         QG_WORKFLOW_REF: ${{ github.workflow_ref }}
         QG_CATEGORY: ${{ inputs.category }}
+        QG_ARTIFACT: ${{ steps.inputs.outputs.artifact }}
         QG_HEAD_JSON: ${{ steps.json.outputs.path }}
         QG_TMP: ${{ runner.temp }}
       run: |
@@ -272,7 +367,7 @@ runs:
         found=""
         for run in $runs; do
           rm -rf "$dir"
-          if gh run download "$run" -R "$QG_REPO" -n "queryguard-json-$QG_CATEGORY" -D "$dir" 2>/dev/null; then
+          if gh run download "$run" -R "$QG_REPO" -n "$QG_ARTIFACT" -D "$dir" 2>/dev/null; then
             found="$run"
             break
           fi
@@ -282,7 +377,7 @@ runs:
           {
             echo "### pytest-queryguard: no query counts of the base branch"
             echo
-            echo "No run of \`$workflow\` on \`$QG_BASE\` has the artifact queryguard-json-$QG_CATEGORY yet. It appears after this workflow runs on a push to \`$QG_BASE\` with this version of the action."
+            echo "No run of \`$workflow\` on \`$QG_BASE\` has the artifact $QG_ARTIFACT yet. It appears after this workflow runs on a push to \`$QG_BASE\` with this version of the action."
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
@@ -298,7 +393,7 @@ runs:
     - name: Show the query-count trend
       id: trend
       if: >-
-        always() && inputs.trend != 'false' && inputs.trend != ''
+        !cancelled() && steps.inputs.outputs.trend-runs != ''
         && steps.json.outputs.path != ''
         && (github.event_name == 'pull_request'
         || (github.event_name == 'push'
@@ -312,19 +407,13 @@ runs:
         QG_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
         QG_WORKFLOW_REF: ${{ github.workflow_ref }}
         QG_CATEGORY: ${{ inputs.category }}
-        QG_RUNS: ${{ inputs.trend }}
+        QG_ARTIFACT: ${{ steps.inputs.outputs.artifact }}
+        QG_RUNS: ${{ steps.inputs.outputs.trend-runs }}
         QG_HEAD_JSON: ${{ steps.json.outputs.path }}
         QG_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         QG_TMP: ${{ runner.temp }}
       run: |
-        if [ "$QG_RUNS" = "true" ]; then
-          QG_RUNS=10
-        fi
-        if ! [[ "$QG_RUNS" =~ ^[0-9]+$ ]] || [ "$QG_RUNS" -lt 2 ] || [ "$QG_RUNS" -gt 100 ]; then
-          echo "::warning::trend must be \"false\" or a number of runs from 2 to 100, not \"$QG_RUNS\""
-          exit 0
-        fi
-        QG_RUNS=$((10#$QG_RUNS))  # "08" is eight, not an octal error
+        # QG_RUNS: 2 to 100, checked and normalized by the first step
         workflow="${QG_WORKFLOW_REF%%@*}"
         workflow="${workflow##*/}"
         dir="$QG_TMP/queryguard-trend"
@@ -347,7 +436,7 @@ runs:
             [ "${#files[@]}" -ge "$wanted" ] && break
             [ -n "$run" ] || continue
             case "$seen" in *" $sha "*) continue ;; esac
-            if gh run download "$run" -R "$QG_REPO" -n "queryguard-json-$QG_CATEGORY" -D "$dir/$run" 2>/dev/null; then
+            if gh run download "$run" -R "$QG_REPO" -n "$QG_ARTIFACT" -D "$dir/$run" 2>/dev/null; then
               file="$(find "$dir/$run" -name '*.json' -type f | head -n 1)"
               if [ -n "$file" ]; then
                 seen="$seen$sha "
@@ -379,7 +468,7 @@ runs:
 
     - name: Comment the comparison on the pull request
       if: >-
-        always() && inputs.comment == 'true' && steps.compare.outputs.report != ''
+        !cancelled() && inputs.comment == 'true' && steps.compare.outputs.report != ''
         && github.actor != 'dependabot[bot]'
         && github.event.pull_request.head.repo.full_name == github.repository
       continue-on-error: true
@@ -392,27 +481,78 @@ runs:
         QG_TREND: ${{ steps.trend.outputs.details }}
         QG_TMP: ${{ runner.temp }}
       run: |
-        # The trend, when there is one, goes folded below the comparison, so
-        # the comment keeps the comparison's marker on its first line.
-        if [ -n "$QG_TREND" ] && [ -f "$QG_TREND" ]; then
-          body="$QG_TMP/queryguard-comment.md"
-          { cat "$QG_REPORT"; echo; cat "$QG_TREND"; } > "$body"
-          QG_REPORT="$body"
-        fi
-        # One comment per category: the action's own comment, found by the
-        # marker on its first line. A comment of anyone else is never edited.
-        export QG_MARKER="$(head -n 1 "$QG_REPORT")"
-        id="$(gh api --paginate "repos/$QG_REPO/issues/$QG_PR/comments" \
-          --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith(env.QG_MARKER))) | .id' \
-          | head -n 1)"
-        if [ -n "$id" ]; then
-          gh api -X PATCH "repos/$QG_REPO/issues/comments/$id" -F "body=@$QG_REPORT" > /dev/null
+        # The comparison, then the trend folded below it, so that the comment
+        # keeps the comparison's marker on its first line. GitHub refuses a
+        # comment over 65536 characters: the trend is left out when it does
+        # not fit, and a comparison that does not fit is cut at a line (both
+        # stay whole in the job summary).
+        body="$QG_TMP/queryguard-comment.md"
+        python -c '
+        import os, sys
+        limit = 65000  # characters, with room for the note below
+        def read(name):
+            path = os.environ.get(name, "")
+            if not path or not os.path.isfile(path):
+                return ""
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+        report, trend = read("QG_REPORT"), read("QG_TREND")
+        note = "\n\n_{} is in the job summary: the comment would be longer than GitHub allows._\n"
+        if trend and len(report) + 1 + len(trend) <= limit:
+            body = report + "\n" + trend
+        elif len(report) <= limit:
+            body = report + (note.format("The trend") if trend else "")
+        else:
+            body = report[: report.rfind("\n", 0, limit) + 1]
+            # close a <details> the cut left open, so the note is not folded
+            body += "\n</details>\n" * (body.count("<details>") - body.count("</details>"))
+            body += note.format("The whole comparison")
+        with open(sys.argv[1], "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(body)
+        ' "$body"
+        # One comment per category: this action's own comment, found by the
+        # marker on its first line and by its author, so that a comment of
+        # anyone else that quotes the marker is never edited. The author is
+        # the token's user (a personal access token), or else a bot:
+        # github-actions[bot] for the default token, the app for an app's
+        # token; GitHub refuses (403) to name the user of those two.
+        errors="$QG_TMP/queryguard-comment-gh.txt"
+        if QG_LOGIN="$(gh api user --jq .login 2> "$errors")"; then
+          :
+        elif grep -q "HTTP 403" "$errors"; then
+          QG_LOGIN=""
         else
-          gh api -X POST "repos/$QG_REPO/issues/$QG_PR/comments" -F "body=@$QG_REPORT" > /dev/null
+          echo "::warning::the token's user could not be looked up, so no comment was written: $(head -c 500 "$errors" | tr '\n' ' ')"
+          exit 0
+        fi
+        QG_MARKER="$(head -n 1 "$body")"
+        export QG_MARKER QG_LOGIN
+        if ! found="$(gh api --paginate "repos/$QG_REPO/issues/$QG_PR/comments" \
+            --jq '.[] | select((if env.QG_LOGIN != "" then .user.login == env.QG_LOGIN else .user.type == "Bot" end) and (.body | startswith(env.QG_MARKER))) | .id' \
+            2> "$errors")"; then
+          echo "::warning::the pull-request comments could not be listed, so no comment was written: $(head -c 500 "$errors" | tr '\n' ' ')"
+          exit 0
+        fi
+        # Newest first: with a bot's token the list may hold a comment of
+        # another bot (an earlier run with another token), which this token
+        # may not edit; then the next one is tried, and else a new one posted.
+        # Without "pull-requests: write" GitHub refuses every write; the job
+        # summary still has the report, so that is a warning, not a failed step.
+        for id in $(printf '%s\n' "$found" | awk 'NF { ids[++n] = $0 } END { for (i = n; i > 0; i--) print ids[i] }'); do
+          if gh api -X PATCH "repos/$QG_REPO/issues/comments/$id" -F "body=@$body" > /dev/null 2> "$errors"; then
+            exit 0
+          fi
+        done
+        if ! gh api -X POST "repos/$QG_REPO/issues/$QG_PR/comments" -F "body=@$body" > /dev/null 2> "$errors"; then
+          echo "::warning::the pull-request comment was not written (the job needs the pull-requests: write permission): $(head -c 500 "$errors" | tr '\n' ' ')"
         fi
 
     - name: Fail when pytest failed
-      if: always() && inputs.fail == 'true' && steps.pytest.outputs.exit-code != '0'
+      # Not after a failed step before it (an invalid input, a failed
+      # install): the job fails already, and pytest has no exit code.
+      if: >-
+        !cancelled() && inputs.fail == 'true' && steps.pytest.outcome == 'success'
+        && steps.pytest.outputs.exit-code != '0'
       shell: bash
       env:
         QG_CODE: ${{ steps.pytest.outputs.exit-code }}

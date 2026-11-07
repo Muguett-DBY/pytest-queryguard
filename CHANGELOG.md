@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The GitHub Action checks its switches: `fail`, `upload`, `compare` and
+  `comment` must be `true` or `false` (any case), and `trend` `false`, `true`
+  or 2 to 100; anything else, the empty string included, stops the action
+  with an error before pytest runs. Before, any other value meant false, so
+  `fail: "yes"` let a failed test run pass the job, and an invalid `trend`
+  was only a warning. A workflow that passes an empty value (an unset
+  matrix or `workflow_call` input) must now pass `"false"`.
 - The accuracy corpus has 57 more scenarios (254): inheritance (single,
   concrete, `selectin_polymorphic`, polymorphic collections), association
   proxies, `deferred_group`, `query_expression`, `WriteOnlyMapped`,
@@ -165,9 +172,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back; `params` that are not an object (`[]` and `0` included) get
   `-32602 Invalid params` instead of `-32600 Invalid Request` or being
   taken as no params.
+- The GitHub Action: a `pytest-args` value that `shlex` cannot split (an
+  unclosed quote) now stops the action with an error. Before, the failed
+  split went unnoticed and pytest ran with none of the arguments: the whole
+  suite, without `-k` or the paths.
+- The GitHub Action: a category with a character that an artifact name cannot
+  hold (`/language:python`) no longer loses the query-count artifact and with
+  it the comparison: such characters become `-` in the artifact name. Valid
+  names are unchanged.
+- The GitHub Action: the pull-request comment stays under GitHub's 65536
+  characters (the trend is left out, or a huge comparison cut at a line, with
+  a note; the job summary keeps both), is found again when `github-token` is
+  a personal access token or an app's token (before, those posted a new
+  comment on every push), and a refused write (no `pull-requests: write`)
+  is a warning instead of a failed step.
+- The GitHub Action on Windows runners hands the SARIF and JSON paths to the
+  upload steps as Windows paths (`D:\a\...`) instead of Git Bash's `/d/a/...`.
+- The GitHub Action no longer uploads, compares or comments after the run
+  was cancelled (`!cancelled()` instead of `always()`), does not report
+  "pytest exited with code unknown" after an earlier step failed, and warns
+  when pytest exits with 2 to 5 (interrupted, internal error, usage error, no
+  tests), which `fail: "false"` otherwise hid.
 
 ### Documentation
 
+- docs/ci.md lists the permission each action input needs and the action's
+  limits: one category per matrix job, the first run without a base
+  artifact, the comment size, re-runs and concurrent runs, exit codes,
+  cancelled runs, macOS and Windows runners.
 - API-freeze audit before 1.0: the [stability policy](docs/stability.md)
   now states the naming, value and unit conventions of the public options
   and files (every time in seconds; `0` turns a threshold off in an ini

@@ -826,7 +826,10 @@ def test_action_inputs_outputs_and_artifact() -> None:
         r"^  ([a-z-]+):$", _action_section(text, "outputs"), re.MULTILINE
     )
     assert outputs == EXPECTED_ACTION_OUTPUTS
-    assert "name: queryguard-json-${{ inputs.category }}" in text
+    # queryguard-json-<category>, with the characters an artifact name cannot
+    # hold turned into "-" (tests/test_action_steps.py runs that step)
+    assert "name: ${{ steps.inputs.outputs.artifact }}" in text
+    assert 'artifact="queryguard-json-$(printf' in text
 
 
 # docs/stability.md#deprecated-names
