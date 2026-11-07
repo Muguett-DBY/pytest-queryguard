@@ -14,7 +14,7 @@ A wrong patch costs more trust than no patch, so every doubt means none:
   the session started;
 - the line belongs to the function the query ran in;
 - the line is one statement with exactly one ``select(...)`` call, or
-  ``.query(...)`` on something named like a session, with the parent class
+  ``.query(...)`` on a session (``_is_session``), with the parent class
   (``Order`` or ``models.Order``) as its only argument; the statement runs no
   other query and does not choose between expressions; ``select`` is
   SQLAlchemy's (or SQLModel's);
@@ -433,16 +433,79 @@ def _terminal(node: ast.expr) -> str:
     return ""
 
 
-def _is_query(call: ast.Call) -> bool:
-    """``select(...)``, or ``.query(...)`` on something named as a session."""
+def _is_query(module: _Module, call: ast.Call) -> bool:
+    """``select(...)``, or ``.query(...)`` on a session (``_is_session``)."""
     func = call.func
     if isinstance(func, ast.Name):
         return func.id == "select"
     return (
         isinstance(func, ast.Attribute)
         and func.attr == "query"
-        and "session" in _terminal(func.value).lower()
+        and _is_session(module, func.value, call)
     )
+
+
+# Names of a session by convention (FastAPI's ``db: Session = Depends(...)``).
+_SESSION_NAMES = frozenset({"db", "dbsession", "db_session"})
+
+
+def _is_session(module: _Module, receiver: ast.expr, node: ast.AST) -> bool:
+    """Whether the receiver of a call at ``node`` is a session.
+
+    Its last name contains "session" or is ``db`` (``self.db``,
+    ``db_session``); or it is a parameter of the function around ``node``,
+    annotated with a type whose name ends in ``Session`` (``Session``,
+    ``AsyncSession``, ``orm.Session``, ``"Session"``,
+    ``Annotated[Session, ...]``), that the function never binds again. Not a
+    repository or a helper, which may change the statement before running it.
+    """
+    name = _terminal(receiver).lower()
+    if "session" in name or name in _SESSION_NAMES:
+        return True
+    function = _function(module, node)
+    if not isinstance(receiver, ast.Name) or function is None:
+        return False
+    assert isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+    annotation: ast.expr | None = None
+    for inner in ast.walk(function):
+        if inner is function:
+            continue
+        if isinstance(inner, ast.arg) and inner.arg == receiver.id:
+            if annotation is not None or inner.annotation is None:
+                return False  # a nested function's parameter of that name
+            annotation = inner.annotation
+        elif isinstance(inner, ast.Name) and inner.id == receiver.id:
+            if not isinstance(inner.ctx, ast.Load):
+                return False
+        elif _binds(inner, receiver.id):
+            return False
+    params = function.args
+    own = [*params.posonlyargs, *params.args, *params.kwonlyargs]
+    if annotation is None or not any(arg.annotation is annotation for arg in own):
+        return False
+    return _session_type(annotation)
+
+
+def _session_type(annotation: ast.expr, quoted: bool = False) -> bool:
+    """Whether an annotation names a session type (see ``_is_session``)."""
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        if quoted:
+            return False
+        try:
+            parsed = ast.parse(annotation.value.strip(), mode="eval").body
+        except (SyntaxError, ValueError):
+            return False
+        return _session_type(parsed, quoted=True)
+    if isinstance(annotation, ast.Subscript):
+        if _terminal(annotation.value) != "Annotated":
+            return False
+        inner = annotation.slice
+        if not isinstance(inner, ast.Tuple) or not inner.elts:
+            return False
+        return _session_type(inner.elts[0], quoted)
+    return isinstance(annotation, (ast.Name, ast.Attribute)) and _terminal(
+        annotation
+    ).endswith("Session")
 
 
 def _query_call(module: _Module, line: int) -> ast.Call | None:
@@ -463,7 +526,7 @@ def _query_call(module: _Module, line: int) -> ast.Call | None:
     if any(isinstance(node, _BRANCHES) for node in nodes):
         return None
     calls = [node for node in nodes if isinstance(node, ast.Call)]
-    found = [call for call in calls if _is_query(call)]
+    found = [call for call in calls if _is_query(module, call)]
     if not found:
         return _assigned_query(module, stmt, calls)
     if len(found) != 1:
@@ -496,7 +559,7 @@ def _executed(module: _Module, query: ast.Call) -> bool:
             isinstance(run, ast.Call)
             and isinstance(run.func, ast.Attribute)
             and run.func.attr in _EXECUTES
-            and "session" in _terminal(run.func.value).lower()
+            and _is_session(module, run.func.value, run)
             and bool(run.args)
             and run.args[0] is last
         )
@@ -565,7 +628,7 @@ def _assigned_query(
 
     ``statement = select(Order).where(...)`` and, on a later line of the same
     function, ``session.scalars(statement)``: the call is certain when the
-    statement runs exactly one query, on something named like a session, with
+    statement runs exactly one query, on a session (``_is_session``), with
     the variable as its first argument; the function binds the variable once, in that assignment (no
     other assignment, parameter, ``global`` or ``del``), and reads it only
     there; and the assigned value is the ``select(...)`` call, alone or with
@@ -580,7 +643,7 @@ def _assigned_query(
     if run.func.attr not in _EXECUTES or not run.args:
         return None
     # a helper that takes the statement (repo.execute(stmt)) may change it
-    if "session" not in _terminal(run.func.value).lower():
+    if not _is_session(module, run.func.value, run):
         return None
     variable = run.args[0]
     function = _function(module, stmt)
@@ -625,7 +688,7 @@ def _assigned_query(
     if any(isinstance(node, _BRANCHES) for node in nodes):
         return None
     inner = [node for node in nodes if isinstance(node, ast.Call)]
-    found = [call for call in inner if _is_query(call)]
+    found = [call for call in inner if _is_query(module, call)]
     # select() only: a session.query() is not a statement for execute()
     if len(found) != 1 or not isinstance(found[0].func, ast.Name):
         return None

@@ -264,23 +264,27 @@ certain, and otherwise only the `fix:` hint:
 - every parent was loaded by one query line, and the plugin knows the class it
   selected;
 - that line is one statement with exactly one `select(...)` call, or
-  `.query(...)` on something named like a session, with that class as its
+  `.query(...)` on a session (see below), with that class as its
   only argument (`Order`, or `models.Order` for a module imported with
   `import` or `from ... import`), and the statement runs nothing else. A
   `session.get()`, a subquery, or a choice between queries (`a if c else b`,
   `or`, a comprehension) gets no patch;
 - that call is the statement the line runs, as it is: a `select(...)`, with
   only methods that keep its entities chained to it, is the first argument of
-  `execute`, `scalars`, `scalar`, `stream` or SQLModel's `exec` on something named like a
+  `execute`, `scalars`, `scalar`, `stream` or SQLModel's `exec` on a
   session; a `session.query(...)` with such methods is run by `.all()`,
   `.first()`, `.one()` or `.one_or_none()`, or iterated (`for`, `list(...)`).
   A select inside a `union_all(...)`, an `exists(...)`, a subquery, a CTE, an
   `insert().from_select()` or another statement, one passed to a helper
   (`session.scalars(paginate(select(Order)))`), turned into other columns
   (`with_only_columns`, `with_entities`, `add_columns`), a union or a textual
-  statement (`from_statement`), or run by something not named like a session
-  gets no patch;
-- or that line runs a variable on something named like a session
+  statement (`from_statement`), or run by something else than a session
+  (`repository.scalars(select(Order))`) gets no patch. A session is what is
+  named so (`session`, `self.session`, `db_session`), `db` (`db`, `self.db`),
+  or a parameter of the function annotated with a session type that the
+  function does not rebind: `conn: Session`, `s: orm.Session`,
+  `conn: "AsyncSession"`, `db: Annotated[Session, Depends(get_db)]`;
+- or that line runs a variable on a session
   (`session.execute(statement)`, `session.scalars(statement)`) that the
   function assigns once, on an earlier line, to such a `select(...)` with
   only methods that keep its entities chained to it (`where`, `join`,

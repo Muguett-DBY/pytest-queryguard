@@ -336,7 +336,9 @@ def _statement(
     if style == "select":
         core = rng.choice([f"select({ref})", f"select( {ref} )", f"(select({ref}))"])
     else:
-        sessions = ["session", "db_session"] + (["self.session"] if method else [])
+        sessions = ["session", "db_session", "db"] + (
+            ["self.session", "self.db"] if method else []
+        )
         core = f"{rng.choice(sessions)}.query({ref})"
     shape = rng.choice(
         ["assign", "return", "for", "parens", "backslash", "walrus", "same-line",

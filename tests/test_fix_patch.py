@@ -693,6 +693,189 @@ def test_no_patch_unless_the_select_is_the_statement_that_runs(
     assert _make(tmp_path, _finding(file)) is None
 
 
+SESSION_HEADER = (
+    HEADER
+    + "from typing import Annotated\n"
+    + "from fastapi import Depends\n"
+    + "from sqlalchemy import orm\n"
+    + "from sqlalchemy.engine import Connection\n"
+    + "from sqlalchemy.ext.asyncio import AsyncSession\n"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            """\
+            def load(db):
+                return db.scalars(select(Order)).all()  # parents
+            """,
+            id="named-db",
+        ),
+        pytest.param(
+            """\
+            def load(db_session):
+                return db_session.execute(select(Order)).scalars().all()  # parents
+            """,
+            id="named-db-session",
+        ),
+        pytest.param(
+            """\
+            class Repository:
+                def load(self):
+                    return self.db.scalars(select(Order)).all()  # parents
+            """,
+            id="self-db",
+        ),
+        pytest.param(
+            """\
+            def load(conn: Session):
+                return conn.scalars(select(Order)).all()  # parents
+            """,
+            id="annotated-session",
+        ),
+        pytest.param(
+            """\
+            def load(s: orm.Session, n: int = 1):
+                return list(s.scalars(select(Order)))  # parents
+            """,
+            id="annotated-through-a-module",
+        ),
+        pytest.param(
+            """\
+            def load(conn: Annotated[Session, Depends(get_db)]):
+                return conn.scalars(select(Order)).all()  # parents
+            """,
+            id="annotated-with-depends",
+        ),
+        pytest.param(
+            """\
+            async def load(conn: "AsyncSession"):
+                return (await conn.scalars(select(Order))).all()  # parents
+            """,
+            id="string-annotation",
+        ),
+        pytest.param(
+            """\
+            def load(*, conn: Session):
+                return conn.query(Order).all()  # parents
+            """,
+            id="legacy-query-on-an-annotated-session",
+        ),
+        pytest.param(
+            """\
+            def load(db):
+                return db.query(Order).all()  # parents
+            """,
+            id="legacy-query-on-db",
+        ),
+        pytest.param(
+            """\
+            def load(db: Session):
+                statement = select(Order)  # built
+                return db.scalars(statement).all()  # parents
+            """,
+            id="a-variable-run-by-db",
+        ),
+        pytest.param(
+            """\
+            def load(conn: Annotated[Session, Depends(get_db)]):
+                statement = select(Order).where(Order.id > 0)  # built
+                return conn.execute(statement).scalars().all()  # parents
+            """,
+            id="a-variable-run-by-an-annotated-session",
+        ),
+    ],
+)
+def test_a_session_by_name_or_annotation(tmp_path: Path, body: str) -> None:
+    file = _write(tmp_path, body, header=SESSION_HEADER)
+    fix = _make(tmp_path, _finding(file))
+    assert fix is not None
+    after = _patched(tmp_path, fix)
+    assert "(Order).options(joinedload(Order.customer))" in after
+    compile(after, "views.py", "exec")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            """\
+            def load(repository):
+                return repository.scalars(select(Order)).all()  # parents
+            """,
+            id="a-repository",
+        ),
+        pytest.param(
+            """\
+            def load(conn: Connection):
+                return conn.scalars(select(Order)).all()  # parents
+            """,
+            id="annotated-another-type",
+        ),
+        pytest.param(
+            """\
+            def load(conn: SessionFactory):
+                return conn.scalars(select(Order)).all()  # parents
+            """,
+            id="annotated-a-type-not-ending-in-session",
+        ),
+        pytest.param(
+            """\
+            def load(conn: list[Session]):
+                return conn.scalars(select(Order)).all()  # parents
+            """,
+            id="annotated-a-container",
+        ),
+        pytest.param(
+            """\
+            def load(conn: Session, other):
+                conn = other
+                return conn.scalars(select(Order)).all()  # parents
+            """,
+            id="annotated-parameter-rebound",
+        ),
+        pytest.param(
+            """\
+            def outer(conn: Session):
+                def load():
+                    return conn.scalars(select(Order)).all()  # parents
+                return load
+            """,
+            id="annotated-in-the-enclosing-function",
+        ),
+        pytest.param(
+            """\
+            def load(conn: Session):
+                return [conn.scalars(select(Order)).all() for conn in pool]  # parents
+            """,
+            id="shadowed-in-a-comprehension",
+        ),
+        pytest.param(
+            """\
+            def load(conn: Session, repository):
+                statement = select(Order)
+                return repository.scalars(statement).all()  # parents
+            """,
+            id="a-variable-run-by-a-repository",
+        ),
+        pytest.param(
+            """\
+            def load(conn):
+                return conn.query(Order).all()  # parents
+            """,
+            id="legacy-query-on-an-unknown-receiver",
+        ),
+    ],
+)
+def test_no_patch_for_a_receiver_not_known_as_a_session(
+    tmp_path: Path, body: str
+) -> None:
+    file = _write(tmp_path, body, header=SESSION_HEADER)
+    assert _make(tmp_path, _finding(file)) is None
+
+
 def test_a_joined_load_of_the_selectin_query_takes_for_update(
     tmp_path: Path,
 ) -> None:
