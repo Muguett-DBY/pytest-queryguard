@@ -11,6 +11,7 @@ from .detectors import (
 )
 from .events import (
     CAUSE_DEFERRED,
+    CAUSE_POLYMORPHIC,
     CAUSE_REFRESH,
     Advice,
     CallSite,
@@ -297,6 +298,31 @@ def _column_block(
                 "usually needed"
             ),
         ]
+    elif finding.cause == CAUSE_POLYMORPHIC:
+        base = finding.base or owner
+        head = (
+            f"  {owner} loaded its subclass columns on its own {count} "
+            f"(a query of the base class {base} leaves them out)"
+        )
+        if finding.single_table:
+            # the columns are in the base's table: select them with it
+            fix = [
+                "  fix: select the subclass columns with the query, e.g.",
+                f"       select(with_polymorphic({base}, [{owner}]))",
+                (
+                    '       or polymorphic_load="inline" in the __mapper_args__ '
+                    f"of {owner}"
+                ),
+            ]
+        else:
+            fix = [
+                "  fix: load the subclass columns with the query, e.g.",
+                f"       select({base}).options(selectin_polymorphic({base}, [{owner}]))",
+                (
+                    "       or select(with_polymorphic(...)), or "
+                    f'polymorphic_load="selectin" in the __mapper_args__ of {owner}'
+                ),
+            ]
     elif finding.cause == CAUSE_REFRESH:
         head = f"  {owner} was reloaded with session.refresh() {count}"
         fix = [

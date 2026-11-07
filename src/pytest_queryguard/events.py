@@ -102,6 +102,9 @@ class RelationshipLoadEvent:
 CAUSE_DEFERRED = "deferred"  # a deferred column, or one a query option left out
 CAUSE_EXPIRED = "expired"  # expired by commit(), expire() or expire_all()
 CAUSE_REFRESH = "refresh"  # session.refresh() without attribute names
+# columns of a subclass that a query of its base class did not select
+# (joined- or single-table inheritance without with_polymorphic)
+CAUSE_POLYMORPHIC = "polymorphic"
 
 
 @dataclass(slots=True)
@@ -116,6 +119,8 @@ class ColumnLoadEvent:
     sql: str | None = None  # set when the statement runs
     scope: int | None = None  # the Session that loaded the columns
     ignores: tuple[IgnoreBlock, ...] = ()
+    base: str | None = None  # the class the query selected, for CAUSE_POLYMORPHIC
+    single_table: bool = False  # CAUSE_POLYMORPHIC: the columns are in its table
 
 
 @dataclass(frozen=True, slots=True)

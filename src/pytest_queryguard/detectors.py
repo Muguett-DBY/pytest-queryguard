@@ -169,6 +169,8 @@ class ColumnLoadFinding:
     sample_sql: str | None
     scopes: int = 1
     scoped: bool = False
+    base: str | None = None  # the class the query selected, for CAUSE_POLYMORPHIC
+    single_table: bool = False  # CAUSE_POLYMORPHIC: the columns are in its table
 
     @property
     def label(self) -> str:
@@ -366,15 +368,20 @@ def _column_load_findings(
     scoped: bool = False,
     sieve: Sieve | None = None,
 ) -> list[ColumnLoadFinding]:
-    groups: dict[tuple[str, tuple[str, ...], str], list[ColumnLoadEvent]] = {}
+    groups: dict[
+        tuple[str, tuple[str, ...], str, str | None, bool], list[ColumnLoadEvent]
+    ] = {}
     for load in collector.column_loads:
         if load.cause != CAUSE_DEFERRED:
             attrs: tuple[str, ...] = ()
         else:
             attrs = load.attributes
-        groups.setdefault((load.owner, attrs, load.cause), []).append(load)
+        # subclass columns left out by queries of two base classes need the
+        # option on each query: one finding per queried class
+        key = (load.owner, attrs, load.cause, load.base, load.single_table)
+        groups.setdefault(key, []).append(load)
     found: list[ColumnLoadFinding] = []
-    for (owner, attrs, cause), all_loads in groups.items():
+    for (owner, attrs, cause, base, single_table), all_loads in groups.items():
         best: list[ColumnLoadEvent] | None = None
         best_keys = 0
         held: list[IgnoreBlock] = []
@@ -400,6 +407,8 @@ def _column_load_findings(
                 sample,
                 1 if scoped else _scope_count(best, lambda load: load.scope),
                 scoped,
+                base,
+                single_table,
             )
         )
     return sorted(found, key=lambda f: -f.count)

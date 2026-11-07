@@ -88,7 +88,8 @@ Every finding in the report has a line such as
 the label as the pattern. The kinds are `relationship-load` (the label is the relationship, as in
 `Order.customer`), `repeated-statement` (the normalized statement),
 `column-load` (the class and its deferred columns, as in `Book.summary`, or
-the class and the cause for expired attributes, as in `Book (expired)`),
+the class and the cause otherwise, as in `Book (expired)`, `Book (refresh)` or
+`Engineer (polymorphic)`),
 `write-loop` (the normalized `INSERT`, `UPDATE` or `DELETE`),
 `unused-eager-load` (the relationship, as in `Order.customer`),
 `unused-columns` (the class, as in `Account`),
