@@ -16,7 +16,8 @@ blocks; ``--ascii`` uses ASCII characters instead, and so does the console
 output when the console's encoding has no blocks (a Windows console with
 cp1252, the reason ``compare`` prints only ASCII). The exit status is 0
 unless a file cannot be read (2; ``--skip-unreadable`` leaves such a file
-out instead) or the arguments are wrong (2).
+out instead), the ``--output`` file cannot be written (2) or the arguments are
+wrong (2).
 """
 
 from __future__ import annotations
@@ -450,7 +451,14 @@ def main(argv: list[str] | None = None) -> int:
         reconfigure(errors="backslashreplace")
     sys.stdout.write(shown)
     if args.output is not None:
-        args.output.write_text(report, encoding="utf-8")
+        try:
+            args.output.write_text(report, encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"pytest-queryguard trend: cannot write {args.output}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
     return 0
 
 

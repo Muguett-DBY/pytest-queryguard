@@ -49,14 +49,16 @@ python -m pytest_queryguard.lint --models MODULE [--models MODULE ...]
   Nothing else is imported: PATHS are only parsed.
 - PATHS: files and directories. Directories are searched for `*.py`; hidden
   directories, `__pycache__`, `venv`, `node_modules`, `site-packages`,
-  `build` and `dist` are skipped. A file that does not parse is skipped with
+  `build` and `dist` are skipped, and a file named twice is checked once.
+  Files are decoded as Python decodes them (UTF-8, a byte order mark or a
+  `# -*- coding: ... -*-` line). A file that does not parse is skipped with
   a message on stderr.
 - `--format`: `text` (default), `json` or `sarif`.
 - `--output FILE`: write the report to this file too.
 
 The exit status is 1 when anything is reported, 0 when nothing is, and 2 when
 a model module cannot be imported, the mappers cannot be configured, a path
-does not exist or an argument is wrong.
+does not exist, the `--output` file cannot be written or an argument is wrong.
 
 ## What it reports
 
