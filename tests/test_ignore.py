@@ -204,9 +204,10 @@ def project(pytester: pytest.Pytester) -> pytest.Pytester:
     return pytester
 
 
-def _ini(project: pytest.Pytester, *lines: str) -> None:
+def _ini(project: pytest.Pytester, *lines: str, pythonpath: str = "") -> None:
     body = "\n".join(f"    {line}" for line in lines)
-    project.makeini(f"[pytest]\nqueryguard_ignore =\n{body}\n")
+    path = f"pythonpath = {pythonpath}\n" if pythonpath else ""
+    project.makeini(f"[pytest]\n{path}queryguard_ignore =\n{body}\n")
 
 
 def test_ini_ignore_by_kind_and_label(project: pytest.Pytester) -> None:
@@ -655,3 +656,113 @@ def test_strict_mode_honours_stack(callers: pytest.Pytester) -> None:
     result = callers.runpytest("--queryguard-strict")
     result.assert_outcomes(passed=1, failed=1)
     result.stdout.fnmatch_lines(["*NPlusOneDetected*"])
+
+
+# --- N+1 inside an installed library ---
+
+# A library function that lazy-loads in a loop, as an installed package would;
+# its frames are under site-packages (or a distribution's dist-packages), so
+# they are never a call site.
+LIBRARY = """from qgmodels import Order
+
+
+def names(session):
+    return [order.customer.name for order in session.query(Order).all()]
+"""
+CALLER = """import thirdlib
+
+
+def export_orders(session):
+    return thirdlib.names(session)
+"""
+LIBRARY_TEST = """from qgmodels import make_sync_session
+
+import app_export
+
+
+def test_export():
+    app_export.export_orders(make_sync_session())
+"""
+LIBRARY_TEST_IN_BLOCK = """from qgmodels import make_sync_session
+from pytest_queryguard import ignore
+
+import app_export
+
+
+def test_export():
+    with ignore("relationship-load"):
+        app_export.export_orders(make_sync_session())
+"""
+
+
+@pytest.fixture(params=["site-packages", "dist-packages"])
+def library(
+    project: pytest.Pytester, request: pytest.FixtureRequest
+) -> pytest.Pytester:
+    project.mkdir(request.param)
+    (project.path / request.param / "thirdlib.py").write_text(LIBRARY)
+    project.makepyfile(app_export=CALLER, test_a=LIBRARY_TEST)
+    _library_ini(project, request.param)
+    return project
+
+
+def _library_ini(project: pytest.Pytester, packages: str, *lines: str) -> None:
+    _ini(project, *lines, pythonpath=f". {packages}")
+
+
+def _packages(project: pytest.Pytester) -> str:
+    return next(
+        name
+        for name in ("site-packages", "dist-packages")
+        if (project.path / name).is_dir()
+    )
+
+
+def test_a_library_n_plus_one_is_reported_at_the_line_that_calls_the_library(
+    library: pytest.Pytester,
+) -> None:
+    result = library.runpytest()
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["  first at app_export.py:5 in export_orders"])
+    result.stdout.no_fnmatch_line("*-packages*")
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "relationship-load Order.customer stack=*-packages*",
+        "relationship-load Order.customer stack=*thirdlib*",
+        "relationship-load Order.customer file=*-packages*",
+    ],
+)
+def test_a_pattern_naming_the_library_matches_nothing(
+    library: pytest.Pytester, pattern: str
+) -> None:
+    _library_ini(library, _packages(library), pattern)
+    result = library.runpytest()
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*stale ignores*", f"  {pattern}"])
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "relationship-load Order.customer function=export_orders",
+        "relationship-load Order.customer file=app_export.py",
+        "relationship-load Order.customer stack=app_export.py:export_orders",
+    ],
+)
+def test_a_pattern_naming_the_calling_line_matches(
+    library: pytest.Pytester, pattern: str
+) -> None:
+    _library_ini(library, _packages(library), pattern)
+    result = library.runpytest()
+    result.assert_outcomes(passed=1)
+    result.stdout.no_fnmatch_line("*stale ignores*")
+
+
+def test_an_ignore_block_around_the_library_call_leaves_it_out(
+    library: pytest.Pytester,
+) -> None:
+    library.makepyfile(test_a=LIBRARY_TEST_IN_BLOCK)
+    library.runpytest().assert_outcomes(passed=1)
