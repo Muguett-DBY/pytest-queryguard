@@ -94,7 +94,8 @@ nav.side summary{display:none}
 @media (max-width:48rem){.layout{flex-direction:column}
 nav.side{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}
 nav.side summary{display:list-item;cursor:pointer;font-weight:600;padding:.3rem 0}
-main{padding:1rem}}
+main{padding:1rem}
+:not(pre)>code{overflow-wrap:anywhere}}
 """
 
 

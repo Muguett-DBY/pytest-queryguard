@@ -135,8 +135,8 @@ E             docs: https://maciejziel.github.io/pytest-queryguard/how-detection
 E             fix: load it with the parent query, e.g.
 E                  select(Order).options(joinedload(Order.customer))
 E
-E             (queryguard_strict raises at the lazy load; allow_nplusone,
-E             queryguard_ignore or an ignore() block lets it pass, as for the report)
+E             (queryguard_strict raises at the lazy load; a queryguard_ignore marker
+E             or pattern, or an ignore() block lets it pass, as for the report)
 ```
 
 It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's

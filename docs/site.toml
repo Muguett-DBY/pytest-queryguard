@@ -69,7 +69,7 @@ pages = [
   { title = "Static check (experimental)", file = "static-check.md", description = "The experimental command that reads your code, without running it, and reports lazy relationships read in a loop over a query." },
   { title = "MCP server (experimental)", file = "mcp.md", description = "The experimental MCP server that lets coding agents such as Claude Code and Cursor run tests with pytest-queryguard and read its findings and patches." },
   { title = "Comparison with other tools", file = "comparison.md", description = "A dated comparison of pytest-queryguard with other N+1 detection tools, with what was run and what was only read." },
-  { title = "Accuracy on a corpus", file = "accuracy.md", description = "How accurately pytest-queryguard finds N+1 queries on a corpus of 110 realistic scenarios, with precision and recall." },
+  { title = "Accuracy on a corpus", file = "accuracy.md", description = "How accurately pytest-queryguard finds N+1 queries on a corpus of realistic scenarios, with precision and recall." },
   { title = "Performance", file = "performance.md", description = "What pytest-queryguard costs per statement and per test suite, how it was measured on SQLite and PostgreSQL, and what was optimised." },
   { title = "Migrating from nplusone", file = "migrating-from-nplusone.md", description = "Move from the nplusone library to pytest-queryguard: what maps to what and what differs." },
   { title = "Migrating from queryspy", file = "migrating-from-queryspy.md", description = "Move from queryspy to pytest-queryguard: every queryspy option, marker and helper with its equivalent, and what differs." },

@@ -34,6 +34,22 @@ depending on `queryguard_mode` and `queryguard_fail_on`.
 
 Every rule produces a finding with a kind, a label, a call site and a hint.
 
+In short, the kinds and what they do by default:
+
+| Kind | Reports | Default |
+|---|---|---|
+| [`relationship-load`](#relationship-load) | one relationship lazy-loaded for 2 or more parents | fails |
+| [`repeated-statement`](#repeated-statement) | one SELECT shape run 5 or more times | fails |
+| [`column-load`](#column-load) | 5 or more objects of one class reloading columns (deferred, expired, subclass) | fails |
+| [`cartesian-load`](#cartesian-load) | one SELECT that joins two collections side by side | warns (`queryguard_cartesian_load`) |
+| [`write-loop`](#write-loop) | one INSERT, UPDATE or DELETE per row | off (`queryguard_write_loop_threshold`) |
+| [`missing-index`](#missing-index) | a SELECT no index can serve | off (`--queryguard-index-check`) |
+| [`unused-eager-load`](#unused-eager-load-experimental) | an eager-loaded relationship the test never reads | off, experimental |
+| [`unused-columns`](#unused-columns-experimental) | wide rows of which the test reads few columns | off, experimental |
+
+"Fails" is in the default `queryguard_mode = fail`; in `warn` mode every kind
+only warns, and [budgets](budgets.md) fail either way.
+
 ### relationship-load
 
 One relationship (for example `Order.customer`) is lazy-loaded for at least

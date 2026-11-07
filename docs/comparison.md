@@ -6,6 +6,19 @@ so read it with that in mind: the matrix is built from the competitors' own
 documentation and from running their packages, every cell says which, and the
 measurements are ones I ran myself, on scenarios I wrote.
 
+**In short:** of the SQLAlchemy tools in the matrix, pytest-queryguard is
+the only one that fails tests with no marker, option or fixture, and the only
+one with a missing-index check beyond PostgreSQL (SQLite, MySQL and MariaDB).
+It reports Core and `text()` loops as well as lazy loads, lists every
+statement with its call site when a budget fails, and has a baseline and
+SARIF for adoption. These are the features of the current release; the
+[measured runs](#what-i-measured) are of the dated versions named below.
+queryspy is the closest
+alternative, with its own middleware and panel; pytest-querycount writes
+budgets into your tests; Django projects need django-zeal or similar. The
+[matrix](#feature-matrix), [where the others are ahead](#where-the-others-are-ahead)
+and [choosing](#choosing) have the details.
+
 - Facts about other tools were read on **2026-10-12** and re-checked on
   **2026-10-13**: no tool had a newer release on PyPI since, the tools with a
   public repository had no new commit on its default branch (fastapi-nplusone
@@ -134,10 +147,12 @@ not work.
   on MySQL 8.4 and MariaDB 11.8, through PyMySQL and aiomysql, it runs only
   the tests of the index check.
 - **Django.** django-zeal and nplusone cover Django; pytest-queryguard does not.
-- **Writing budgets for you.** `pytest-querycount --querycount-write-budgets`
-  edits your tests to add an exact `max_queries` marker to each, and
-  `--querycount-max` applies one budget to every test. pytest-queryguard has a
-  [baseline](baseline.md) instead, which records findings, not budgets.
+- **Budgets in the test source.** `pytest-querycount --querycount-write-budgets`
+  edits your tests to add an exact `max_queries` marker to each, so the
+  budget is visible next to the test it limits. pytest-queryguard records
+  the same counts in a separate
+  [budget file](budgets.md#lock-todays-counts-the-budget-file) (since 0.6.0)
+  and never edits your code.
 - **Exact SQL assertions and snapshots.** pytest-capquery asserts the exact
   statements and transaction events of a block and keeps `.sql` snapshots;
   pytest-queryguard looks for patterns and does not assert exact SQL.
@@ -380,9 +395,10 @@ pytest-queryguard only.
   running queryspy together with pytest-queryguard.
 - You use queryspy in tests and want to move: see
   [Migrating from queryspy](migrating-from-queryspy.md).
-- You want budgets written for you or one global ratchet: pytest-querycount
-  (it and pytest-queryguard both register a `max_queries` marker; I did not
-  test installing both).
+- You want exact budgets written into your test files as markers:
+  pytest-querycount (it and pytest-queryguard both register a `max_queries`
+  marker; I did not test installing both). For budgets kept in a file next to
+  the tests, pytest-queryguard's [budget file](budgets.md#lock-todays-counts-the-budget-file).
 - You are on Django: django-zeal, or django-nplus1 or django-query-doctor
   (read, not run; see above).
 - You want to assert exact SQL: pytest-capquery, after checking its license.

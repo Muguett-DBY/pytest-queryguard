@@ -4,6 +4,15 @@ pytest-queryguard follows [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 This page says what that covers, how deprecations work, and which tests
 enforce it.
 
+**In short:** the names in `pytest_queryguard.__all__`, the pytest options,
+flags and markers, the finding kinds, and the files and tools
+[listed below](#files-tools-and-the-action) are public; the wording of
+messages is not. A deprecated name keeps working with a
+`QueryGuardDeprecationWarning` for at least one minor release and three
+months. Until 1.0 a minor release may still break things, deprecating first
+where possible and always saying so in the changelog; features marked
+[experimental](#experimental) may change in any minor release.
+
 ## What is public
 
 The public API is everything below. Changing it incompatibly needs a major
