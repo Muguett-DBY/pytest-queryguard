@@ -16,6 +16,7 @@ MODELS = """
 from __future__ import annotations
 
 from sqlalchemy import ForeignKey
+from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -42,6 +43,7 @@ class Customer(Base):
     address_id: Mapped[int] = mapped_column(ForeignKey("addresses.id"))
     address: Mapped[Address] = relationship()
     orders: Mapped[list[Order]] = relationship(back_populates="customer")
+    order_ids = association_proxy("orders", "id")
 
 
 class Product(Base):
@@ -59,6 +61,7 @@ class Order(Base):
     audits: Mapped[list[Audit]] = relationship(lazy="raise")
     events: Mapped[list[Event]] = relationship(lazy="dynamic")
     payer: Mapped[Customer] = relationship(lazy="joined", foreign_keys=[customer_id], viewonly=True)
+    shipments: Mapped[list[Shipment]] = relationship(lazy="immediate")
 
 
 class Item(Base):
@@ -83,6 +86,12 @@ class Audit(Base):
 
 class Event(Base):
     __tablename__ = "events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
+
+
+class Shipment(Base):
+    __tablename__ = "shipments"
     id: Mapped[int] = mapped_column(primary_key=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
 """
@@ -149,6 +158,35 @@ def test_a_lazy_many_to_one_read_in_a_loop_over_a_query(
         return out
     """
     assert found(models, code) == ["Order.customer"]
+
+
+def test_sqlmodel_exec_returns_objects(models: lint.Models) -> None:
+    # SQLModel's Session.exec(select(C)) yields C objects, like scalars()
+    source = textwrap.dedent(
+        f"""\
+        from sqlmodel import Session, select
+        from {MODULE} import Order
+
+        def names(session):
+            return [order.customer.name for order in session.exec(select(Order))]
+        """
+    )
+    found_ = lint.lint_source(source, "app.py", models)
+    assert [f.relationship for f in found_] == ["Order.customer"]
+
+
+def test_exec_without_sqlmodel_is_not_a_query(models: lint.Models) -> None:
+    # without SQLModel, .exec() is someone else's method
+    assert (
+        found(
+            models,
+            """
+        def names(runner):
+            return [order.customer.name for order in runner.exec(select(Order))]
+        """,
+        )
+        == []
+    )
 
 
 def test_the_finding_has_the_lines_and_the_fix(models: lint.Models) -> None:
@@ -942,3 +980,355 @@ def test_an_output_file_that_cannot_be_written_is_an_error(
 ) -> None:
     assert lint.main(["--models", MODULE, "--output", "app", "app/ok.py"]) == 2
     assert "cannot write app" in capsys.readouterr().err
+
+
+# --- shapes from the lint's accuracy measurement (tests/corpus/lint_accuracy.py) ---
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # pytest-queryguard's ignore() around the reads (clean_94)
+        """
+        from pytest_queryguard import ignore
+        def f(session):
+            with ignore("relationship-load", reason="nightly"):
+                return [o.customer.name for o in session.scalars(select(Order))]
+        """,
+        """
+        import pytest_queryguard as qg
+        def f(session):
+            for o in session.scalars(select(Order)):
+                with qg.ignore("*"):
+                    print(o.customer.name)
+        """,
+        """
+        from pytest_queryguard import ignore
+        @ignore("relationship-*")
+        def f(session):
+            for o in session.scalars(select(Order)):
+                print(o.customer.name)
+        """,
+        # the relationship was set or refreshed per object first (bug_119, bug_121)
+        """
+        def f(session):
+            orders = session.scalars(select(Order)).all()
+            for order in orders:
+                session.refresh(order, ["items"])
+            return [len(o.items) for o in orders]
+        """,
+        """
+        from sqlalchemy.orm.attributes import set_committed_value
+        def attach(session, order):
+            set_committed_value(order, "items", [])
+        def f(session):
+            orders = session.scalars(select(Order)).all()
+            for order in orders:
+                attach(session, order)
+            return [len(o.items) for o in orders]
+        """,
+        """
+        def f(session):
+            orders = session.scalars(select(Order)).all()
+            for order in orders:
+                session.refresh(order, attribute_names=["items"])
+            return [len(o.items) for o in orders]
+        """,
+        """
+        def f(session):
+            for o in session.scalars(select(Order)):
+                session.refresh(o, ["items"])
+                print(len(o.items))
+        """,
+        # an earlier query of the same rows loaded it (clean_127)
+        """
+        def f(session):
+            mine = Order.id < 5
+            first = session.scalars(
+                select(Order).where(mine).options(selectinload(Order.items))
+            ).all()
+            later = session.scalars(select(Order).where(mine, Order.id > 1)).all()
+            return [len(o.items) for o in later], first
+        """,
+        """
+        def f(session):
+            first = session.scalars(select(Order).options(selectinload(Order.items))).all()
+            return [len(o.items) for o in session.scalars(select(Order).limit(3))]
+        """,
+    ],
+)
+def test_reads_that_do_not_load_per_row(models: lint.Models, code: str) -> None:
+    assert found(models, code) == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # ignore() of another kind, or not pytest-queryguard's
+        """
+        from pytest_queryguard import ignore
+        def f(session):
+            with ignore("repeated-statement"):
+                return [o.customer.name for o in session.scalars(select(Order))]
+        """,
+        """
+        from contextlib import suppress as ignore
+        def f(session):
+            with ignore("relationship-load"):
+                return [o.customer.name for o in session.scalars(select(Order))]
+        """,
+        # one read inside the block, one outside
+        """
+        from pytest_queryguard import ignore
+        def f(session):
+            for o in session.scalars(select(Order)):
+                print(o.customer.name)
+                with ignore("relationship-load"):
+                    print(o.customer.id)
+        """,
+        # a refresh of other objects, of another relationship, of one object
+        """
+        def f(session, others):
+            orders = session.scalars(select(Order)).all()
+            for other in others:
+                session.refresh(other, ["customer"])
+            session.refresh(orders[0], ["customer"])
+            for order in orders:
+                session.refresh(order, ["items"])
+            return [o.customer.name for o in orders]
+        """,
+        # refreshed after the loop that reads it
+        """
+        def f(session):
+            orders = session.scalars(select(Order)).all()
+            sizes = [len(o.items) for o in orders]
+            for order in orders:
+                session.refresh(order, ["items"])
+        """,
+        # the earlier query has fewer filters, a limit, or no option for it
+        """
+        def f(session):
+            first = session.scalars(
+                select(Order).where(Order.id < 5).options(selectinload(Order.items))
+            ).all()
+            return [len(o.items) for o in session.scalars(select(Order))]
+        """,
+        """
+        def f(session):
+            first = session.scalars(
+                select(Order).limit(5).options(selectinload(Order.items))
+            ).all()
+            return [len(o.items) for o in session.scalars(select(Order))]
+        """,
+        """
+        def f(session):
+            first = session.scalars(
+                select(Order).options(selectinload(Order.customer))
+            ).all()
+            return [len(o.items) for o in session.scalars(select(Order))]
+        """,
+        # review: what drops or never had the earlier query's objects
+        """
+        def f(session):
+            first = session.scalars(select(Order).options(selectinload(Order.items))).all()
+            session.commit()
+            return [len(o.items) for o in session.scalars(select(Order))]
+        """,
+        """
+        def f(session):
+            first = session.scalars(select(Order).options(selectinload(Order.items))).all()
+            session.expire_all()
+            return [len(o.items) for o in session.scalars(select(Order))]
+        """,
+        """
+        def f(engine):
+            from sqlalchemy.orm import Session
+            with Session(engine) as session:
+                first = session.scalars(
+                    select(Order).options(selectinload(Order.items))
+                ).all()
+            with Session(engine) as session:
+                return [len(o.items) for o in session.scalars(select(Order))]
+        """,
+        """
+        def f(session):
+            session.scalars(select(Order).options(selectinload(Order.items))).all()
+            return [len(o.items) for o in session.scalars(select(Order))]
+        """,
+        """
+        def f(session, x):
+            if x:
+                first = session.scalars(
+                    select(Order).options(selectinload(Order.items))
+                ).all()
+            return [len(o.items) for o in session.scalars(select(Order))]
+        """,
+        """
+        def f(session, cid):
+            first = session.scalars(
+                select(Order).where(Order.id == cid).options(selectinload(Order.items))
+            ).all()
+            cid = 2
+            return [len(o.items) for o in session.scalars(select(Order).where(Order.id == cid))]
+        """,
+        # review: a refresh after the read, a call that only names it
+        """
+        def f(session):
+            for o in session.scalars(select(Order)).all():
+                print(o.customer)
+                session.refresh(o, ["customer"])
+        """,
+        """
+        def f(session, log):
+            rows = session.scalars(select(Order)).all()
+            for o in rows:
+                log.info("customer", o)
+                print(o.customer)
+        """,
+    ],
+)
+def test_reads_that_still_load_per_row(models: lint.Models, code: str) -> None:
+    assert found(models, code) != []
+
+
+def test_a_statement_built_over_several_assignments(models: lint.Models) -> None:
+    code = """
+    def f(session, name):
+        stmt = select(Customer)
+        if name:
+            stmt = stmt.where(Customer.name == name)
+        stmt = stmt.options(selectinload(Customer.orders))
+        for customer in session.scalars(stmt):
+            customer.address
+            for order in customer.orders:
+                order.items
+    """
+    assert found(models, code) == ["Customer.address", "Order.items"]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # an option added in a branch counts as if it always were there
+        """
+        def f(session, eager):
+            stmt = select(Customer)
+            if eager:
+                stmt = stmt.options(selectinload(Customer.orders))
+            for customer in session.scalars(stmt):
+                customer.orders
+        """,
+        # anything but stmt = stmt.method(...): not followed
+        """
+        def f(session, other):
+            stmt = select(Customer)
+            stmt = other(stmt)
+            for customer in session.scalars(stmt):
+                customer.orders
+        """,
+        """
+        def f(session, other):
+            stmt = select(Customer)
+            stmt = other.where(Customer.id > 1)
+            for customer in session.scalars(stmt):
+                customer.orders
+        """,
+        """
+        def f(session, other):
+            stmt = select(Customer)
+            stmt += 1
+            for customer in session.scalars(stmt):
+                customer.orders
+        """,
+        """
+        def f(session, other):
+            stmt = select(Customer)
+            for stmt in other:
+                pass
+            for customer in session.scalars(stmt):
+                customer.orders
+        """,
+        # assigned again after the loop
+        """
+        def f(session):
+            stmt = select(Customer)
+            for customer in session.scalars(stmt):
+                customer.orders
+            stmt = stmt.where(Customer.id > 1)
+        """,
+        # two starting points
+        """
+        def f(session, flag):
+            stmt = select(Customer)
+            if flag:
+                stmt = select(Order)
+            for customer in session.scalars(stmt):
+                customer.orders
+        """,
+    ],
+)
+def test_statements_over_several_assignments_not_followed(
+    models: lint.Models, code: str
+) -> None:
+    assert found(models, code) == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        """
+        from sqlalchemy.orm import aliased
+        def f(session):
+            o2 = aliased(Order)
+            for o in session.scalars(select(o2).where(o2.id > 1)):
+                o.customer
+        """,
+        """
+        from sqlalchemy.orm import aliased
+        for o in session.scalars(select(aliased(Order, name="o2"))):
+            o.customer
+        """,
+        """
+        from sqlalchemy.orm import with_polymorphic
+        def f(session):
+            poly = with_polymorphic(Order, "*")
+            for o in session.scalars(select(poly)):
+                o.customer
+        """,
+    ],
+)
+def test_aliased_entities(models: lint.Models, code: str) -> None:
+    assert found(models, code) == ["Order.customer"]
+
+
+def test_an_aliased_entity_with_its_option(models: lint.Models) -> None:
+    code = """
+    from sqlalchemy.orm import aliased
+    def f(session):
+        o2 = aliased(Order)
+        for o in session.scalars(select(o2).options(joinedload(o2.customer))):
+            o.customer
+    """
+    assert found(models, code) == []
+
+
+def test_a_lazy_immediate_mapping_is_a_query_per_row(models: lint.Models) -> None:
+    # lazy="immediate" runs the same SELECT per object as a lazy load (bug_108)
+    code = """
+    for order in session.scalars(select(Order)):
+        order.shipments
+    for order in session.scalars(select(Order).options(selectinload(Order.shipments))):
+        order.shipments
+    """
+    assert found(models, code) == ["Order.shipments"]
+
+
+def test_an_association_proxy_reads_its_relationship(models: lint.Models) -> None:
+    # bug_100: the proxy loads the collection it goes through
+    code = """
+    for c in session.scalars(select(Customer)):
+        list(c.order_ids)
+    for c in session.scalars(select(Customer).options(selectinload(Customer.orders))):
+        list(c.order_ids)
+    """
+    assert found(models, code) == ["Customer.orders"]

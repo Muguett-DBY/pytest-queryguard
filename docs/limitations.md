@@ -31,9 +31,8 @@
   `await asyncio.to_thread(lambda: session.execute(stmt))` or a named helper.
 - One measurement is active per process at a time, so tests in one process
   must run sequentially. Under pytest-xdist each worker measures its own
-  tests, so detection and budgets work. The report needs a single process,
-  so under pytest-xdist it prints
-  `queryguard report: not available with pytest-xdist`.
+  tests, so detection and budgets work, and the workers send their counts
+  and notes to the controller, which prints the report and the summary.
 - A thread a test starts and does not stop (a daemon worker, a server started
   in the test body) goes on into the tests after it: its statements count
   for whichever test is measured while they run, in its findings and its
@@ -128,9 +127,6 @@
   function called from a `SELECT`, is not seen, and the check may judge an
   index by its old definition. A fresh pytest session starts with an empty
   cache.
-- The index check's session summary is printed by the process that runs the
-  tests, so under pytest-xdist it is not shown. Findings in tests are
-  reported as usual.
 - On pytest 9.0 and 9.1, a wrongly typed value in the native `[tool.pytest]`
   table for one of pytest's own options (for example
   `console_output_style = 3`) stops pytest with an internal error, with or

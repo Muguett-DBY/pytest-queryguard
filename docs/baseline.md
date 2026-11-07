@@ -139,16 +139,18 @@ An entry is the identity of a finding: kind, label, file and function.
 
 ```
 =========== queryguard: stale baseline entries ===========
-1 baseline entry in /repo/queryguard-baseline.json matched no finding in this run:
+1 baseline entry in queryguard-baseline.json matched no finding in this run:
   relationship-load Order.items (app/orders.py, list_orders)
 They are fixed, or this run did not cover them. After a full run, prune them
 with --queryguard-update-baseline.
 ```
 
 This is a notice and does not fail the run. After a partial run (`pytest
-tests/one_file.py`, `-k`) many entries look stale because their tests did not
-run; prune only after a full run. The list is not shown when measurement is
-off, or after an internal error or a crashed worker.
+tests/one_file.py`, `-k`, `--lf`, `-x`, Ctrl-C, a collection error or
+`--collect-only`) the list holds only entries of tests that ran, as a partial
+update would replace them; an entry of a function outside the tests that ran
+is not listed. The list is not shown when measurement is off, or after an
+internal error or a crashed worker.
 
 ## Errors
 

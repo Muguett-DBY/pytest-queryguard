@@ -4,6 +4,15 @@ pytest-queryguard follows [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 This page says what that covers, how deprecations work, and which tests
 enforce it.
 
+**In short:** the names in `pytest_queryguard.__all__`, the pytest options,
+flags and markers, the finding kinds, and the files and tools
+[listed below](#files-tools-and-the-action) are public; the wording of
+messages is not. A deprecated name keeps working with a
+`QueryGuardDeprecationWarning` for at least one minor release and three
+months. Until 1.0 a minor release may still break things, deprecating first
+where possible and always saying so in the changelog; features marked
+[experimental](#experimental) may change in any minor release.
+
 ## What is public
 
 The public API is everything below. Changing it incompatibly needs a major
@@ -69,7 +78,8 @@ The command-line tools:
 The GitHub Action (`action/action.yml`, see [CI](ci.md#the-action)): its
 inputs with their defaults and accepted values, its outputs (`exit-code`,
 `sarif-file`, `json-file`), and the name of the artifact it uploads,
-`queryguard-json-<category>`, which later runs of older and newer versions of
+`queryguard-json-<category>` (with `" : < > | * ? \ /` and line breaks of
+the category turned into `-`), which later runs of older and newer versions of
 the action download, and the pull-request comment it updates in place (found
 by the compare marker above). The action is versioned with the package: pin it to a
 release tag or a commit. The `trend` input and the `trend-report` output are

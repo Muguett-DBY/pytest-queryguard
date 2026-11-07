@@ -78,16 +78,22 @@ failed. Install your own project first: the action does not know how.
 | `python-version` | empty | Set up this Python. Empty: use the `python` on PATH. |
 | `package` | empty | What to `pip install`. Empty: the plugin from the action's own checkout, matching the pinned ref. Otherwise a requirement like `pytest-queryguard>=0.6` (the oldest release the action works with; 0.8.0 for `trend`), or a path. |
 | `baseline` | empty | Baseline file, see [baseline.md](baseline.md). Empty: `queryguard_baseline` from your config. |
-| `fail` | `true` | `true`: fail the step when pytest fails. `false`: never fail, only report. |
+| `fail` | `true` | `true`: fail the step when pytest fails. `false`: a failed test run does not fail the step, only report. An invalid input or a failed install still fails it. |
 | `working-directory` | `.` | Where to run pytest. Locations in the SARIF file are still relative to the repository root (see [SARIF output](sarif.md#paths-and-the-repository-root)). |
 | `sarif-file` | `queryguard.sarif` | Output file, relative to `working-directory`. |
 | `upload` | `true` | Upload to code scanning. `false`: only write the file. |
-| `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload. It also names the job's query-count artifact and its pull-request comment. |
+| `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload, including each job of a matrix (see [Limits](#limits-and-edge-cases)). It also names the job's query-count artifact, `queryguard-json-<category>` with `" : < > \| * ? \ /` and line breaks turned into `-`, and its pull-request comment. Must not be empty. |
 | `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. Empty: none. |
 | `compare` | `true` | On a pull request, compare the counts with the base branch and write the result to the job summary. |
 | `comment` | `true` | Also post the comparison as a pull-request comment, updated in place on later pushes. |
 | `trend` | `false` | Since 0.8.0, experimental. A number of runs N (2 to 100; `true` means 10): on pushes to the default branch and on pull requests, show how the counts moved over the last N runs, see [below](#query-counts-over-the-last-runs). |
 | `github-token` | `github.token` | Token for the comparison, the trend and the comment. |
+
+`fail`, `upload`, `compare` and `comment` take `true` or `false` (in any
+case) and nothing else: the action stops with an error on a value such as
+`yes`, `1` or an empty string, which would otherwise quietly mean `false`.
+`trend` takes `false`, `true` or a number from 2 to 100, and stops the same
+way on anything else.
 
 Outputs: `exit-code` (pytest's), `sarif-file`, `json-file` and `trend-report`
 (since 0.8.0: the trend's Markdown file, empty when there is none).
@@ -105,7 +111,7 @@ comment:
 ```
 ### pytest-queryguard: queries compared with the base branch
 
-412 tests compared: 3120 -> 3187 statements (+67). 2 run more, 1 fewer; 1 new findings, 0 fixed.
+412 tests compared: 3120 -> 3187 statements (+67). 2 run more, 1 fewer; 1 new finding, 0 fixed.
 
 #### New findings
 | Kind | Label | Where | Times | Tests |
@@ -132,7 +138,8 @@ never fails the job.
 - `json-file: ""` turns the file, the artifact and the comparison off. Do not
   pass `--queryguard-json` in `pytest-args` as well: the action reads the file
   at `json-file`.
-- Several jobs (for example one per database) keep apart by `category`.
+- Several jobs (for example one per database, or the jobs of a matrix) keep
+  apart by `category`; see [Limits](#limits-and-edge-cases).
 - The same report locally: `python -m pytest_queryguard.compare base.json head.json`.
 
 ### Query counts over the last runs
@@ -150,7 +157,7 @@ collapsed `<details>` block below the comparison.
 ```
 ### pytest-queryguard: query counts over the last 5 runs
 
-5 runs, statements 3120 -> 3187 (+67) `▁▁▂▂█`. 3 tests changed their count, 2 new, 0 not in the latest run; 1 new findings, 0 gone.
+5 runs, statements 3120 -> 3187 (+67) `▁▁▂▂█`. 3 tests changed their count, 2 new, 0 not in the latest run; 1 new finding, 0 gone.
 
 | Run | Tests | Statements | |
 | `1a2b3c4` | 410 | 3120 |  |
@@ -231,6 +238,76 @@ A typical rollout: run once with `fail: "false"` to see the alerts, create a
   events where you do not want an upload at all.
 - Code scanning is free for public repositories. Private repositories need
   GitHub Code Security.
+
+### Permissions per input
+
+| Permission | Needed by | Without it |
+|---|---|---|
+| `contents: read` | `actions/checkout` | The checkout fails. |
+| `security-events: write` | `upload: "true"` | The upload step fails (it has `continue-on-error`), the job does not. |
+| `actions: read` | `compare`, `trend`; the upload in a private repository | The job summary or the log says the runs could not be listed. |
+| `pull-requests: write` | `comment: "true"` | A warning in the log; the report stays in the job summary. |
+
+Grant only what the inputs you use need: with `upload: "false"`,
+`compare: "false"` and `comment: "false"` the job needs `contents: read`
+alone.
+
+## Limits and edge cases
+
+- **Matrix jobs.** A composite action cannot see the matrix, so every job of
+  a matrix gets the same default `category`. Their artifacts then replace
+  each other (the action uploads with `overwrite: true`, so that a re-run of
+  a job can upload again), their comparisons share one comment, and code
+  scanning keeps the upload of the last job. Give each job its own category:
+  `category: queryguard-${{ matrix.python }}-${{ matrix.db }}`. Two
+  categories that differ only in characters turned into `-` (`a/b` and
+  `a:b`) share an artifact too.
+- **The first run.** Until a push to the base branch has run the workflow
+  with this action, a pull request has nothing to compare with: the job
+  summary says so, no comment is written, and the job is not failed.
+- **The comment's size.** GitHub refuses a comment over 65536 characters.
+  The comparison has at most 25 rows per table and cuts long names, so it
+  fits; when the trend folded below it would not, the comment leaves the
+  trend out and says it is in the job summary. A comparison that does not
+  fit by itself is cut at a line, with a note. The job summary always has
+  both in full.
+- **One comment, updated.** A later run finds its comment by the marker on
+  the first line and by its author: the user of a personal access token
+  given as `github-token`, or else a bot (`github-actions[bot]` for the
+  default token, the app for an app's token), newest first, passing over one
+  this token may not edit. A comment of a person that quotes the marker is
+  never edited. When GitHub cannot name the user of a personal token for a
+  moment, the run writes no comment rather than a second one. Two runs of one pull request that end
+  at the same moment can both find no comment and post two; and a re-run of
+  an older run writes its older comparison over the newer one. Cancelling
+  older runs avoids both:
+
+  ```yaml
+  concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+  ```
+
+- **Exit codes.** pytest's exit code is the `exit-code` output. With
+  `fail: "true"` any code but 0 fails the job; 2 (interrupted), 3 (internal
+  error), 4 (usage error) and 5 (no tests collected) also leave a warning, which
+  is all they leave with `fail: "false"`. A finding fails its test, so it
+  is code 1, as any failed test. An invalid input, an unclosed quote in
+  `pytest-args` or a failed install fails the job whatever `fail` says, and
+  then the later steps are skipped.
+- **Cancelled runs.** After a cancel nothing more runs: no upload, no
+  comparison, no comment. Failed tests do not stop them; an invalid input or
+  a failed install skips them, as pytest did not run.
+- **Runners.** Every step uses `bash`; the repository's CI runs the action on
+  `ubuntu-latest`. macOS runners have bash and `realpath`. On Windows, bash is
+  Git Bash, and the action turns the file paths it hands to the upload steps
+  into Windows paths (`cygpath -w`); macOS and Windows runners are not tested
+  by the repository's CI.
+- **Untrusted text.** No input or event value is pasted into a script: each
+  reaches the shell as an environment variable, and `pytest-args` is split by
+  Python's `shlex` without a shell. Test ids, labels and file names in the
+  comment are in code spans, with `|` escaped and backticks replaced, so a
+  test id cannot start a mention, a link or a table cell.
 
 ## Without the action
 

@@ -31,6 +31,10 @@ queryguard: unused columns detected (experimental)
   never read: email, phone, street, city, country, notes, bio, avatar, settings
   fix: load only what is used, .options(load_only(Account.name, Account.owner_id)),
   or defer() the large columns that are never read
+  (experimental: if they are read later, or by code the plugin cannot see,
+  leave them out with @pytest.mark.queryguard_ignore(
+      "Account", kind="unused-columns")
+  or the queryguard_ignore pattern unused-columns Account)
 ```
 
 The suggested `load_only()` lists the columns that were read and the columns

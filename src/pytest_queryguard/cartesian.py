@@ -395,11 +395,9 @@ def findings(
                 "their product"
                 if len(collections) == 2
                 else "  each row repeats per combination of their items",
-                (
-                    "  fix: load all but one of them with selectinload (one more "
-                    "query each, no repeated rows), e.g."
-                ),
+                "  fix: load all but one of them with selectinload, e.g.",
                 f"       select({first.root}).options({options})",
+                "       (one more query for each, and no repeated rows)",
             ]
         )
         result.append(

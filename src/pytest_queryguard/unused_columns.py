@@ -431,9 +431,10 @@ def findings(
                     f"  never read: {names}",
                     f"  fix: load only what is used, .options({_load_only(item)}),",
                     "  or defer() the large columns that are never read",
-                    "  (experimental: if they are read later, or by code the plugin",
-                    "  cannot see, ignore it with queryguard_ignore(kind=KIND) or",
-                    "  the queryguard_ignore option, KIND being unused-columns)",
+                    "  (experimental: if they are read later, or by code the plugin cannot see,",
+                    "  leave them out with @pytest.mark.queryguard_ignore(",
+                    f'      "{group.label}", kind="unused-columns")',
+                    f"  or the queryguard_ignore pattern unused-columns {group.label})",
                 ]
             )
             result.append(

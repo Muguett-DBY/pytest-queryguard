@@ -18,9 +18,8 @@ output against the others:
 * every hunk of the patch file is a reported relationship-load finding, the
   file applies with ``git apply --check``, and the SARIF ``fixes`` make the
   same change;
-* a pytest-xdist run gives the same JSON, SARIF, patch and outcomes as the
-  serial run, and the stale-ignore and stale-baseline sections agree with
-  the documented xdist differences;
+* a pytest-xdist run gives the same JSON, SARIF, patch, outcomes and summary
+  sections (stale ignores, stale baseline entries) as the serial run;
 * nothing reports an internal error.
 """
 
@@ -790,12 +789,11 @@ def _check_patch(run: Run, combo: Combo, pytester: pytest.Pytester) -> None:
     assert _apply_sarif_fixes(original.read_bytes().decode(), results) == patched
 
 
-def _check_stale(run: Run, combo: Combo, *, xdist: bool) -> None:
+def _check_stale(run: Run, combo: Combo) -> None:
     stale = run.sections.get("queryguard: stale ignores", [])
-    # docs/ignoring.md: the ini patterns and markers are matched in the
-    # workers, so pytest-xdist lists only the ignore() blocks
-    assert (STALE_PATTERN in "\n".join(stale)) is not xdist, run.stdout
-    assert (STALE_MARKER in "\n".join(stale)) is not xdist, run.stdout
+    # under pytest-xdist the workers send the patterns and markers they used
+    assert STALE_PATTERN in "\n".join(stale), run.stdout
+    assert STALE_MARKER in "\n".join(stale), run.stdout
     assert any(line.strip() == STALE_BLOCK for line in stale), run.stdout
     # only the stale ones: what the ignores used is never listed
     text = "\n".join(stale)
@@ -811,14 +809,12 @@ def _check_stale(run: Run, combo: Combo, *, xdist: bool) -> None:
         assert not entries
 
 
-def _check_run(
-    run: Run, combo: Combo, pytester: pytest.Pytester, *, xdist: bool
-) -> None:
+def _check_run(run: Run, combo: Combo, pytester: pytest.Pytester) -> None:
     _check_no_internal_error(run)
     _check_outcomes(run, combo)
     _check_findings(run, combo)
     _check_patch(run, combo, pytester)
-    _check_stale(run, combo, xdist=xdist)
+    _check_stale(run, combo)
 
 
 def _comparable_json(run: Run) -> dict[str, Any]:
@@ -829,7 +825,7 @@ def _comparable_json(run: Run) -> dict[str, Any]:
 
 
 def _check_same(serial: Run, parallel: Run) -> None:
-    """pytest-xdist changes nothing but the documented summary sections."""
+    """pytest-xdist changes nothing: files, outcomes and summary sections."""
     assert parallel.outcomes == serial.outcomes
     assert parallel.ret == serial.ret
     assert parallel.terminal == serial.terminal
@@ -838,6 +834,7 @@ def _check_same(serial: Run, parallel: Run) -> None:
     assert parallel.patch == serial.patch
     for name in (
         "queryguard: the same finding in several tests",
+        "queryguard: stale ignores",
         "queryguard: stale baseline entries",
     ):
         assert parallel.sections.get(name) == serial.sections.get(name)
@@ -857,13 +854,13 @@ def _check_same(serial: Run, parallel: Run) -> None:
 def test_outputs_agree(pytester: pytest.Pytester, combo: Combo) -> None:
     _write_project(pytester, combo)
     serial = _run(pytester, combo, xdist=False)
-    _check_run(serial, combo, pytester, xdist=False)
+    _check_run(serial, combo, pytester)
     if not combo.xdist:
         return
     if not _XDIST:
         pytest.skip("pytest-xdist is not installed")
     parallel = _run(pytester, combo, xdist=True)
-    _check_run(parallel, combo, pytester, xdist=True)
+    _check_run(parallel, combo, pytester)
     _check_same(serial, parallel)
 
 

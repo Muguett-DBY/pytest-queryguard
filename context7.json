@@ -20,8 +20,8 @@
     "Install with pip install pytest-queryguard; the plugin registers itself, nothing to import or configure. Every test body is checked by default.",
     "Fix a reported relationship N+1 by loading the relationship with the parent query: joinedload for a many-to-one relationship, selectinload for a collection, e.g. select(Order).options(joinedload(Order.customer)).",
     "Use @pytest.mark.max_queries(n) or the pytest_queryguard.max_queries(n) context manager for a query budget, and max_db_time(seconds) for a database-time budget.",
-    "Leave out a finding with @pytest.mark.allow_nplusone('Order.customer') or queryguard_ignore; for an existing project record a baseline with --queryguard-baseline=PATH --queryguard-update-baseline instead of disabling the plugin.",
-    "Findings have kinds: relationship-load, repeated-statement, column-load, write-loop, unused-eager-load (experimental) and missing-index; queryguard_fail_on chooses which kinds fail a test.",
+    "Leave out a finding with @pytest.mark.queryguard_ignore('Order.customer') (alias allow_nplusone) or a with pytest_queryguard.ignore(...) block; for an existing project record a baseline with --queryguard-baseline=PATH --queryguard-update-baseline instead of disabling the plugin.",
+    "Findings have kinds: relationship-load, repeated-statement, column-load, cartesian-load (warns by default, queryguard_cartesian_load), write-loop (opt-in), missing-index (opt-in), unused-eager-load and unused-columns (both experimental, off); queryguard_fail_on chooses which kinds fail a test.",
     "The missing-index check is off by default (--queryguard-index-check or queryguard_index_check = true). It supports PostgreSQL 16 or newer (sync engine or asyncpg), SQLite, MySQL and MariaDB. Exclude small lookup tables with queryguard_index_ignore_tables or @pytest.mark.allow_missing_index instead of turning the check off.",
     "Write SARIF for GitHub code scanning with --queryguard-sarif=PATH."
   ]

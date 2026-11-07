@@ -144,13 +144,11 @@ them.
 ## Does it work with pytest-xdist?
 
 Yes for detection, budgets, the baseline and SARIF: each worker measures its
-own tests, and the controller merges what the workers saw. The session report
-(`--queryguard-report`) needs one process and prints
-`queryguard report: not available with pytest-xdist`. The summary sections of
-the index check and the stale-ignore list are printed by the process that runs
-the tests, so they are not shown under xdist, except for stale `ignore()`
-blocks, which the workers send to the controller. The test suite runs the plugin
-under `-n 2` and `-n 4` in CI.
+own tests, and the controller merges what the workers saw: the session report
+(`--queryguard-report`), the index check's summary and the stale-ignore list
+are the same as in a serial run, and so are the JSON, SARIF, baseline, budget
+and patch files. The test suite runs the plugin under `-n 2` to `-n 4`, with
+each `--dist` mode, in CI and compares the outputs with a serial run.
 
 ## Which PostgreSQL drivers work?
 
@@ -335,6 +333,24 @@ mistakes that look like database problems (strict mode, async fixtures, event
 loop scopes), and [Getting started](getting-started.md#async-and-fastapi) has
 an async FastAPI example. On SQLAlchemy 2.1 and newer install
 `sqlalchemy[asyncio]` for greenlet.
+
+## Does it work on free-threaded Python?
+
+The free-threaded builds (CPython 3.13t and 3.14t, no GIL) are not in the
+package classifiers, so they are not a supported configuration. CI runs
+only the in-app mode's tests (`tests/inapp`) on 3.14t, not the whole
+suite. The whole suite was run once on CPython 3.14.4t with SQLAlchemy
+2.1.1 and passed; 3.13t was not tried. On those builds the
+counters of a measurement (statements, loads and database time) are
+updated under a lock, so statements from several threads are all counted
+and budgets hold; on a build with the GIL no lock is taken. The stored
+events are list appends and the call-site caches are dictionaries, which
+CPython keeps consistent without the GIL; the sequence numbers that order
+Sessions and executions (`itertools.count`) stayed unique from 8 threads
+on 3.14.4t. The missing-index check and the unused-eager-load tracker
+check and then update shared sets, so with several threads they may do
+one step twice; those were not examined further. Every listener fails
+open, so a race there costs accuracy, not the test run.
 
 ## When should I not use it?
 

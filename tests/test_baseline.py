@@ -329,7 +329,7 @@ def test_update_prunes_stale_entries_and_keeps_the_file_stable(
     result = project.runpytest(
         "--queryguard-baseline=qg.json", "--queryguard-update-baseline"
     )
-    result.stdout.fnmatch_lines(["*1 entries (0 added, 1 removed)"])
+    result.stdout.fnmatch_lines(["*1 entry (0 added, 1 removed)"])
     first = (project.path / "qg.json").read_text()
     project.runpytest("--queryguard-baseline=qg.json", "--queryguard-update-baseline")
     assert (project.path / "qg.json").read_text() == first
@@ -574,7 +574,7 @@ def test_update_with_a_non_utf8_directory_name_writes_a_matching_baseline(
     update = project.runpytest(*args, "--queryguard-update-baseline")
     update.assert_outcomes(passed=1)
     update.stdout.no_fnmatch_line("*INTERNALERROR*")
-    update.stdout.fnmatch_lines(["*queryguard: baseline updated*", "*1 entries*"])
+    update.stdout.fnmatch_lines(["*queryguard: baseline updated*", "*1 entry (*"])
     # the entry reads back to the same identity, so the next run is clean
     assert baseline.load(project.path / "qg.json")
     project.runpytest(*args).assert_outcomes(passed=1)

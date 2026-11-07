@@ -99,8 +99,9 @@ the class and the cause otherwise, as in `Book (expired)`, `Book (refresh)` or
 the spellings a table name accepts). `file` is
 relative to pytest's rootdir, with forward slashes. Findings that no longer
 exist are easy to forget, so a pattern that matched nothing in the run is
-listed in the terminal summary under "stale ignores" (not shown with
-pytest-xdist, where the workers do the matching).
+listed in the terminal summary under "stale ignores". Only a run of the
+whole suite that ran to the end lists the patterns: after `-k`, a file
+argument, `--lf`, `-x` or Ctrl-C, the test a pattern is for may not have run.
 
 ### Matching the call stack
 
@@ -321,8 +322,9 @@ ignore() blocks that left out no finding in this run:
 A finding the block left out in `log.assert_no_nplusone()`, or in an in-app
 report made in the test, counts as well.
 
-Unlike the patterns, the blocks are also reported under pytest-xdist: the
-workers send the blocks they entered and used to the controller. A block is
+Like the patterns, the blocks are listed only after a run of the whole suite
+that ran to the end, and also under pytest-xdist: the workers send the blocks
+they entered and used to the controller. A block is
 noted only when it is entered in the context of a measured test (its thread,
 its tasks, or a thread given a copy of its context), so a thread left over
 from another test does not count. It is not listed when it only ran in tests

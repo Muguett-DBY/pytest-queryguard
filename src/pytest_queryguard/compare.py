@@ -80,8 +80,16 @@ def load(path: Path) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, RecursionError) as exc:
         raise CompareError(f"cannot read {path}: {exc}") from None
+    if isinstance(data, dict) and "format" in data and data["format"] != 1:
+        raise CompareError(
+            f"{path} has format {data['format']!r}, but this pytest-queryguard "
+            "reads format 1; compare files written by the same release"
+        )
     if not isinstance(data, dict) or data.get("format") != 1:
-        raise CompareError(f"{path} is not a pytest-queryguard JSON file (format 1)")
+        raise CompareError(
+            f"{path} is not a pytest-queryguard JSON file (format 1); "
+            "write one with pytest --queryguard-json=PATH"
+        )
     tests = data.get("tests")
     if not isinstance(tests, dict):
         raise CompareError(f"{path} has no tests")
@@ -197,6 +205,16 @@ def _tests(row: FindingRow) -> str:
     return first + (f" and {more} more" if more else "")
 
 
+def _noun(count: int, noun: str) -> str:
+    """``noun``, or its plural for any count but one."""
+    return noun if count == 1 else f"{noun}s"
+
+
+def _count(count: int, noun: str) -> str:
+    """``1 test``, ``2 tests``."""
+    return f"{count} {_noun(count, noun)}"
+
+
 def markdown(result: Comparison, *, rows: int = _ROWS, key: str = "") -> str:
     """The report, with a marker line so a later run can update the comment."""
     title = "### pytest-queryguard: queries compared with the base branch"
@@ -206,16 +224,17 @@ def markdown(result: Comparison, *, rows: int = _ROWS, key: str = "") -> str:
     delta = result.total_after - result.total_before
     sign = "+" if delta > 0 else ""
     lines.append(
-        f"{result.compared_tests} tests compared: {result.total_before} -> "
+        f"{_count(result.compared_tests, 'test')} compared: {result.total_before} -> "
         f"{result.total_after} statements ({sign}{delta}). "
         f"**{len(result.more)}** run more, {len(result.fewer)} fewer; "
-        f"**{len(result.new)}** new findings, {len(result.fixed)} fixed."
+        f"**{len(result.new)}** new {_noun(len(result.new), 'finding')}, "
+        f"{len(result.fixed)} fixed."
     )
     extra = []
     if result.added_tests:
-        extra.append(f"{result.added_tests} new tests")
+        extra.append(f"{result.added_tests} new {_noun(result.added_tests, 'test')}")
     if result.removed_tests:
-        extra.append(f"{result.removed_tests} tests not in this run")
+        extra.append(f"{_count(result.removed_tests, 'test')} not in this run")
     if extra:
         lines.append(f"Not compared: {', '.join(extra)}.")
     if not result.complete:

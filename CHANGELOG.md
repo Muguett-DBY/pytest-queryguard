@@ -22,6 +22,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The GitHub Action checks its switches: `fail`, `upload`, `compare` and
+  `comment` must be `true` or `false` (any case), and `trend` `false`, `true`
+  or 2 to 100; anything else, the empty string included, stops the action
+  with an error before pytest runs. Before, any other value meant false, so
+  `fail: "yes"` let a failed test run pass the job, and an invalid `trend`
+  was only a warning. A workflow that passes an empty value (an unset
+  matrix or `workflow_call` input) must now pass `"false"`.
+- The experimental static check (`python -m pytest_queryguard.lint`) is
+  measured on the accuracy corpus: `scripts/lint_accuracy_report.py` and
+  `tests/corpus/test_lint_accuracy.py`, with 14 new scenarios for it
+  (268 in all). On 266 scenarios its relationship-load precision went from
+  86% to 100% and its recall from 59% to 69%. It no longer reports a read
+  inside pytest-queryguard's `ignore()` for relationship-load (a `with`
+  block or a decorator), a relationship that a loop over the same objects
+  refreshed or set first (`session.refresh(obj, ["rel"])`,
+  `set_committed_value`, also through a helper of the module), or one that
+  an earlier query of the same rows in the same session loaded. It now
+  reports `aliased()` and `with_polymorphic()` entities, statements built in
+  steps (`stmt = stmt.options(...)`, an option in any step counts),
+  `lazy="immediate"` relationships and reads through an `association_proxy`.
+  See docs/static-check.md#accuracy.
+- Reviewed the texts the plugin prints. Counts agree with their nouns
+  (`1 entry`, `1 test`, `1 result`, `1 new finding`, `1 failing test kept its
+  previous budget`) in the baseline, budget, JSON, SARIF and patch summaries,
+  the `compare` and `trend` reports, the in-application log line and page
+  title, and the `QueryLog` repr. Those summaries and the usage
+  errors about an unreadable baseline or budget file show the path relative
+  to the rootdir, as findings do, instead of an absolute one. A partial
+  baseline update with no entry to keep no longer says "0 entries kept". The
+  patch summary gives the `git apply` command to run. The hint of an
+  unused-eager-load or unused-columns finding spells out the marker (with the
+  label, so it leaves out only that finding) and the pattern, instead of
+  `queryguard_ignore(kind=KIND)`. The
+  strict-mode error says that a baseline entry also lets the lazy load pass.
+  Long fix lines (a repeated `IN (...)` query, a polymorphic load, a cartesian
+  join) are wrapped. `compare` and `trend` say how to make a file they cannot
+  read, and name the format of a file written by another release. The
+  `kind:` and `label:` lines and the report headers are unchanged.
 - The accuracy corpus has 57 more scenarios (254): inheritance (single,
   concrete, `selectin_polymorphic`, polymorphic collections), association
   proxies, `deferred_group`, `query_expression`, `WriteOnlyMapped`,
@@ -58,6 +96,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not owner-only (0600) as the temporary file they are written through.
 
 ### Fixed
+
+- `queryguard-lint` reads SQLModel's `session.exec(select(Model))` as a query over `Model` objects, so a lazy relationship read in a loop over it is reported.
+- With pytest 9.2, an ini option of the wrong type (`queryguard_max_events =
+  many`, `queryguard_index_check = maybe`, a number for `queryguard_mode` in
+  native TOML) is reported as before: `<option> must be ...`, naming the
+  option and what it accepts. pytest 9.2 raises `UsageError` from `Config.getini()`
+  for such a value, which the plugin did not catch, so the run stopped with
+  pytest's bare conversion message (`invalid literal for int() with base 10:
+  'many'`) and no option name.
+- In-app mode: a request's stored statements and loads, with their bound
+  parameters, are released as soon as its report is made. A context that outlives the
+  request (a pool worker that inherited it on Python 3.14+, a task the
+  request started and left running) kept them all until it ended: 20 MB for
+  ten such requests with 2 MB of parameters each. The `RequestReport` keeps
+  its `statements` as before.
+- In-app mode: a coroutine function given as `report` (or in its list) is
+  refused when the settings are made, with a `ValueError`. Called without
+  `await`, it never ran: each reported request only made a "coroutine was
+  never awaited" warning. A callable that returns a coroutine anyway has it
+  closed, and an ERROR record is logged for each report it gets.
+- In-app mode: a `report` list is copied when the settings are made, as
+  `budgets` already was, so changing the list later changes nothing; an
+  iterator as `report` is no longer used up by the check, which left no
+  target at all. A `report` that is neither a target nor a sequence of them
+  (`None`, a number) is a `ValueError` naming the setting, not a bare
+  `TypeError`; so is a dictionary or a set, which gave its keys or an
+  unordered list of targets.
+- Under pytest-xdist, the summary is the same as in a serial run: the
+  workers now send their counts, the ignore patterns and markers they used
+  and their index-check notes to the controller, so `--queryguard-report`
+  lists the heaviest tests (it printed `not available with pytest-xdist`),
+  and the "stale ignores" list and the index check's summary are shown (they
+  were left out, except for `ignore()` blocks). A worker that crashes leaves
+  the report marked incomplete. In the report, tests with equal counts are
+  listed by node id, not in the order they ran, so the list is the same with
+  pytest-xdist and with any pytest-randomly seed, and so is the order of the
+  stale markers.
+- The stale lists no longer name a pattern or entry whose test did not run.
+  After a partial run (`-k`, `--deselect`, a file argument, `--lf`), one that
+  stopped early (`-x`, `--maxfail`, Ctrl-C, a collection error) or
+  `--collect-only`, the stale-baseline list held every entry of the tests left
+  out, and the "stale ignores" list every `queryguard_ignore` pattern and
+  `ignore()` block they would have used. Such a run now lists only the
+  baseline entries of tests that ran, as a partial update would replace them,
+  and no pattern or block; the markers of the tests that ran are still listed.
+- `--collect-only` no longer writes an empty SARIF file, which would close
+  every alert; the file is left as it was, as after an interrupted run.
+- The summary of `--queryguard-write-patch` says the patch is incomplete
+  after a run that stopped early (`-x`, `--maxfail`, Ctrl-C, a collection
+  error). Before, only a stopped pytest-xdist worker added the note.
 
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
@@ -165,9 +253,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back; `params` that are not an object (`[]` and `0` included) get
   `-32602 Invalid params` instead of `-32600 Invalid Request` or being
   taken as no params.
+- The GitHub Action: a `pytest-args` value that `shlex` cannot split (an
+  unclosed quote) now stops the action with an error. Before, the failed
+  split went unnoticed and pytest ran with none of the arguments: the whole
+  suite, without `-k` or the paths.
+- The GitHub Action: a category with a character that an artifact name cannot
+  hold (`/language:python`) no longer loses the query-count artifact and with
+  it the comparison: such characters become `-` in the artifact name. Valid
+  names are unchanged.
+- The GitHub Action: the pull-request comment stays under GitHub's 65536
+  characters (the trend is left out, or a huge comparison cut at a line, with
+  a note; the job summary keeps both), is found again when `github-token` is
+  a personal access token or an app's token (before, those posted a new
+  comment on every push), and a refused write (no `pull-requests: write`)
+  is a warning instead of a failed step.
+- The GitHub Action on Windows runners hands the SARIF and JSON paths to the
+  upload steps as Windows paths (`D:\a\...`) instead of Git Bash's `/d/a/...`.
+- The GitHub Action no longer uploads, compares or comments after the run
+  was cancelled (`!cancelled()` instead of `always()`), does not report
+  "pytest exited with code unknown" after an earlier step failed, and warns
+  when pytest exits with 2 to 5 (interrupted, internal error, usage error, no
+  tests), which `fail: "false"` otherwise hid.
 
 ### Documentation
 
+- docs/ci.md lists the permission each action input needs and the action's
+  limits: one category per matrix job, the first run without a base
+  artifact, the comment size, re-runs and concurrent runs, exit codes,
+  cancelled runs, macOS and Windows runners.
 - API-freeze audit before 1.0: the [stability policy](docs/stability.md)
   now states the naming, value and unit conventions of the public options
   and files (every time in seconds; `0` turns a threshold off in an ini
@@ -203,6 +316,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   n-plus-one-sniffer (read, not run), and a section on problems users report
   with other N+1 tools that pytest-queryguard avoids, with the issues as
   evidence.
+- Documentation site review:
+  - The overview page answers why to pick this tool ("Why this one", linking
+    to the comparison) and says that the site, published from `main`, may
+    describe options added since 0.8.0.
+  - "In short" leads on the comparison, in-application mode and stability
+    pages, and a table of every finding kind with its default at the top of
+    "The rules" in How detection works.
+  - Outdated statements corrected: Migrating from queryspy said there was no
+    suite-wide budget, no JSON output and no in-application mode (all exist
+    since 0.5.0 or 0.6.0), and Migrating from nplusone that it runs in tests
+    only; the comparison said pytest-queryguard had no way
+    to record budgets (the budget file, since 0.6.0); the strict-mode
+    message in "A test failed: now what" was the text from before 0.8.0;
+    `context7.json` named `allow_nplusone` before `queryguard_ignore` and
+    left out the `cartesian-load` and `unused-columns` kinds; the
+    accuracy page's description named a corpus size that had changed.
+  - The free-threaded Python note moved from Getting started to the FAQ, so
+    the first page goes from install to a first test.
+  - On a phone, inline code wraps instead of making 22 pages scroll sideways.
+    A test checks that a link to a missing anchor fails the strict build.
 
 ### Internal
 
@@ -237,6 +370,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session with `queryguard_unused_eager_load` or `queryguard_unused_columns`
   ends (pytest's own end, or a `pytester` run) no longer raises
   `TypeError: 'NoneType' object is not callable` into that thread.
+- `tests/test_compat.py` also checks that the SQLAlchemy objects the plugin
+  keeps its own `_queryguard_*` attributes on (InstanceState, Session,
+  Connection, the cursor execution context, the UOWTransaction of a flush)
+  still have an
+  instance `__dict__`; `_compat.py` lists them. A SQLAlchemy release that
+  slots one of them fully fails that test, with the class in the message,
+  instead of showing up only as an internal error that stops the measurement.
+- `tests/test_ini_usage_errors.py` makes `Config.getini()` raise
+  `UsageError` for each ini option, as pytest 9.2 does for a mistyped value,
+  and checks that the error names the option; the required CI jobs run older
+  pytest releases, which raise `TypeError` or `ValueError` instead.
+- The nightly workflow no longer sets `continue-on-error`: it marked every
+  run green, so its pytest pre-release job failed unnoticed from 2026-10-28.
 
 ## [0.8.0] - 2026-11-06
 

@@ -15,6 +15,14 @@ It ships from 0.5.0 on. It is experimental (see
 names in `pytest_queryguard.app`, their settings and the panel's JSON may still
 change in a minor release, without a deprecation period.
 
+**In short:** call `queryguard.watch(engine)` at startup and add
+`QueryGuardASGI` (FastAPI, Starlette, any ASGI app) or `QueryGuardWSGI`
+(Flask, any WSGI app). Each request with a finding or over its budget logs a
+WARNING on the `pytest_queryguard.app` logger. Optional: a
+[panel](#the-panel) at `/_queryguard/`, [findings in the page](#findings-in-the-page),
+[OpenTelemetry and Sentry](#reporting-to-opentelemetry-and-sentry), and
+`track()` for jobs and tasks [outside HTTP](#outside-http).
+
 ## FastAPI and Starlette
 
 Watch the engine, add the middleware. A shortened version of `app/main.py` in
@@ -312,6 +320,10 @@ middleware_options = {"report": ["log", to_my_tracker]}
 ```
 
 An exception in a callable is logged and does not reach the request.
+Callables are called synchronously when the request ends, in the request's
+thread or on the event loop, so keep them fast: hand the report to a queue
+or schedule a task. A coroutine function (`async def`) is refused with a
+`ValueError` when the settings are made, since it would never be awaited.
 
 **Sampling and fast requests.** `sample_rate=0.1` measures one request in
 ten, chosen at random; the others run as if the middleware were not there

@@ -97,7 +97,7 @@ Command-line options:
 | Option | Meaning |
 |---|---|
 | `--queryguard-mode=fail\|warn\|off` | Overrides `queryguard_mode` for this run. |
-| `--queryguard-report` | Prints the 10 tests with the most queries at the end of the session. |
+| `--queryguard-report` | Prints the 10 tests with the most queries at the end of the session (tests with equal counts by node id). |
 | `--queryguard-baseline=PATH` | Baseline file for this run; overrides `queryguard_baseline`. |
 | `--queryguard-sarif=PATH` | Writes the findings of this run to `PATH` as SARIF 2.1.0. |
 | `--queryguard-json=PATH` | Writes each test's statement counts (total and by verb), database time and findings to `PATH` as JSON, to compare runs. See [CI](ci.md#query-counts-as-json). |

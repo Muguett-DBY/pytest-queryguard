@@ -34,7 +34,7 @@ one small project on one date, not a full compatibility test of nplusone.
 | `signals.ignore(signals.lazy_load)` block | `with pytest_queryguard.ignore("relationship-load"):` ([the `ignore()` block](ignoring.md#the-ignore-block)), a marker, `@pytest.mark.queryguard_ignore("Order.customer")` (or its alias `allow_nplusone`), or an ini pattern |
 | Whitelist patterns with `fnmatch` | The same: `fnmatch` patterns in markers and `queryguard_ignore` |
 | A profiler around one block | `record_queries()` and `log.assert_no_nplusone()` |
-| Flask, Django, WSGI middleware | Not covered: pytest-queryguard runs in tests only |
+| Flask, Django, WSGI middleware | Flask and any WSGI or ASGI app: the experimental [in-application mode](in-app.md) (`QueryGuardWSGI`, `QueryGuardASGI`). Django: not covered |
 
 ## Before and after
 

@@ -29,7 +29,27 @@ pip install pytest-queryguard
 ```
 
 It is on by default: there is nothing to import or configure. These pages
-describe 0.8.0, see [Getting started](getting-started.md#install).
+describe 0.8.0, see [Getting started](getting-started.md#install). They are
+published from `main`, so an option added since 0.8.0 may already be here
+before it is on PyPI: if pytest does not know an option, check the
+[changelog](../CHANGELOG.md) under Unreleased.
+
+## Why this one
+
+- **Zero configuration.** Every test is checked once it is installed; the
+  other SQLAlchemy test plugins in the [comparison](comparison.md) need a
+  marker, an option or a fixture before a test fails, and some never fail
+  one.
+- **More than lazy loads.** Repeated statements from `session.get()` loops,
+  Core and `text()`, deferred and expired column loads, and query budgets
+  that list every statement with the line that sent it.
+- **Missing indexes** on PostgreSQL, SQLite, MySQL and MariaDB, with a
+  `CREATE INDEX` to add.
+- **Adoption on a large suite:** a [baseline](baseline.md) so only new
+  findings fail, and [SARIF](sarif.md) for GitHub code scanning.
+
+What it does not do (Django, other ORMs) and where other tools are ahead:
+[Comparison with other tools](comparison.md) and [Limitations](limitations.md).
 
 ## Where to go
 
@@ -49,9 +69,7 @@ The path most projects take, one page each:
 Reference: [How detection works](how-detection-works.md),
 [Configuration](configuration.md), [Budgets and timing](budgets.md),
 [Ignoring findings](ignoring.md). Before you adopt it:
-[FAQ](faq.md), [Limitations](limitations.md),
-[Comparison with other tools](comparison.md),
-[Stability and versioning](stability.md).
+[FAQ](faq.md) and [Stability and versioning](stability.md).
 
 The source and the issue tracker are on
 [GitHub](https://github.com/MaciejZiel/pytest-queryguard).
