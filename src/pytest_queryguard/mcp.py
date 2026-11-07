@@ -391,7 +391,9 @@ def handle(message: Any) -> dict[str, Any] | None:
         return _error(None, -32600, "Invalid Request")
     request_id = message.get("id")
     method = message.get("method")
-    params = message.get("params") or {}
+    params = message.get("params")
+    if params is None:
+        params = {}
     try:
         if not isinstance(method, str):
             raise _RpcError(-32600, "Invalid Request")
@@ -437,7 +439,8 @@ def serve(stdin: IO[bytes], stdout: IO[bytes]) -> None:
         try:
             # a line that is not UTF-8 is one bad message, not the end of the server
             message = json.loads(line.decode("utf-8"))
-        except ValueError:  # UnicodeDecodeError included
+        # UnicodeDecodeError is a ValueError; a deeply nested line is too deep
+        except (ValueError, RecursionError):
             response: dict[str, Any] | None = _error(None, -32700, "Parse error")
         else:
             try:

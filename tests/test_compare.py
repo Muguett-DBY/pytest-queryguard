@@ -245,10 +245,12 @@ def test_the_report_is_ascii_so_any_console_prints_it() -> None:
         [],
         {"statements": "12"},
         {"statements": True},
+        {"statements": 1, "findings": [1]},
         {"statements": 1, "findings": {}},
         {"statements": 1, "findings": [{"kind": "relationship-load"}]},
         {"statements": 1, "findings": [{"kind": "k", "label": ["a"]}]},
         {"statements": 1, "findings": [{"kind": "k", "label": "a", "count": "2"}]},
+        {"statements": 1, "findings": [{"kind": "k", "label": "a", "count": None}]},
         {"statements": 1, "findings": [{"kind": "k", "label": "a", "file": [1]}]},
     ],
 )
@@ -280,3 +282,18 @@ def test_an_output_file_that_cannot_be_written_is_an_error(
     out = tmp_path / "missing" / "r.md"
     assert compare.main([str(base), str(base), "--output", str(out)]) == 2
     assert f"cannot write {out}" in capsys.readouterr().err
+
+
+def test_deeply_nested_json_is_an_unreadable_file(tmp_path: Path) -> None:
+    path = tmp_path / "deep.json"
+    path.write_text("[" * 200_000)
+    with pytest.raises(compare.CompareError, match="cannot read"):
+        compare.load(path)
+
+
+def test_a_whole_number_written_as_a_float_is_still_read(tmp_path: Path) -> None:
+    # int() read 3.0 before the entries were checked; keep reading it
+    path = tmp_path / "float.json"
+    doc = {"format": 1, "tests": {"t.py::a": {"statements": 3.0, "findings": []}}}
+    path.write_text(json.dumps(doc))
+    assert compare.compare(compare.load(path), compare.load(path)).total_after == 3

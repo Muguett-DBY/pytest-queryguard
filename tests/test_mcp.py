@@ -336,8 +336,21 @@ def test_a_lone_surrogate_does_not_stop_the_server(server: Server) -> None:
 
 
 def test_params_that_are_not_an_object_are_invalid_params(server: Server) -> None:
-    server.send('{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": [1]}')
-    assert server.receive()["error"] == {"code": -32602, "message": "Invalid params"}
+    for params in ("[1]", "[]", "0", '""', "false"):
+        server.send(
+            f'{{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {params}}}'
+        )
+        error = server.receive()["error"]
+        assert error == {"code": -32602, "message": "Invalid params"}, params
+    server.send('{"jsonrpc": "2.0", "id": 2, "method": "ping", "params": null}')
+    assert server.receive()["result"] == {}
+
+
+def test_deeply_nested_json_is_a_parse_error(server: Server) -> None:
+    # json.loads raises RecursionError, which stopped the server
+    server.send("[" * 200_000)
+    assert server.receive()["error"]["code"] == -32700
+    assert server.request("ping")["result"] == {}
 
 
 def test_compare_reports_a_malformed_file_as_a_tool_error(

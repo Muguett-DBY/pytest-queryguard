@@ -78,7 +78,7 @@ def load(path: Path) -> dict[str, Any]:
     try:
         # utf-8-sig: a file saved again by Windows PowerShell 5 starts with a BOM
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise CompareError(f"cannot read {path}: {exc}") from None
     if not isinstance(data, dict) or data.get("format") != 1:
         raise CompareError(f"{path} is not a pytest-queryguard JSON file (format 1)")
@@ -94,28 +94,28 @@ def load(path: Path) -> dict[str, Any]:
     return data
 
 
-def _is_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _entry_problem(entry: Any) -> str:
     """What is wrong with one test's entry, so that compare would not fail."""
-    if not isinstance(entry, dict) or not _is_int(entry.get("statements")):
+    if not isinstance(entry, dict) or not _is_number(entry.get("statements")):
         return "has no statement count"
     findings = entry.get("findings", [])
     if not isinstance(findings, list):
         return "has findings that are not a list"
     for f in findings:
-        if not (
-            isinstance(f, dict)
-            and isinstance(f.get("kind"), str)
-            and isinstance(f.get("label"), str)
-            and _is_int(f.get("count", 0))
-            and all(
-                isinstance(f.get(k), (str, type(None))) for k in ("file", "function")
-            )
-        ):
-            return "has a finding without a kind, label, count, file or function"
+        if not isinstance(f, dict):
+            return "has a finding that is not an object"
+        for key in ("kind", "label"):
+            if not isinstance(f.get(key), str):
+                return f"has a finding whose {key} is not a string"
+        if not _is_number(f.get("count", 0)):
+            return "has a finding whose count is not a number"
+        for key in ("file", "function"):
+            if not isinstance(f.get(key), (str, type(None))):
+                return f"has a finding whose {key} is not a string or null"
     return ""
 
 
