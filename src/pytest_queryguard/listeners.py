@@ -605,8 +605,6 @@ def column_load_of(
             f"SQLAlchemy's column-load compile options have no {ONLY_LOAD_PROPS}; "
             "this SQLAlchemy version is not supported by the column-load kind"
         )
-    expired = instance.expired_attributes
-    columns = {prop.key for prop in instance.mapper.column_attrs}
     # session.refresh(obj, ["name"]) expires the names before it loads them,
     # so without the flag it would look like an expired load.
     user_refresh = bool(getattr(load_options, IS_USER_REFRESH, False))
@@ -615,13 +613,14 @@ def column_load_of(
         cause, names = CAUSE_REFRESH, ()
     elif instance.expired:
         cause, names = CAUSE_EXPIRED, ()
-    elif only and set(only) <= expired:
+    elif only and set(only) <= instance.expired_attributes:
         cause, names = CAUSE_EXPIRED, ()
         base = _unselected_subclass_base(instance, only)
         if base is not None:
             cause = CAUSE_POLYMORPHIC
     else:
         cause = CAUSE_DEFERRED
+        columns = {prop.key for prop in instance.mapper.column_attrs}
         names = tuple(sorted(set(only) & columns or only))
     key = instance.key if instance.key is not None else id(instance)
     load = ColumnLoadEvent(

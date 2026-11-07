@@ -21,7 +21,9 @@ empty), `app/models.py`, `app/tasks.py`, `app/main.py`, `tests/conftest.py`,
 
 ## The application
 
-`pytest.ini`:
+`pytest.ini`; the `filterwarnings` line hides the warning of Starlette 1.2 and
+later about its test client finding `httpx` without `httpx2`, as the
+[FastAPI recipe](recipes-fastapi.md) explains:
 
 ```ini
 [pytest]

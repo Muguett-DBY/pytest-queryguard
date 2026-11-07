@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surrogate in the file name), as the baseline file already was: the location
   URI carries the file name's bytes percent-encoded and the file stays valid
   UTF-8. Before, the whole file failed to write.
+- `--queryguard-write-patch` and `--queryguard-show-patch` handle a file name
+  that is not valid UTF-8: its diff headers quote the name as git does
+  (`--- "a/caf\351/views.py"`), which `git apply` reads back to the same
+  bytes. Before, the patch file failed to write.
+- A column load builds the set of the mapper's column names only for a
+  deferred column, the one cause that reads it.
+- The FastAPI recipes and examples explain the `StarletteDeprecationWarning`
+  of Starlette 1.2 and later (its test client finds `httpx` without `httpx2`):
+  their `filterwarnings` line, which works with every Starlette version, must
+  come after `error`, and installing `httpx2` as well removes the warning.
+  A test checks that the documented line quiets the warning.
 - The baseline, budget, JSON, SARIF and patch files are written with the
   permissions of the file they replace, or those of the umask for a new file,
   not owner-only (0600) as the temporary file they are written through.

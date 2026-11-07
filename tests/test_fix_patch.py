@@ -1915,3 +1915,78 @@ def test_a_statement_variable_and_a_module_attribute_are_patched(
     ) in after
     assert "\nfrom sqlalchemy.orm import joinedload\n" in after
     pytester.runpytest().assert_outcomes(passed=2)
+
+
+# --- a file name that is not valid UTF-8 ---
+
+
+def _non_utf8_dir(root: Path) -> Path:
+    """``root/caf\\xe9``: the name reaches Python as a lone surrogate."""
+    try:
+        os.makedirs(os.fsencode(root) + b"/caf\xe9")
+    except (OSError, ValueError):  # pragma: no cover - the filesystem refuses it
+        pytest.skip("cannot create a non-UTF-8 directory name here")
+    return Path(os.fsdecode(os.fsencode(root) + b"/caf\xe9"))
+
+
+def test_git_quotes_a_name_as_git_does() -> None:
+    assert fixpatch.git_path("a/", "app/views.py") == "a/app/views.py"
+    assert fixpatch.git_path("a/", "app/żółw.py") == "a/app/żółw.py"
+    assert fixpatch.git_path("b/", "caf\udce9/v.py") == '"b/caf\\351/v.py"'
+    # once quoted, every byte that is not printable ASCII is escaped
+    assert fixpatch.git_path("a/", "ż\udce9.py") == '"a/\\305\\274\\351.py"'
+    assert fixpatch.git_path("a/", 'q"\\\t\n.py') == '"a/q\\"\\\\\\t\\n.py"'
+
+
+def test_a_file_name_that_is_not_utf8_gets_a_patch_git_applies(
+    tmp_path: Path,
+) -> None:
+    directory = _non_utf8_dir(tmp_path)
+    file = directory / "views.py"
+    file.write_bytes(
+        (
+            HEADER
+            + "\n\ndef load(session):\n"
+            + "    return session.scalars(select(Order)).all()  # parents\n"
+        ).encode("utf-8")
+    )
+    fix = _make(tmp_path, _finding(file))
+    assert fix is not None
+    assert fix.file == "caf\udce9/views.py"
+    # the file name as git writes it: quoted, the byte as an octal escape
+    assert fix.diff.startswith('--- "a/caf\\351/views.py"\n+++ "b/caf\\351/views.py"\n')
+    combined = fixpatch.combine([fix], tmp_path, time.time() + 1)
+    assert combined == (fix.diff, 1, [])
+    after = _patched(tmp_path, fix)  # strict UTF-8, then git apply
+    assert "select(Order).options(joinedload(Order.customer))" in after
+
+
+def test_the_written_and_shown_patch_of_a_non_utf8_file_name(
+    project: pytest.Pytester,
+) -> None:
+    # not under pytest-xdist: execnet cannot send such a test id at collection
+    sub = _non_utf8_dir(project.path)
+    (project.path / "test_loops.py").rename(sub / "test_loops.py")
+    project.syspathinsert()
+    result = project.runpytest(
+        "-k",
+        "test_orders",
+        "-p",
+        "no:cacheprovider",
+        "--queryguard-show-patch",
+        "--queryguard-write-patch=fix.patch",
+    )
+    result.assert_outcomes(failed=1)
+    output = result.stdout.str() + result.stderr.str()
+    assert "INTERNALERROR" not in output
+    assert "could not write" not in output
+    result.stdout.fnmatch_lines(
+        [
+            '    --- "a/caf\\351/test_loops.py"',
+            "*fix.patch: changes 1 file; apply it from * with git apply",
+        ]
+    )
+    patch = project.path / "fix.patch"
+    patch.read_bytes().decode("utf-8")  # strict: no lone surrogates
+    after = _git_apply(project.path, patch, "caf\udce9/test_loops.py")
+    assert "session.query(Order).options(joinedload(Order.customer)).all()" in after

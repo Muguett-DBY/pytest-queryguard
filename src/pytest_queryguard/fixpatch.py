@@ -923,13 +923,58 @@ def _ordered(insertions: Iterable[Insertion]) -> list[Insertion]:
     )
 
 
+# what git writes as an escape in a quoted name; other bytes it must quote are octal
+_GIT_ESCAPES = {
+    0x07: "\\a",
+    0x08: "\\b",
+    0x09: "\\t",
+    0x0A: "\\n",
+    0x0B: "\\v",
+    0x0C: "\\f",
+    0x0D: "\\r",
+    0x22: '\\"',
+    0x5C: "\\\\",
+}
+
+
+# a character that makes git quote a name, other than non-ASCII UTF-8
+_GIT_QUOTED = re.compile(r'[\x00-\x1f"\\\x7f\ud800-\udfff]')
+
+
+def git_path(prefix: str, file: str) -> str:
+    """``prefix + file`` for a diff header, quoted as git quotes it when needed.
+
+    A name that is not valid UTF-8 holds lone surrogates (surrogateescape)
+    and cannot be written as text. Such a name, or one with a control
+    character, a double quote or a backslash, is written as git writes it: in
+    double quotes, with each byte outside printable ASCII as an octal escape,
+    which ``git apply`` reads back to the same bytes. Other names stay as they
+    are (git would also quote non-ASCII UTF-8; ``git apply`` takes both).
+    """
+    name = prefix + file
+    if not _GIT_QUOTED.search(name):
+        return name
+    out = []
+    # the bytes of the name on disk, as sarif.repo_path takes them
+    for byte in os.fsencode(name):
+        if byte in _GIT_ESCAPES:
+            out.append(_GIT_ESCAPES[byte])
+        elif byte < 0x20 or byte >= 0x7F:
+            out.append(f"\\{byte:03o}")
+        else:
+            out.append(chr(byte))
+    return '"' + "".join(out) + '"'
+
+
 def _diff(file: str, module: _Module, insertions: Iterable[Insertion]) -> str:
     out = list(module.lines)
     for edit in _ordered(insertions):
         text = out[edit.line - 1]
         out[edit.line - 1] = text[: edit.column] + edit.text + text[edit.column :]
     after = _split("".join(out))
-    lines = difflib.unified_diff(module.lines, after, f"a/{file}", f"b/{file}")
+    lines = difflib.unified_diff(
+        module.lines, after, git_path("a/", file), git_path("b/", file)
+    )
     # the last line of a file without a final newline, marked as diff does
     return "".join(
         line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n"
