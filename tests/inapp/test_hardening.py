@@ -492,22 +492,28 @@ else:
 stream(300)  # warm caches: compiled statements, call sites
 gc.collect()
 tracemalloc.start()
-before = tracemalloc.get_traced_memory()[0]
-stream(10_000)
-gc.collect()
-grown = tracemalloc.get_traced_memory()[0] - before
+# Growth per window of 2,000 requests. A leak grows every window; a table
+# made before tracemalloc started (the interned-strings dict, which churn
+# rebuilds now and then before 3.14) shows once, as its new copy is traced
+# and the freed old one never was.
+windows = []
+for _ in range(5):
+    before = tracemalloc.get_traced_memory()[0]
+    stream(2_000)
+    gc.collect()
+    windows.append(tracemalloc.get_traced_memory()[0] - before)
 assert queryguard.internal_error() is None
-print(reported, len(app.reports), grown)
+print(reported, len(app.reports), *windows)
 """
 
 
 @pytest.mark.parametrize("kind", ["asgi", "wsgi"])
 def test_memory_stays_flat_over_10k_requests(kind: str, tmp_path: Path) -> None:
-    reported, kept, grown = _run(tmp_path, MEMORY_RUN, kind)
+    reported, kept, *windows = _run(tmp_path, MEMORY_RUN, kind)
     assert reported == 10_300
     assert kept == 20
-    # A leak of a few dozen bytes per request would show as >= 300 kB.
-    assert grown < 150_000, grown
+    # A leak of 15 bytes per request would put most windows at >= 30 kB.
+    assert sorted(windows)[len(windows) // 2] < 30_000, windows
 
 
 # --- overhead when not measuring -------------------------------------------
