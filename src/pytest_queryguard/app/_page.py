@@ -122,7 +122,8 @@ def inject(
 def summary(report: RequestReport) -> str:
     problems = len(report.findings) + (1 if report.over_budget else 0)
     text = f"queryguard: {problems} problem{'s' if problems != 1 else ''} in "
-    text += f"{report.name}: {report.statement_count} statements"
+    count = report.statement_count
+    text += f"{report.name}: {count} {'statement' if count == 1 else 'statements'}"
     if report.budget is not None:
         text += f", budget {report.budget}"
     return text

@@ -1790,7 +1790,7 @@ def test_the_written_patch_applies_and_fixes_the_n_plus_one(
     result.stdout.fnmatch_lines(
         [
             "*queryguard: patch written*",
-            "*out/fix.patch: changes 1 file; apply it from * with git apply",
+            "*out/fix.patch: changes 1 file; apply it from the rootdir (*) with git apply *fix.patch",
         ]
     )
     patch = project.path / "out" / "fix.patch"
@@ -1998,7 +1998,7 @@ def test_the_written_and_shown_patch_of_a_non_utf8_file_name(
     result.stdout.fnmatch_lines(
         [
             '    --- "a/caf\\351/test_loops.py"',
-            "*fix.patch: changes 1 file; apply it from * with git apply",
+            "*fix.patch: changes 1 file; apply it from the rootdir (*) with git apply *fix.patch",
         ]
     )
     patch = project.path / "fix.patch"

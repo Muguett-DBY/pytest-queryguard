@@ -323,9 +323,10 @@ def findings(
                     kind_line(KIND_UNUSED_EAGER_LOAD, load.label),
                     docs_line(KIND_UNUSED_EAGER_LOAD),
                     f"  fix: remove {option} from the query, or load it only where used",
-                    "  (experimental: if it is read later, or by code the plugin",
-                    "  cannot see, ignore it with queryguard_ignore(kind=KIND) or",
-                    "  the queryguard_ignore option, KIND being unused-eager-load)",
+                    "  (experimental: if it is read later, or by code the plugin cannot see,",
+                    "  leave it out with @pytest.mark.queryguard_ignore(",
+                    f'      "{load.label}", kind="unused-eager-load")',
+                    f"  or the queryguard_ignore pattern unused-eager-load {load.label})",
                 ]
             )
             result.append(

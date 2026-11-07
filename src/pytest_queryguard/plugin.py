@@ -930,6 +930,17 @@ def _patch_path(config: pytest.Config) -> Path | None:
     return _output_path(config, "queryguard_write_patch", "--queryguard-write-patch")
 
 
+def _shown(path: Path, root: Path | None) -> str:
+    """A path for the terminal: relative to the rootdir when inside it, as in findings."""
+    return _display_path(os.path.normpath(path), root)
+
+
+def _file_error(exc: Exception, path: Path, root: Path | None) -> str:
+    """The text of an error about ``path``, with the path as ``_shown()`` prints it."""
+    # the messages are built with f"{path}", so this is the spelling to replace
+    return str(exc).replace(str(path), _shown(path, root))
+
+
 def _read_settings(config: pytest.Config) -> _Settings:
     mode = _choice(config, "queryguard_mode", _MODES, flag="--queryguard-mode")
     repeat = _threshold(config, "queryguard_repeat_threshold")
@@ -952,10 +963,13 @@ def _read_settings(config: pytest.Config) -> _Settings:
             baseline = baselines.load(baseline_path)
         except BaselineError as exc:
             if not update:
-                raise pytest.UsageError(f"queryguard baseline: {exc}") from None
+                raise pytest.UsageError(
+                    f"queryguard baseline: {_file_error(exc, baseline_path, config.rootpath)}"
+                ) from None
             # an update replaces a missing or unreadable file
             baseline = frozenset()
-            previous_error = str(exc) if baseline_path.exists() else None
+            if baseline_path.exists():
+                previous_error = _file_error(exc, baseline_path, config.rootpath)
         # the CLI path is relative to the invocation directory; workers resolve
         # the same file, whatever their own working directory is
         config.option.queryguard_baseline = str(baseline_path)
@@ -1006,11 +1020,16 @@ def _read_settings(config: pytest.Config) -> _Settings:
             settings.budgets = budget_files.load(settings.budgets_path)
         except budget_files.BudgetFileError as exc:
             if not settings.update_budgets:
-                raise pytest.UsageError(f"queryguard budgets: {exc}") from None
+                raise pytest.UsageError(
+                    "queryguard budgets: "
+                    f"{_file_error(exc, settings.budgets_path, config.rootpath)}"
+                ) from None
             # an update replaces a missing file; a broken one is reported
             settings.budgets = {}
             if settings.budgets_path.exists():
-                settings.budgets_previous_error = str(exc)
+                settings.budgets_previous_error = _file_error(
+                    exc, settings.budgets_path, config.rootpath
+                )
     return settings
 
 
@@ -2244,10 +2263,13 @@ def _write_sarif(settings: _Settings) -> None:
         document, omitted = sarif.build(settings.reported, version, prefix)
         sarif.write(path, document)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
-        settings.sarif_failed = f"could not write {path}: {exc}"
+        settings.sarif_failed = (
+            f"could not write {_shown(path, settings.rootpath)}: {exc}"
+        )
         return
     count = len(document["runs"][0]["results"])
-    text = f"{path}: {count} results"
+    noun = "result" if count == 1 else "results"
+    text = f"{_shown(path, settings.rootpath)}: {count} {noun}"
     if omitted:
         text += f" ({omitted} left out: no location inside the rootdir)"
     settings.sarif_result = text
@@ -2259,20 +2281,22 @@ def _write_patch(settings: _Settings) -> None:
     root = settings.rootpath
     if path is None or root is None:
         return
+    shown = _shown(path, root)
     try:
         text, files, changed = fixpatch.combine(settings.fixes, root, settings.started)
         atomic_write_text(path, text)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
-        settings.patch_failed = f"could not write {path}: {exc}"
+        settings.patch_failed = f"could not write {shown}: {exc}"
         return
     if files:
         noun = "file" if files == 1 else "files"
         settings.patch_result = (
-            f"{path}: changes {files} {noun}; apply it from {root} with git apply"
+            f"{shown}: changes {files} {noun}; apply it from the rootdir ({root}) "
+            f"with git apply {shlex.quote(shown)}"
         )
     else:
         settings.patch_result = (
-            f"{path}: empty, no finding had a parent query line certain enough "
+            f"{shown}: empty, no finding had a parent query line certain enough "
             "for a patch"
         )
     if changed:
@@ -2333,14 +2357,17 @@ def _write_budgets(
     try:
         budget_files.write(path, after)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
-        settings.budgets_failed = f"could not write {path}: {exc}"
+        settings.budgets_failed = (
+            f"could not write {_shown(path, settings.rootpath)}: {exc}"
+        )
         return
-    text = f"{path}: {budget_files.describe(before, after)}"
+    text = f"{_shown(path, settings.rootpath)}: {budget_files.describe(before, after)}"
     if settings.budgets_previous_error is not None:
         text += f"\nthe previous file was replaced: {settings.budgets_previous_error}"
     kept = len(settings.failed & set(after))
     if kept:
-        text += f"\n{kept} failing tests kept their previous budget"
+        noun = "failing test kept its" if kept == 1 else "failing tests kept their"
+        text += f"\n{kept} {noun} previous budget"
     if narrowed:
         text += "\nthis run did not cover the whole suite: entries of tests that did not run are kept"
     settings.budgets_written = text
@@ -2360,9 +2387,12 @@ def _write_json(
     try:
         testjson.write(path, testjson.document(settings.tests, version, complete))
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
-        settings.json_failed = f"could not write {path}: {exc}"
+        settings.json_failed = (
+            f"could not write {_shown(path, settings.rootpath)}: {exc}"
+        )
         return
-    text = f"{path}: {len(settings.tests)} tests"
+    count = len(settings.tests)
+    text = f"{_shown(path, settings.rootpath)}: {count} {'test' if count == 1 else 'tests'}"
     if not complete:
         text += " (incomplete: the run stopped early or measurement failed)"
     settings.json_result = text
@@ -2405,18 +2435,26 @@ def _update_baseline(
     try:
         baselines.write(path, after)
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
-        settings.baseline_failed = f"could not write {path}: {exc}"
+        settings.baseline_failed = (
+            f"could not write {_shown(path, settings.rootpath)}: {exc}"
+        )
         return
+    noun = "entry" if len(after) == 1 else "entries"
     text = (
-        f"{path}: {len(after)} entries ({len(after - before)} added, "
-        f"{len(before - after)} removed)"
+        f"{_shown(path, settings.rootpath)}: {len(after)} {noun} "
+        f"({len(after - before)} added, {len(before - after)} removed)"
     )
-    if narrowed:
+    if narrowed and kept:
         reason = "its test did not run" if len(kept) == 1 else "their tests did not run"
         noun = "entry" if len(kept) == 1 else "entries"
         text += (
             f"\nthis run did not cover the whole suite: {len(kept)} {noun} kept "
             f"because {reason}"
+        )
+    elif narrowed:
+        text += (
+            "\nthis run did not cover the whole suite, but no entry belonged to "
+            "a test that did not run"
         )
     settings.baseline_written = text
 
@@ -2450,7 +2488,9 @@ def _write_baseline_summary(
     stale = baselines.sorted_identities(
         (settings.baseline or frozenset()) - settings.seen
     )
-    lines = format_stale_baseline(stale, settings.baseline_path)
+    lines = format_stale_baseline(
+        stale, _shown(settings.baseline_path, settings.rootpath)
+    )
     if lines:
         terminalreporter.write_sep(
             "=", "queryguard: stale baseline entries", yellow=True

@@ -22,6 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reviewed the texts the plugin prints. Counts agree with their nouns
+  (`1 entry`, `1 test`, `1 result`, `1 new finding`, `1 failing test kept its
+  previous budget`) in the baseline, budget, JSON, SARIF and patch summaries,
+  the `compare` and `trend` reports, the in-application log line and page
+  title, and the `QueryLog` repr. Those summaries and the usage
+  errors about an unreadable baseline or budget file show the path relative
+  to the rootdir, as findings do, instead of an absolute one. A partial
+  baseline update with no entry to keep no longer says "0 entries kept". The
+  patch summary gives the `git apply` command to run. The hint of an
+  unused-eager-load or unused-columns finding spells out the marker (with the
+  label, so it leaves out only that finding) and the pattern, instead of
+  `queryguard_ignore(kind=KIND)`. The
+  strict-mode error says that a baseline entry also lets the lazy load pass.
+  Long fix lines (a repeated `IN (...)` query, a polymorphic load, a cartesian
+  join) are wrapped. `compare` and `trend` say how to make a file they cannot
+  read, and name the format of a file written by another release. The
+  `kind:` and `label:` lines and the report headers are unchanged.
 - The accuracy corpus has 57 more scenarios (254): inheritance (single,
   concrete, `selectin_polymorphic`, polymorphic collections), association
   proxies, `deferred_group`, `query_expression`, `WriteOnlyMapped`,

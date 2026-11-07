@@ -106,7 +106,7 @@ def test_the_report_leads_with_new_findings_and_more_statements() -> None:
         "3 tests compared: 55 -> 45 statements (-10). **1** run more, 1 fewer; "
         "**2** new findings, 1 fixed."
     ) in text
-    assert "Not compared: 1 new tests, 1 tests not in this run." in text
+    assert "Not compared: 1 new test, 1 test not in this run." in text
     assert text.index("#### New findings") < text.index("#### Tests that run more")
     assert (
         "| relationship-load | `Order.items` | `app/orders.py in list_orders` | 38 |"
@@ -198,7 +198,7 @@ def test_two_real_runs_are_compared(pytester: pytest.Pytester) -> None:
     assert result.ret == 0
     result.stdout.fnmatch_lines(
         [
-            "*1 tests compared*",
+            "*1 test compared*",
             "#### New findings",
             "*| relationship-load | `Order.customer` | `test_app.py in test_list` |*",
             "#### Tests that run more statements",

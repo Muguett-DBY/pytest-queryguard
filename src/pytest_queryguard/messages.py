@@ -39,13 +39,13 @@ from .indexes import table_label
 from .listeners import Failure
 
 _SQL_LIMIT = 200
-_REPEAT_FIX = (
-    "fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop"
-)
-_BATCHED_FIX = (
-    "fix: this query already fetches several rows with IN (...), so it is the "
-    "calls that repeat: call it once with all the ids, or combine the calls"
-)
+_REPEAT_FIX = [
+    "  fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop"
+]
+_BATCHED_FIX = [
+    "  fix: this query already fetches several rows with IN (...), so it is the",
+    "       calls that repeat: call it once with all the ids, or combine the calls",
+]
 _IN_LIST = "IN (...)"
 
 
@@ -241,7 +241,7 @@ def _block(finding: Detection, stack: Stack, cwd: Path | None) -> list[str]:
         _statement_line(finding),
         docs_line(KIND_REPEAT),
         *_scope_hint(finding),
-        f"  {_BATCHED_FIX if _IN_LIST in finding.sql else _REPEAT_FIX}",
+        *(_BATCHED_FIX if _IN_LIST in finding.sql else _REPEAT_FIX),
     ]
 
 
@@ -309,19 +309,14 @@ def _column_block(
             fix = [
                 "  fix: select the subclass columns with the query, e.g.",
                 f"       select(with_polymorphic({base}, [{owner}]))",
-                (
-                    '       or polymorphic_load="inline" in the __mapper_args__ '
-                    f"of {owner}"
-                ),
+                f'       or set polymorphic_load="inline" in the __mapper_args__ of {owner}',
             ]
         else:
             fix = [
                 "  fix: load the subclass columns with the query, e.g.",
                 f"       select({base}).options(selectin_polymorphic({base}, [{owner}]))",
-                (
-                    "       or select(with_polymorphic(...)), or "
-                    f'polymorphic_load="selectin" in the __mapper_args__ of {owner}'
-                ),
+                "       or select(with_polymorphic(...)), or set",
+                f'       polymorphic_load="selectin" in the __mapper_args__ of {owner}',
             ]
     elif finding.cause == CAUSE_REFRESH:
         head = f"  {owner} was reloaded with session.refresh() {count}"
@@ -387,14 +382,15 @@ def format_strict(finding: Finding, parents: int, *, patch: bool = False) -> str
         [
             (
                 f"queryguard strict: {finding.label} was lazy-loaded for {parents} "
-                "parents loaded at one line; this access is the N+1"
+                "parents loaded at the same line; this access is the N+1"
             ),
             "",
             finding.message,
             *(patch_lines(finding.fix) if patch and finding.fix is not None else ()),
             "",
-            "  (queryguard_strict raises at the lazy load; a queryguard_ignore marker",
-            "  or pattern, or an ignore() block lets it pass, as for the report)",
+            "  (queryguard_strict raises at the lazy load instead of at the end of the",
+            "  test; a queryguard_ignore marker or pattern, an ignore() block or a",
+            "  baseline entry lets it pass, as for the report)",
         ]
     )
 
@@ -552,8 +548,9 @@ def format_time_budget(
     ]
     lines.extend(_timing_lines(statements, spent, cwd, top=5))
     if total is not None and total > len(statements):
+        missing = total - len(statements)
         lines.append(
-            f"  ... {total - len(statements)} more statements were not stored "
+            f"  ... {missing} more {'statement was' if missing == 1 else 'statements were'} not stored "
             "(queryguard_max_events), so the slowest list may be incomplete"
         )
     return "\n".join(lines)
@@ -750,7 +747,7 @@ _STALE_BASELINE_SHOWN = 20
 
 
 def format_stale_baseline(
-    stale: Sequence[tuple[str, str, str | None, str | None]], path: Path
+    stale: Sequence[tuple[str, str, str | None, str | None]], path: str
 ) -> list[str]:
     """The session summary lines for baseline entries no finding matched."""
     if not stale:

@@ -538,7 +538,8 @@ def _check(
     parts = [f"queryguard: {report.name}"]
     if report.route and report.route != report.path:
         parts[0] += f" (route {report.route})"
-    parts[0] += f": {report.statement_count} statements"
+    count = report.statement_count
+    parts[0] += f": {count} {'statement' if count == 1 else 'statements'}"
     if report.findings:
         parts.append(format_findings(report.findings, cwd=root))
     if report.over_budget:

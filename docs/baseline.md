@@ -139,7 +139,7 @@ An entry is the identity of a finding: kind, label, file and function.
 
 ```
 =========== queryguard: stale baseline entries ===========
-1 baseline entry in /repo/queryguard-baseline.json matched no finding in this run:
+1 baseline entry in queryguard-baseline.json matched no finding in this run:
   relationship-load Order.items (app/orders.py, list_orders)
 They are fixed, or this run did not cover them. After a full run, prune them
 with --queryguard-update-baseline.
