@@ -184,7 +184,8 @@ already running and does not copy the context, such as a live server or a
 worker pool, does not count: to count every thread in a block, use the
 `max_queries()` function or the marker above. Like them, the
 fixture fails whatever `queryguard_mode` is set to; with `queryguard_strict`
-an N+1 inside a block raises `NPlusOneDetected` at the access first. After
+an N+1 inside a block raises `NPlusOneDetected` at the access first, with
+the budget failure under it when the block had already gone over. After
 an internal error of the plugin, a block and the fixture warn with
 `QueryGuardInternalWarning` that their statements may be incomplete, and
 `num_queries()` no longer fails on too few statements. In type hints the

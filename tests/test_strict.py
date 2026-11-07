@@ -342,3 +342,132 @@ def test_the_strict_n_plus_one_is_in_sarif_and_json(project: pytest.Pytester) ->
     tests = json.loads((project.path / "q.json").read_text())["tests"]
     (finding,) = tests["test_strict_suite.py::test_loop"]["findings"]
     assert finding["label"] == "Order.customer"
+
+
+BUDGETS = """
+import pytest
+from sqlalchemy import text
+from pytest_queryguard import max_queries
+from qgmodels import Order, make_sync_session
+
+
+def _loop(session):
+    for order in session.query(Order).all():
+        _ = order.customer.name  # the access
+
+
+@pytest.mark.max_queries(1)
+def test_marker_over():
+    _loop(make_sync_session())
+
+
+@pytest.mark.max_db_time(0)
+def test_db_time_over():
+    _loop(make_sync_session())
+
+
+@pytest.mark.max_queries(100)
+def test_marker_under():
+    _loop(make_sync_session())
+
+
+def test_fixture_over(queryguard):
+    session = make_sync_session()
+    with queryguard.max_queries(1):
+        session.execute(text("select 1"))
+        _loop(session)
+
+
+def test_function_over():
+    session = make_sync_session()
+    with max_queries(1):
+        session.execute(text("select 1"))
+        _loop(session)
+
+
+def test_function_under():
+    session = make_sync_session()
+    with max_queries(100):
+        _loop(session)
+"""
+
+
+@pytest.fixture
+def budgets(pytester: pytest.Pytester) -> pytest.Pytester:
+    pytester.makepyfile(qgmodels=MODELS, test_budgets=BUDGETS)
+    pytester.makeini("[pytest]\nqueryguard_strict = true\n")
+    return pytester
+
+
+@pytest.mark.parametrize("name", ["marker_over", "fixture_over", "function_over"])
+def test_a_budget_gone_over_before_the_access_is_in_the_error(
+    budgets: pytest.Pytester, name: str
+) -> None:
+    result = _run(budgets, "-k", name)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            ">*_ = order.customer.name  # the access",
+            "E*NPlusOneDetected: queryguard strict: Order.customer*",
+            "E*(queryguard_strict raises at the lazy load*",
+            "E*queryguard: expected at most 1 query, got *",
+        ]
+    )
+    # the budget part is in the error once, not also as a second failure;
+    # the short summary (which shows the whole message when CI is set) is
+    # left out
+    failures = result.stdout.str().split("short test summary info")[0]
+    assert failures.count("expected at most 1 query") == 1
+
+
+def test_a_time_budget_gone_over_before_the_access_is_in_the_error(
+    budgets: pytest.Pytester,
+) -> None:
+    result = _run(budgets, "-k", "db_time_over")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "E*NPlusOneDetected: queryguard strict: Order.customer*",
+            "E*queryguard: database time * exceeded the budget of *",
+        ]
+    )
+
+
+@pytest.mark.parametrize("name", ["marker_under", "function_under"])
+def test_a_budget_not_gone_over_before_the_access_is_not_in_the_error(
+    budgets: pytest.Pytester, name: str
+) -> None:
+    result = _run(budgets, "-k", name)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["E*NPlusOneDetected: queryguard strict:*"])
+    assert "expected at most" not in result.stdout.str()
+
+
+STOPPED_BLOCK = """
+from sqlalchemy import select
+from pytest_queryguard import ignore
+from qgmodels import Customer, Order, make_sync_session
+
+
+def test_block_for_a_later_finding():
+    session = make_sync_session()
+    with ignore("repeated-statement"):
+        for order in session.query(Order).all():
+            _ = order.customer.name  # strict raises here
+        for number in range(1, 7):  # the repeat the block leaves out
+            session.execute(select(Customer).where(Customer.id == number)).all()
+"""
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["report", "strict"])
+def test_a_block_of_a_stopped_test_is_not_listed_as_stale(
+    pytester: pytest.Pytester, strict: bool
+) -> None:
+    """The block is for the second loop, which a strict run never reaches."""
+    pytester.makepyfile(qgmodels=MODELS, test_stopped_block=STOPPED_BLOCK)
+    args = ["--queryguard-strict"] if strict else []
+    result = _run(pytester, *args)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*kind: relationship-load  label: Order.customer"])
+    result.stdout.no_fnmatch_line("*queryguard: stale ignores*")
+    result.stdout.no_fnmatch_line("*ignore('repeated-statement')*")

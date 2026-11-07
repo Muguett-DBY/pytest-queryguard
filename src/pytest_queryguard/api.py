@@ -9,7 +9,7 @@ from .blocks import Sieve
 from .collector import QueryCollector, pop, pop_local, push, push_local
 from .detectors import SCOPES, detect
 from .events import CallSite, StatementEvent
-from .listeners import install, internal_error
+from .listeners import install, internal_error, record_error
 from .messages import (
     display_root,
     format_budget,
@@ -47,11 +47,29 @@ def _measure(
     log = QueryLog(collector)
     earlier = internal_error()  # recording is already off if this is set
     (push_local if local else push)(collector)
+    stopped: BaseException | None = None
     try:
         yield log
+    except NPlusOneDetected as exc:
+        if getattr(exc, "queryguard_strict", False):
+            stopped = exc
+        raise
     finally:
         (pop_local if local else pop)(collector)
         error = log._finish(earlier)  # however the block ends, the log is fixed
+        if stopped is not None:
+            # queryguard_strict stopped the block at a lazy load: a budget it
+            # already went over is gone over whatever the rest would have run
+            # (too few statements is no verdict then), so it is shown with
+            # the N+1 instead of being lost with the block's end
+            try:
+                text = _budget_failure(
+                    log, collector, limit, time_limit, exact=exact, too_few=False
+                )
+                if text is not None:
+                    add_to_strict_error(stopped, text)
+            except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+                record_error(exc, "budget of a block stopped by strict mode")
     if local and error is not None:
         warn_internal(
             QueryGuardInternalWarning(
@@ -60,31 +78,53 @@ def _measure(
             ),
             stacklevel=3,
         )
+    # After an internal error statements may be missing: too few is no verdict.
+    text = _budget_failure(
+        log, collector, limit, time_limit, exact=exact, too_few=error is None
+    )
+    if text is not None:
+        raise QueryBudgetExceeded(text)
+
+
+def _budget_failure(
+    log: QueryLog,
+    collector: QueryCollector,
+    limit: int | None,
+    time_limit: float | None,
+    *,
+    exact: bool,
+    too_few: bool,
+) -> str | None:
+    """The failure text of a finished budget block, or None when it kept to it.
+
+    With ``exact`` and ``too_few``, fewer statements than ``limit`` fail it too.
+    """
     # The verdict uses the log's fixed total: a statement still running in
     # another thread may finish after the block and grow the collector's.
     db_time = log.db_time
     count = log.count
-    # After an internal error statements may be missing: too few is no verdict.
-    too_few = exact and count < (limit or 0) and error is None
-    if limit is not None and (count > limit or too_few):
-        raise QueryBudgetExceeded(
-            format_budget(
-                limit,
-                collector.statements[:count],
-                cwd=display_root(),
-                db_time=db_time,
-                exact=exact,
-            )
+    if limit is not None and (count > limit or (exact and too_few and count < limit)):
+        return format_budget(
+            limit,
+            collector.statements[:count],
+            cwd=display_root(),
+            db_time=db_time,
+            exact=exact,
         )
     if time_limit is not None and db_time > time_limit:
-        raise QueryBudgetExceeded(
-            format_time_budget(
-                time_limit,
-                collector.statements,
-                cwd=display_root(),
-                db_time=db_time,
-            )
+        return format_time_budget(
+            time_limit,
+            collector.statements,
+            cwd=display_root(),
+            db_time=db_time,
         )
+    return None
+
+
+def add_to_strict_error(error: BaseException, text: str) -> None:
+    """Add a budget failure under the N+1 of the error queryguard_strict raised."""
+    message = str(error.args[0]) if error.args else ""
+    error.args = (f"{message}\n\n{text}",)
 
 
 def max_queries(limit: int) -> AbstractContextManager[QueryLog]:
