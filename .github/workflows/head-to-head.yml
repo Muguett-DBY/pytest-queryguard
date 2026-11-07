@@ -12,6 +12,8 @@ name: Head-to-head
 # a month to notice when a new release of a tool changes the numbers.
 on:
   workflow_dispatch:
+  push:  # TEMPORARY: until the workflow is on main, so it can be dispatched
+    branches: [ci/head-to-head]
   schedule:
     - cron: "17 4 3 * *"
 
