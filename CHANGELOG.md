@@ -59,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With pytest 9.2, an ini option of the wrong type (`queryguard_max_events =
+  many`, `queryguard_index_check = maybe`, a number for `queryguard_mode` in
+  native TOML) is reported as before: `<option> must be ...`, naming the
+  option and what it accepts. pytest 9.2 raises `UsageError` from `Config.getini()`
+  for such a value, which the plugin did not catch, so the run stopped with
+  pytest's bare conversion message (`invalid literal for int() with base 10:
+  'many'`) and no option name.
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
   `response_model`), or that the code swallowed before the test failed on
@@ -237,6 +244,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session with `queryguard_unused_eager_load` or `queryguard_unused_columns`
   ends (pytest's own end, or a `pytester` run) no longer raises
   `TypeError: 'NoneType' object is not callable` into that thread.
+- `tests/test_compat.py` also checks that the SQLAlchemy objects the plugin
+  keeps its own `_queryguard_*` attributes on (InstanceState, Session,
+  Connection, the cursor execution context, the UOWTransaction of a flush)
+  still have an
+  instance `__dict__`; `_compat.py` lists them. A SQLAlchemy release that
+  slots one of them fully fails that test, with the class in the message,
+  instead of showing up only as an internal error that stops the measurement.
+- `tests/test_ini_usage_errors.py` makes `Config.getini()` raise
+  `UsageError` for each ini option, as pytest 9.2 does for a mistyped value,
+  and checks that the error names the option; the required CI jobs run older
+  pytest releases, which raise `TypeError` or `ValueError` instead.
+- The nightly workflow no longer sets `continue-on-error`: it marked every
+  run green, so its pytest pre-release job failed unnoticed from 2026-10-28.
 
 ## [0.8.0] - 2026-11-06
 

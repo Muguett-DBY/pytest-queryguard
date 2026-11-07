@@ -395,6 +395,40 @@ def test_the_flush_frame(engine: Engine) -> None:
     assert isinstance(found[1], int)
 
 
+def _takes_own_attributes(obj: Any, what: str) -> None:
+    """``obj`` keeps an attribute the plugin sets, as listeners.py sets it."""
+    assert isinstance(getattr(obj, "__dict__", None), dict), (
+        f"SQLAlchemy {VERSION}: {what} ({type(obj).__name__}) has no instance "
+        f"__dict__ any more; the plugin stores _queryguard_* attributes on it "
+        f"(see _compat.py)"
+    )
+    obj.__dict__["_queryguard_compat_probe"] = 1
+    obj._queryguard_compat_probe = 2
+    assert obj.__dict__.pop("_queryguard_compat_probe") == 2
+
+
+def test_the_objects_the_plugin_tags_keep_a_dict(
+    engine: Engine, contexts: list[tuple[str, Any]]
+) -> None:
+    flushes: list[Any] = []
+
+    def on_flush(session: Any, flush_context: Any) -> None:
+        flushes.append(flush_context)
+
+    with Session(engine) as session:
+        event.listen(session, "after_flush", on_flush)
+        shelf = session.get(Shelf, 1)
+        assert shelf is not None
+        shelf.name = "renamed"
+        session.flush()
+        _takes_own_attributes(inspect(shelf), "an InstanceState")
+        _takes_own_attributes(session, "a Session")
+        _takes_own_attributes(session.connection(), "a Connection")
+        _takes_own_attributes(contexts[0][1], "a cursor execution context")
+        (flush_context,) = flushes
+        _takes_own_attributes(flush_context, "the UOWTransaction of a flush")
+
+
 def test_the_attribute_descriptor(engine: Engine) -> None:
     original = attribute_get()
     reads: list[str] = []

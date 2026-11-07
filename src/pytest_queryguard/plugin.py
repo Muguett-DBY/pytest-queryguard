@@ -262,6 +262,11 @@ class _IndexNotes:
 # and a string-typed option would crash; older versions only know strings.
 _NATIVE_INT = pytest.version_tuple >= (9,)
 _INT_TYPE: dict[str, Any] = {"type": "int"} if _NATIVE_INT else {}
+# What Config.getini() raises for a value that does not fit the option's type:
+# TypeError or ValueError up to pytest 9.1, UsageError (with the bare
+# conversion message) from 9.2. Every reader catches all three and raises its
+# own UsageError that names the option and what it accepts.
+_INI_ERRORS: tuple[type[Exception], ...] = (TypeError, ValueError, pytest.UsageError)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -550,7 +555,7 @@ def _threshold(config: pytest.Config, name: str) -> int:
     detail = ""
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raw, detail = None, f": {exc}"
     try:
         value = 0 if isinstance(raw, bool) else int(raw)
@@ -566,7 +571,7 @@ def _small_repeat(config: pytest.Config, repeat: int) -> int | None:
     name = "queryguard_small_repeat_threshold"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be 0 or an integer >= 2: {exc}") from None
     try:
         value = -1 if isinstance(raw, bool) else int(raw)
@@ -605,7 +610,7 @@ def _choice(
     if raw is None:
         try:
             raw = config.getini(name)
-        except (TypeError, ValueError) as exc:
+        except _INI_ERRORS as exc:
             # pytest 9 rejects a non-string value from native TOML on its own.
             raise pytest.UsageError(
                 f"{name} must be one of {', '.join(choices)}: {exc}"
@@ -622,7 +627,7 @@ def _optional_choice(
     config: pytest.Config, name: str, choices: tuple[str, ...]
 ) -> str | None:
     """Like ``_choice()``, for an option without a default: None when it is unset."""
-    with contextlib.suppress(TypeError, ValueError):  # _choice() reports these
+    with contextlib.suppress(*_INI_ERRORS):  # _choice() reports these
         if config.getini(name) is None:
             return None
     return _choice(config, name, choices)
@@ -646,7 +651,7 @@ def _warn_deprecated_options(config: pytest.Config) -> None:
         return
     try:
         old = config.getini("queryguard_repeat_scope")
-    except (TypeError, ValueError):
+    except _INI_ERRORS:
         return  # _read_settings() reports the bad value
     if old is not None:
         config.issue_config_time_warning(
@@ -662,7 +667,7 @@ def _write_loop(config: pytest.Config) -> int | None:
     name = "queryguard_write_loop_threshold"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be 0 or an integer >= 2: {exc}") from None
     try:
         value = -1 if isinstance(raw, bool) else int(raw)
@@ -679,7 +684,7 @@ def _fail_on(config: pytest.Config) -> tuple[str, ...]:
     name = "queryguard_fail_on"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be a list of kinds: {exc}") from None
     if not isinstance(raw, list) or not all(isinstance(k, str) for k in raw):
         raise pytest.UsageError(f"{name} must be a list of kinds, got {raw!r}")
@@ -696,7 +701,7 @@ def _max_events(config: pytest.Config) -> int | None:
     name = "queryguard_max_events"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be an integer >= 0: {exc}") from None
     try:
         value = -1 if isinstance(raw, bool) else int(raw)
@@ -711,7 +716,7 @@ def _stack_depth(config: pytest.Config) -> int:
     name = "queryguard_stack_depth"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be an integer >= 0: {exc}") from None
     try:
         value = -1 if isinstance(raw, bool) else int(raw)
@@ -726,7 +731,7 @@ def _ignore_rules(config: pytest.Config) -> tuple[IgnoreRule, ...]:
     name = "queryguard_ignore"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be a list of patterns: {exc}") from None
     if not isinstance(raw, list) or not all(isinstance(line, str) for line in raw):
         raise pytest.UsageError(f"{name} must be a list of patterns, got {raw!r}")
@@ -748,7 +753,7 @@ def _flag(config: pytest.Config, name: str) -> bool:
     """
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be true or false: {exc}") from None
     if not isinstance(raw, bool):
         raise pytest.UsageError(f"{name} must be true or false, got {raw!r}")
@@ -835,7 +840,7 @@ def _index_advisor(config: pytest.Config) -> bool:
     name = "queryguard_index_advisor"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be true or false: {exc}") from None
     if not isinstance(raw, bool):
         raise pytest.UsageError(f"{name} must be true or false, got {raw!r}")
@@ -850,7 +855,7 @@ def _ignore_tables(config: pytest.Config) -> tuple[str, ...]:
     name = "queryguard_index_ignore_tables"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(
             f"{name} must be a list of table names: {exc}"
         ) from None
@@ -868,7 +873,7 @@ def _baseline_path(config: pytest.Config) -> Path | None:
     name = "queryguard_baseline"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be a path: {exc}") from None
     if not isinstance(raw, str):
         raise pytest.UsageError(f"{name} must be a path, got {raw!r}")
@@ -882,7 +887,7 @@ def _budgets_path(config: pytest.Config) -> Path | None:
     name = "queryguard_budgets"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be a path: {exc}") from None
     if not isinstance(raw, str):
         raise pytest.UsageError(f"{name} must be a path, got {raw!r}")
@@ -893,7 +898,7 @@ def _default_budget(config: pytest.Config) -> int | None:
     name = "queryguard_max_queries"
     try:
         raw: Any = config.getini(name)
-    except (TypeError, ValueError) as exc:
+    except _INI_ERRORS as exc:
         raise pytest.UsageError(f"{name} must be an integer >= 0: {exc}") from None
     if isinstance(raw, str) and not raw.strip():
         return None

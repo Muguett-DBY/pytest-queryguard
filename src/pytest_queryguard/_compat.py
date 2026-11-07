@@ -139,6 +139,23 @@ STATE_LOAD_PATH = "load_path"
 # ``instance._sa_instance_state``, inline: it runs on every attribute read.
 INSTANCE_STATE = "_sa_instance_state"
 
+# --- SQLAlchemy objects the plugin keeps its own attributes on --------------
+# Not a SQLAlchemy name, an assumption about its objects: each of these has an
+# instance ``__dict__`` the plugin writes ``_queryguard_*`` keys into. The
+# InstanceState (``_queryguard_origin``, listeners.py; it lists "__dict__" in
+# its ``__slots__``), the Session (``_queryguard_scope``,
+# ``_queryguard_written``, the in-app mode's ``_queryguard_app_written``), the
+# Connection (``_queryguard_scope``), the cursor execution context
+# (``_queryguard_site``, ``_queryguard_timing``, ``_queryguard_app_timing``)
+# and the UOWTransaction of a flush (``_queryguard_flush``, callsite.py).
+# 2.0.13+. A release that slots one of them fully does not break the user's
+# suite, but the plugin degrades: an InstanceState, a Session's written set
+# or an execution context stops the measurement through the internal-error
+# path; a Session or Connection without its scope number puts its statements
+# in no scope (``queryguard_scope = session`` stops separating them); a flush
+# without its number leaves the write-loop rule counting its statements.
+# tests/test_compat.py checks all five.
+
 # --- frames and code objects (parent sites, flush numbers) -----------------
 
 
