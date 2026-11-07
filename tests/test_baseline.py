@@ -663,3 +663,20 @@ def test_a_failed_write_removes_its_temp_file(
     with pytest.raises(OSError, match="disk full"):
         baseline.write(tmp_path / "qg.json", [LAZY_ID])
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_the_written_file_keeps_the_usual_permissions(tmp_path: Path) -> None:
+    # a file meant for the repository and for CI artifacts: the umask's mode,
+    # not the owner-only mode of a temporary file
+    umask = os.umask(0o022)
+    try:
+        baseline.write(tmp_path / "new.json", [LAZY_ID])
+        assert (tmp_path / "new.json").stat().st_mode & 0o777 == 0o644
+        existing = tmp_path / "existing.json"
+        existing.write_text("{}", encoding="utf-8")
+        existing.chmod(0o664)
+        baseline.write(existing, [LAZY_ID])
+        assert existing.stat().st_mode & 0o777 == 0o664
+    finally:
+        os.umask(umask)

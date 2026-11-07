@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, NamedTuple
@@ -221,7 +223,9 @@ def fingerprint(identity: Identity) -> str:
     """A stable hash of the identity: same finding, same value, on every run."""
     kind, label, file, function = identity
     text = "\x1f".join((kind, label, file or "", function or ""))
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    # surrogatepass: a path that is not valid UTF-8 holds lone surrogates
+    # (surrogateescape); valid text hashes as plain UTF-8
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def repo_path(file: str | None) -> str | None:
@@ -234,7 +238,16 @@ def repo_path(file: str | None) -> str | None:
         return None
     if PurePosixPath(file).is_absolute() or PureWindowsPath(file).is_absolute():
         return None
-    return PurePosixPath(file.replace("\\", "/")).as_posix()
+    path = PurePosixPath(file.replace("\\", "/")).as_posix()
+    if _SURROGATE.search(path):
+        # a file name that is not valid UTF-8 (surrogateescape): its bytes,
+        # percent-encoded, which a URI can carry
+        return urllib.parse.quote(os.fsencode(path), safe="/")
+    return path
+
+
+# A lone surrogate: a path that is not valid UTF-8 (surrogateescape).
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def workspace_prefix(rootdir: Path | None, workspace: str | None) -> str:
@@ -442,7 +455,11 @@ def _sort_key(identity: Identity) -> tuple[str, str, str, str, bool, bool]:
 
 
 def dumps(document: Mapping[str, Any]) -> str:
-    return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    # A lone surrogate left in a message (a path that is not valid UTF-8, its
+    # location already percent-encoded) becomes U+FFFD: the file stays valid
+    # UTF-8 JSON for every consumer.
+    return _SURROGATE.sub("\ufffd", text)
 
 
 def write(path: Path, document: Mapping[str, Any]) -> None:
