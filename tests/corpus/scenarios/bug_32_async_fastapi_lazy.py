@@ -11,6 +11,7 @@ from ..kit import BUG, REL, Ctx
 
 VERDICT = BUG
 KINDS = frozenset({REL})
+PATCH = True
 setup = shop.setup
 
 

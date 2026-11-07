@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The fix patch (`--queryguard-show-patch`, `--queryguard-write-patch`,
+  SARIF `fixes`) now covers three common shapes of the parent query that got
+  only the `fix:` hint: a class named through its module
+  (`select(models.Order)`, patched as `joinedload(models.Order.customer)`); a
+  statement built on an earlier line of the function and run through a
+  variable (`statement = select(Order)` then `session.scalars(statement)`),
+  patched where it is built when the variable is assigned once and read
+  only there; and `session.execute(select(Order)).scalars()`, whose
+  `.scalars()` of the result was taken for a second query. Every other shape
+  still gets no patch.
+
 ## [0.8.0] - 2026-11-06
 
 This release offers the fix of an N+1 as a patch (`--queryguard-show-patch`,
