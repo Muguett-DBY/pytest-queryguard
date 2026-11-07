@@ -452,6 +452,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pytest releases, which raise `TypeError` or `ValueError` instead.
 - The nightly workflow no longer sets `continue-on-error`: it marked every
   run green, so its pytest pre-release job failed unnoticed from 2026-10-28.
+- `test_one_explain_per_statement_shape` no longer fails at random (seen once
+  on Windows, Python 3.10: 3 explains instead of 2).
+  Earlier in-process tests (`test_index_created_by_the_test_is_seen` among
+  them) leave connections with uncommitted DDL. If the garbage collector
+  freed one in the middle of the counting test, the catalog cache was
+  cleared, as designed for a lost connection, and the next statement was
+  explained again. The counting test now starts with no such connections
+  tracked.
 
 ## [0.8.0] - 2026-11-06
 
