@@ -29,9 +29,15 @@ _FREE_THREADED = not getattr(sys, "_is_gil_enabled", lambda: True)()
 
 @dataclass(slots=True, eq=False)
 class StrictGroup:
-    """The lazy loads of one relationship for the parents of one query line."""
+    """The lazy loads of one relationship for the parents of one query line.
 
-    first: CallSite | None
+    ``parents`` and ``first`` are those of the loads whose SELECT ran
+    (``add_relationship_load``): a load that a ``do_orm_execute`` listener
+    answers without one (a result cache), or that fails before it, is no
+    lazy load for the report, so it does not count here either.
+    """
+
+    first: CallSite | None = None
     parents: set[object] = field(default_factory=set)
     suppressed: bool = False  # its finding is ignored or baselined
     # (the report's location, parents from other lines), once at the threshold
@@ -144,6 +150,8 @@ class QueryCollector:
     def add_relationship_load(self, event: RelationshipLoadEvent) -> None:
         if _FREE_THREADED:
             with self._lock:
+                if self.strict is not None:
+                    self._strict_ran(event)
                 self.relationship_load_count += 1
                 if (
                     self.max_events is None
@@ -151,6 +159,8 @@ class QueryCollector:
                 ):
                     self.relationship_loads.append(event)
             return
+        if self.strict is not None:
+            self._strict_ran(event)
         self.relationship_load_count += 1
         if self.max_events is None or len(self.relationship_loads) < self.max_events:
             self.relationship_loads.append(event)
@@ -188,11 +198,11 @@ class QueryCollector:
         here. A group whose finding is ignored or baselined is decided once.
         A load inside an ``ignore("relationship-load")`` block never raises.
         """
-        parent = load.parent
-        if self.strict is None or parent is None or parent.callsite is None:
+        strict = self.strict
+        key = self._strict_key(load)
+        if strict is None or key is None:
             return None
-        scope = load.scope if self.strict_by_scope else None
-        key = (load.relationship, parent.callsite, scope)
+        scope = key[2]
         if _FREE_THREADED:
             with self._lock:
                 group = self._strict_group(key, load)
@@ -210,7 +220,8 @@ class QueryCollector:
             return None
         assert group.report is not None
         first, other_lines = group.report
-        error = self.strict(load, first or group.first, len(group.parents), other_lines)
+        count = len(group.parents) + (load.parent_key not in group.parents)
+        error = strict(load, first or group.first or load.callsite, count, other_lines)
         if error is None:
             group.suppressed = True
         return error
@@ -251,18 +262,39 @@ class QueryCollector:
                 other_lines = True
         return first, other_lines
 
+    def _strict_key(self, load: RelationshipLoadEvent) -> tuple[object, ...] | None:
+        """(relationship, query site of the parents, scope), or None when the
+        parent's query line is unknown (such loads never count here)."""
+        parent = load.parent
+        if self.strict is None or parent is None or parent.callsite is None:
+            return None
+        scope = load.scope if self.strict_by_scope else None
+        return (load.relationship, parent.callsite, scope)
+
     def _strict_group(
         self, key: tuple[object, ...], load: RelationshipLoadEvent
     ) -> StrictGroup | None:
-        """The group of this load once it has reached the threshold, else None."""
+        """The group of this load once it, with the parents whose lazy load
+        ran before it, reaches the threshold; else None. The load itself
+        counts once its SELECT runs (``_strict_ran``)."""
         group = self.strict_groups.get(key)
         if group is None:
-            group = self.strict_groups[key] = StrictGroup(first=load.callsite)
+            group = self.strict_groups[key] = StrictGroup()
         if group.suppressed:
             return None
-        if len(group.parents) < self.strict_threshold:  # no more is needed
-            group.parents.add(load.parent_key)
-        return group if len(group.parents) >= self.strict_threshold else None
+        parents = group.parents
+        count = len(parents) + (load.parent_key not in parents)
+        return group if count >= self.strict_threshold else None
+
+    def _strict_ran(self, load: RelationshipLoadEvent) -> None:
+        """A lazy load ran its SELECT (or raised in strict mode): its parent
+        now counts for the group ``strict_check`` made for it."""
+        key = self._strict_key(load)
+        group = None if key is None else self.strict_groups.get(key)
+        if group is not None and len(group.parents) < self.strict_threshold:
+            group.parents.add(load.parent_key)  # no more is needed
+            if group.first is None:
+                group.first = load.callsite
 
     def freeze_index_runs(self) -> None:
         """Keep the runs of the scans so far; the statements start afresh.

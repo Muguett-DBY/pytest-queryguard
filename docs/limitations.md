@@ -163,3 +163,14 @@
   `subqueryload` belongs to the `Session` that began on the connection last:
   SQLAlchemy does not say which `Session` runs it. Lazy loads, column loads
   and `selectinload` queries belong to their own `Session`.
+- SQLAlchemy checks an object's load context after the `refresh` instance
+  event only while a listener for that event exists, and the plugin always
+  has one (it notes which query read each object). A query with
+  `populate_existing` and a `subqueryload()` of a self-referential
+  relationship moves the objects to the subquery's context inside
+  SQLAlchemy, before the event, so with the plugin installed SQLAlchemy emits
+  `SAWarning: Loading context for <...> has changed within a load/refresh
+  handler`; without it, the same load runs silently. The loaded data is the
+  same. A suite with `filterwarnings = error` can ignore that message
+  (`ignore:Loading context for:sqlalchemy.exc.SAWarning`) or use
+  `selectinload()`, which does not move the objects.

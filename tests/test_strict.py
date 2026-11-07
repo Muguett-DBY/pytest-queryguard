@@ -703,3 +703,102 @@ def test_last_strict_flag_wins(project: pytest.Pytester) -> None:
     result.assert_outcomes(failed=1)
     assert "queryguard strict" not in result.stdout.str()
     result.stdout.fnmatch_lines(["*queryguard: N+1 detected*"])
+
+
+NO_SELECT = """
+import pytest
+from sqlalchemy import Column, ForeignKey, Integer, create_engine, event, select
+from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.orm import (
+    DeclarativeBase, Session, lazyload, noload, relationship,
+)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class P(Base):
+    __tablename__ = "p"
+    id = Column(Integer, primary_key=True)
+
+
+class C(Base):
+    __tablename__ = "c"
+    id = Column(Integer, primary_key=True)
+    p_id = Column(ForeignKey("p.id"))
+    p = relationship(P)
+
+
+class Node(Base):
+    __tablename__ = "node"
+    id = Column(Integer, primary_key=True)
+    parent_id = Column(ForeignKey("node.id"))
+    parent = relationship(
+        "Node", lazy="immediate", remote_side="Node.id", back_populates="children"
+    )
+    children = relationship("Node", lazy="noload", back_populates="parent")
+
+
+cache = {}
+
+
+def _cached(state):
+    # a result cache for lazy loads, as dogpile.cache recipes do
+    if not state.is_relationship_load:
+        return None
+    key = (str(state.statement), state.lazy_loaded_from.key)
+    if key not in cache:
+        cache[key] = state.invoke_statement().freeze()
+    return cache[key]()
+
+
+@pytest.fixture
+def engine():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        s.add_all([P(id=i) for i in (1, 2, 3)] + [C(id=i, p_id=i) for i in (1, 2, 3)])
+        s.add_all([Node(id=1, parent_id=1), Node(id=2, parent_id=2)])
+        s.commit()
+    return engine
+
+
+@pytest.fixture
+def warm(engine):
+    event.listen(Session, "do_orm_execute", _cached)
+    with Session(engine) as s:  # outside the test body: not measured
+        for c in s.scalars(select(C)).all():
+            c.p
+    yield engine
+    event.remove(Session, "do_orm_execute", _cached)
+
+
+def test_cached(warm):
+    with Session(warm) as s:
+        assert [c.p.id for c in s.scalars(select(C).order_by(C.id))] == [1, 2, 3]
+
+
+def test_failing_before_the_select(engine):
+    # the option conflict raises in SQLAlchemy after do_orm_execute, before
+    # any SELECT of the lazy load
+    with Session(engine) as s:
+        nodes = s.scalars(
+            select(Node).options(lazyload(Node.children).noload(Node.parent))
+        ).all()
+        for node in nodes:
+            with pytest.raises(InvalidRequestError):
+                node.children
+"""
+
+
+def test_a_lazy_load_without_a_select_does_not_count(pytester: pytest.Pytester) -> None:
+    # Found by tests/test_fuzz_runtime.py: strict mode counted a lazy load
+    # when do_orm_execute ran, so a load a result cache answered (or one that
+    # failed before its SELECT) raised NPlusOneDetected, while the report,
+    # which counts the SELECTs, found nothing.
+    pytester.makepyfile(test_no_select=NO_SELECT)
+    for args in ((), ("--queryguard-strict",)):
+        result = _run(pytester, *args)
+        result.assert_outcomes(passed=2)
+        assert "NPlusOneDetected" not in result.stdout.str()

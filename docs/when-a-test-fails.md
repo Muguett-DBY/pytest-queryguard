@@ -184,6 +184,10 @@ It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
   `do_orm_execute` listener, which makes SQLAlchemy prepare each ORM
   statement twice: a strict run costs more per ORM statement than a
   default one.
+- Only lazy loads that ran their `SELECT` count towards the threshold, as in
+  the report: a load that a `do_orm_execute` listener answers without one (a
+  result cache), or that SQLAlchemy rejects before sending it, never counts
+  and never raises.
 
 ## 2. Is it real?
 

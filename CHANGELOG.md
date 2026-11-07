@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `queryguard_strict` counted a lazy load as soon as the ORM began it, so a
+  load that a `do_orm_execute` listener answers without a `SELECT` (a result
+  cache, as in the dogpile.cache recipes) or that SQLAlchemy rejects before
+  sending one (a loader option conflict) raised `NPlusOneDetected`, while the
+  report, which counts the `SELECT`s, found no N+1. A load now counts for
+  strict mode once its `SELECT` runs. Found by the new runtime fuzzer.
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
   `response_model`), or that the code swallowed before the test failed on
@@ -168,6 +174,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- [Limitations](docs/limitations.md): with the plugin installed, a
+  `populate_existing` query with a `subqueryload()` of a self-referential
+  relationship makes SQLAlchemy emit `SAWarning: Loading context for ... has
+  changed within a load/refresh handler`. SQLAlchemy checks for it only while
+  a `refresh` listener exists, and the plugin always has one; the data loaded
+  is the same. Found by the new runtime fuzzer.
 - API-freeze audit before 1.0: the [stability policy](docs/stability.md)
   now states the naming, value and unit conventions of the public options
   and files (every time in seconds; `0` turns a threshold off in an ini
@@ -206,6 +218,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- `tests/test_fuzz_runtime.py` fuzzes the detection path itself: it
+  generates small SQLAlchemy programs (random mapped schemas with
+  many-to-one, one-to-many, many-to-many and self-referential relationships,
+  sometimes joined or single-table inheritance, random `lazy=` strategies;
+  random rows; `select()`, `session.query()`, `session.get()`, Core and
+  `text()` statements with random loader option chains, `populate_existing`,
+  `yield_per`, commits, expiry and refreshes; loops, nested loops,
+  comprehensions and early `break` over the results), sync and on
+  aiosqlite, and runs them under random plugin settings. It checks that the
+  plugin never fails on its own or adds a warning, that the programs read
+  the same values as with `-p no:queryguard`, that `ignore("*")` leaves out
+  every finding, that `selectinload` of a reported relationship removes its
+  relationship-load, that strict mode raises exactly when the report has a
+  relationship-load, and that two runs give the same findings. Seeded and
+  bounded; `QUERYGUARD_FUZZ=1` runs 40 batches instead of 2.
 - `tests/test_public_api.py` also snapshots the keys and format numbers of
   the files the plugin writes (`--queryguard-json`, baseline, budget file,
   SARIF rule ids, fingerprint key and properties), the finding kinds, the
