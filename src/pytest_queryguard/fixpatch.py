@@ -14,10 +14,16 @@ A wrong patch costs more trust than no patch, so every doubt means none:
   the session started;
 - the line belongs to the function the query ran in;
 - the line is one statement with exactly one ``select(...)`` call, or
-  ``.query(...)`` on something named like a session, with the parent class
+  ``.query(...)`` on a session (``_is_session``), with the parent class
   (``Order`` or ``models.Order``) as its only argument; the statement runs no
   other query and does not choose between expressions; ``select`` is
   SQLAlchemy's (or SQLModel's);
+- that call is the statement the line runs, as it is: a ``select(...)`` with
+  only methods that keep its entities is the first argument of a session's
+  ``execute``/``scalars``/...; a ``session.query(...)`` with only such methods
+  is run by ``.all()``/``.first()``/... or iterated (not inside a union, an
+  exists, a subquery, a CTE or an insert, not passed to a helper, not turned
+  into other columns or a textual statement);
 - or the line runs a statement held in a local variable
   (``session.scalars(statement)``) that the function assigns once, on an
   earlier line, to such a ``select(...)`` and its methods, and reads nowhere
@@ -27,8 +33,12 @@ A wrong patch costs more trust than no patch, so every doubt means none:
   added to its ``from sqlalchemy.orm import`` line, or on a new line after
   its imports;
 - an ``.options(...)`` already in the chain gets the loader as one more
-  argument, when its arguments are all calls and none mentions a
-  relationship of the option.
+  argument, when its arguments are SQLAlchemy loader calls that name each
+  relationship as ``Class.attribute`` (not a variable, a string or a helper)
+  and none mentions a relationship of the option;
+- a ``joinedload`` does not go on a statement with ``with_for_update``,
+  ``group_by``, ``having``, ``distinct`` or a prefix or suffix, whose SQL
+  the outer join would change.
 
 Everything runs when a test's findings are made, never per statement.
 """
@@ -55,7 +65,10 @@ _SELECT_MODULES = ("sqlalchemy", "sqlmodel")
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 _NAMED = (*_SCOPES, ast.ExceptHandler, ast.MatchAs, ast.MatchStar)
 # Session methods that run the statement given as their first argument.
-_EXECUTES = frozenset({"execute", "scalars", "scalar", "stream", "stream_scalars"})
+# (``exec`` is SQLModel's.)
+_EXECUTES = frozenset(
+    {"execute", "exec", "scalars", "scalar", "stream", "stream_scalars"}
+)
 # Session methods that run a statement. On the parent line, one of them with
 # an argument that is not the select() call means another query may have run.
 _RUNS = _EXECUTES | {"get", "get_one", "merge", "refresh"}
@@ -88,6 +101,44 @@ _KEEPS_ENTITIES = frozenset(
         "prefix_with",
         "suffix_with",
     }
+)
+# Query methods that keep its entities and loader options, and the methods
+# that run it: a session.query() on the parent line is followed only through
+# these (not with_entities, from_statement, a union, a subquery or .statement).
+_QUERY_KEEPS = frozenset(
+    {
+        "filter",
+        "filter_by",
+        "where",
+        "join",
+        "outerjoin",
+        "select_from",
+        "order_by",
+        "group_by",
+        "having",
+        "limit",
+        "offset",
+        "slice",
+        "distinct",
+        "options",
+        "execution_options",
+        "params",
+        "with_for_update",
+        "correlate",
+        "populate_existing",
+        "autoflush",
+        "prefix_with",
+        "suffix_with",
+    }
+)
+_QUERY_RUNS = frozenset({"all", "first", "one", "one_or_none"})
+# Builtins that iterate a Query given as their only argument.
+_ITERATES = frozenset({"list", "tuple", "set", "sorted"})
+# Methods after which a joined eager load changes the SQL the database gets:
+# FOR UPDATE on the outer join's nullable side, GROUP BY and DISTINCT over the
+# joined columns (SQLAlchemy 2.0 does not nest the query for a many-to-one).
+_NOT_JOINED = frozenset(
+    {"with_for_update", "group_by", "having", "distinct", "prefix_with", "suffix_with"}
 )
 # The origin of a module-level ``import x`` or ``import x.y as z``.
 _IMPORTED = "import "
@@ -382,16 +433,79 @@ def _terminal(node: ast.expr) -> str:
     return ""
 
 
-def _is_query(call: ast.Call) -> bool:
-    """``select(...)``, or ``.query(...)`` on something named as a session."""
+def _is_query(module: _Module, call: ast.Call) -> bool:
+    """``select(...)``, or ``.query(...)`` on a session (``_is_session``)."""
     func = call.func
     if isinstance(func, ast.Name):
         return func.id == "select"
     return (
         isinstance(func, ast.Attribute)
         and func.attr == "query"
-        and "session" in _terminal(func.value).lower()
+        and _is_session(module, func.value, call)
     )
+
+
+# Names of a session by convention (FastAPI's ``db: Session = Depends(...)``).
+_SESSION_NAMES = frozenset({"db", "dbsession", "db_session"})
+
+
+def _is_session(module: _Module, receiver: ast.expr, node: ast.AST) -> bool:
+    """Whether the receiver of a call at ``node`` is a session.
+
+    Its last name contains "session" or is ``db`` (``self.db``,
+    ``db_session``); or it is a parameter of the function around ``node``,
+    annotated with a type whose name ends in ``Session`` (``Session``,
+    ``AsyncSession``, ``orm.Session``, ``"Session"``,
+    ``Annotated[Session, ...]``), that the function never binds again. Not a
+    repository or a helper, which may change the statement before running it.
+    """
+    name = _terminal(receiver).lower()
+    if "session" in name or name in _SESSION_NAMES:
+        return True
+    function = _function(module, node)
+    if not isinstance(receiver, ast.Name) or function is None:
+        return False
+    assert isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+    annotation: ast.expr | None = None
+    for inner in ast.walk(function):
+        if inner is function:
+            continue
+        if isinstance(inner, ast.arg) and inner.arg == receiver.id:
+            if annotation is not None or inner.annotation is None:
+                return False  # a nested function's parameter of that name
+            annotation = inner.annotation
+        elif isinstance(inner, ast.Name) and inner.id == receiver.id:
+            if not isinstance(inner.ctx, ast.Load):
+                return False
+        elif _binds(inner, receiver.id):
+            return False
+    params = function.args
+    own = [*params.posonlyargs, *params.args, *params.kwonlyargs]
+    if annotation is None or not any(arg.annotation is annotation for arg in own):
+        return False
+    return _session_type(annotation)
+
+
+def _session_type(annotation: ast.expr, quoted: bool = False) -> bool:
+    """Whether an annotation names a session type (see ``_is_session``)."""
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        if quoted:
+            return False
+        try:
+            parsed = ast.parse(annotation.value.strip(), mode="eval").body
+        except (SyntaxError, ValueError):
+            return False
+        return _session_type(parsed, quoted=True)
+    if isinstance(annotation, ast.Subscript):
+        if _terminal(annotation.value) != "Annotated":
+            return False
+        inner = annotation.slice
+        if not isinstance(inner, ast.Tuple) or not inner.elts:
+            return False
+        return _session_type(inner.elts[0], quoted)
+    return isinstance(annotation, (ast.Name, ast.Attribute)) and _terminal(
+        annotation
+    ).endswith("Session")
 
 
 def _query_call(module: _Module, line: int) -> ast.Call | None:
@@ -412,7 +526,7 @@ def _query_call(module: _Module, line: int) -> ast.Call | None:
     if any(isinstance(node, _BRANCHES) for node in nodes):
         return None
     calls = [node for node in nodes if isinstance(node, ast.Call)]
-    found = [call for call in calls if _is_query(call)]
+    found = [call for call in calls if _is_query(module, call)]
     if not found:
         return _assigned_query(module, stmt, calls)
     if len(found) != 1:
@@ -421,7 +535,59 @@ def _query_call(module: _Module, line: int) -> ast.Call | None:
     for call in calls:
         if _runs(call) and not any(query in ast.walk(arg) for arg in call.args):
             return None
-    return query
+    return query if _executed(module, query) else None
+
+
+def _executed(module: _Module, query: ast.Call) -> bool:
+    """Whether the query call is the statement the line runs, as it is.
+
+    A ``select(...)``, with only methods of ``_KEEPS_ENTITIES`` chained to it,
+    is the first argument of a ``_EXECUTES`` method of something named like a
+    session. A ``session.query(...)`` has only methods of ``_QUERY_KEEPS``
+    before one of ``_QUERY_RUNS``, or, without one, is iterated by the
+    statement (``for``) or a builtin (``list(...)``). Not a select inside a
+    union, an exists, a subquery, a CTE, an insert or another statement, nor
+    one passed to a helper or turned into other columns.
+    """
+    chain = _chain(module, query)
+    if isinstance(query.func, ast.Name):
+        if any(method not in _KEEPS_ENTITIES for method, _ in chain):
+            return False
+        last = chain[-1][1] if chain else query
+        run = module.parents.get(last)
+        return (
+            isinstance(run, ast.Call)
+            and isinstance(run.func, ast.Attribute)
+            and run.func.attr in _EXECUTES
+            and _is_session(module, run.func.value, run)
+            and bool(run.args)
+            and run.args[0] is last
+        )
+    end: ast.expr = query
+    for method, call in chain:
+        if method in _QUERY_RUNS:
+            return not call.args and not call.keywords
+        if method not in _QUERY_KEEPS:
+            return False
+        end = call
+    outer = module.parents.get(end)
+    if isinstance(outer, (ast.For, ast.AsyncFor)):
+        return outer.iter is end
+    if not (
+        isinstance(outer, ast.Call)
+        and isinstance(outer.func, ast.Name)
+        and outer.func.id in _ITERATES
+        and len(outer.args) == 1
+        and outer.args[0] is end
+    ):
+        return False
+    names = module.names
+    builtin = outer.func.id
+    return (
+        names is not None
+        and builtin not in names
+        and builtin not in _local_names(module, outer)
+    )
 
 
 def _runs(call: ast.Call) -> bool:
@@ -462,7 +628,7 @@ def _assigned_query(
 
     ``statement = select(Order).where(...)`` and, on a later line of the same
     function, ``session.scalars(statement)``: the call is certain when the
-    statement runs exactly one query, on something named like a session, with
+    statement runs exactly one query, on a session (``_is_session``), with
     the variable as its first argument; the function binds the variable once, in that assignment (no
     other assignment, parameter, ``global`` or ``del``), and reads it only
     there; and the assigned value is the ``select(...)`` call, alone or with
@@ -477,7 +643,7 @@ def _assigned_query(
     if run.func.attr not in _EXECUTES or not run.args:
         return None
     # a helper that takes the statement (repo.execute(stmt)) may change it
-    if "session" not in _terminal(run.func.value).lower():
+    if not _is_session(module, run.func.value, run):
         return None
     variable = run.args[0]
     function = _function(module, stmt)
@@ -522,7 +688,7 @@ def _assigned_query(
     if any(isinstance(node, _BRANCHES) for node in nodes):
         return None
     inner = [node for node in nodes if isinstance(node, ast.Call)]
-    found = [call for call in inner if _is_query(call)]
+    found = [call for call in inner if _is_query(module, call)]
     # select() only: a session.query() is not a statement for execute()
     if len(found) != 1 or not isinstance(found[0].func, ast.Name):
         return None
@@ -626,7 +792,11 @@ def _is_docstring(stmt: ast.stmt) -> bool:
 
 
 def _option_edit(
-    module: _Module, call: ast.Call, option: str, attributes: set[str]
+    module: _Module,
+    call: ast.Call,
+    option: str,
+    attributes: set[str],
+    names: dict[str, str],
 ) -> Insertion | None:
     """The insertion that adds ``option`` to the query; None when not certain."""
     chain = _chain(module, call)
@@ -641,6 +811,9 @@ def _option_edit(
         return None
     if not all(isinstance(argument, ast.Call) for argument in options.args):
         return None
+    local = _local_names(module, options)
+    if not all(_plain_loader(argument, names, local) for argument in options.args):
+        return None
     for node in ast.walk(options):
         # an option for the same relationship already: adding one would conflict
         if isinstance(node, ast.Attribute) and node.attr in attributes:
@@ -650,6 +823,75 @@ def _option_edit(
     if _between(module, last, options) not in (")", ",)"):
         return None
     return module.after(last, f", {option}")
+
+
+def _plain_loader(option: ast.expr, names: dict[str, str], local: set[str]) -> bool:
+    """Whether an existing option names every relationship it loads.
+
+    A chain of SQLAlchemy loader calls (``selectinload(Order.items)``,
+    ``.joinedload(Item.product)``, ``Load(Order).raiseload("*")``) whose
+    arguments are ``Class.relationship`` (or ``models.Class.relationship``),
+    ``"*"``, or for ``Load`` a class; keyword values are constants. Not a
+    relationship held in a variable or a constant (``noload(REL)``), named by
+    a string or computed, nor an option a helper returns: any of them may be
+    the relationship of the patch, and two loaders of it conflict.
+    """
+    current: ast.expr = option
+    while isinstance(current, ast.Call):
+        func = current.func
+        # a constant: not **kwargs, which may hold anything
+        if any(not isinstance(k.value, ast.Constant) for k in current.keywords):
+            return False
+        loader = _terminal(func)
+        for argument in current.args:
+            if isinstance(argument, ast.Constant):
+                if argument.value != "*":
+                    return False
+            elif not _class_attribute(argument, local, loader == "Load"):
+                return False
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Call):
+            current = func.value  # .joinedload(...) on the loader before it
+            continue
+        if isinstance(func, ast.Name):
+            origin = names.get(func.id)
+            # unbound in the module: the code that ran found it elsewhere
+            return func.id not in local and (
+                origin is None or origin.split(".", 1)[0] in _SELECT_MODULES
+            )
+        # orm.selectinload(...) of "import sqlalchemy.orm as orm"
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            origin = names.get(func.value.id, "")
+            return func.value.id not in local and origin in (
+                f"{_IMPORTED}sqlalchemy",
+                f"{_IMPORTED}sqlalchemy.orm",
+            )
+        return False
+    return False
+
+
+def _class_attribute(node: ast.expr, local: set[str], load: bool) -> bool:
+    """``Order.items``, ``models.Order.items`` (or ``Order`` for ``Load``).
+
+    The class part starts with a capital and the attribute does not, so
+    ``rels.CUSTOMER`` (a relationship in a constant) is not one.
+    """
+    current = node
+    if not load:
+        if not isinstance(node, ast.Attribute) or not node.attr[:1].islower():
+            return False
+        current = node.value
+    # the class: Order, or models.Order
+    if isinstance(current, ast.Name):
+        name = current.id
+    elif isinstance(current, ast.Attribute):
+        name = current.attr
+        while isinstance(current, ast.Attribute):
+            current = current.value
+    else:
+        return False
+    return (
+        name[:1].isupper() and isinstance(current, ast.Name) and current.id not in local
+    )
 
 
 def _between(module: _Module, first: ast.expr, outer: ast.expr) -> str:
@@ -758,8 +1000,14 @@ def make(finding: RelationshipFinding, root: Path, since: float) -> SourceFix | 
     for loader in loaders:
         if loader in names and names[loader] != _ORM:
             return None
+    # a joined load of the parent query (not one under a selectinload, which
+    # runs its own query) would change the SQL of FOR UPDATE, GROUP BY, DISTINCT
+    if steps[0][0] == "joinedload" and any(
+        method in _NOT_JOINED for method, _ in _chain(module, call)
+    ):
+        return None
     option = ".".join(parts)
-    edit = _option_edit(module, call, option, attributes)
+    edit = _option_edit(module, call, option, attributes, names)
     imports = _import_edits(module, names, loaders)
     if edit is None or imports is None:
         return None

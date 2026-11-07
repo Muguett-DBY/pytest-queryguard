@@ -264,12 +264,27 @@ certain, and otherwise only the `fix:` hint:
 - every parent was loaded by one query line, and the plugin knows the class it
   selected;
 - that line is one statement with exactly one `select(...)` call, or
-  `.query(...)` on something named like a session, with that class as its
+  `.query(...)` on a session (see below), with that class as its
   only argument (`Order`, or `models.Order` for a module imported with
   `import` or `from ... import`), and the statement runs nothing else. A
   `session.get()`, a subquery, or a choice between queries (`a if c else b`,
   `or`, a comprehension) gets no patch;
-- or that line runs a variable on something named like a session
+- that call is the statement the line runs, as it is: a `select(...)`, with
+  only methods that keep its entities chained to it, is the first argument of
+  `execute`, `scalars`, `scalar`, `stream` or SQLModel's `exec` on a
+  session; a `session.query(...)` with such methods is run by `.all()`,
+  `.first()`, `.one()` or `.one_or_none()`, or iterated (`for`, `list(...)`).
+  A select inside a `union_all(...)`, an `exists(...)`, a subquery, a CTE, an
+  `insert().from_select()` or another statement, one passed to a helper
+  (`session.scalars(paginate(select(Order)))`), turned into other columns
+  (`with_only_columns`, `with_entities`, `add_columns`), a union or a textual
+  statement (`from_statement`), or run by something else than a session
+  (`repository.scalars(select(Order))`) gets no patch. A session is what is
+  named so (`session`, `self.session`, `db_session`), `db` (`db`, `self.db`),
+  or a parameter of the function annotated with a session type that the
+  function does not rebind: `conn: Session`, `s: orm.Session`,
+  `conn: "AsyncSession"`, `db: Annotated[Session, Depends(get_db)]`;
+- or that line runs a variable on a session
   (`session.execute(statement)`, `session.scalars(statement)`) that the
   function assigns once, on an earlier line, to such a `select(...)` with
   only methods that keep its entities chained to it (`where`, `join`,
@@ -283,10 +298,17 @@ certain, and otherwise only the `fix:` hint:
 - `select` is imported from SQLAlchemy or SQLModel, the classes (and the
   module in `models.Order`) are imported (or defined) in the module under
   their own names, the function does not rebind them, and an `.options(...)`
-  already in the chain lists only loader calls, none of them for the
-  relationship (not `*options` or a variable). A chain through another class
-  names that class on its own (`.joinedload(Customer.country)`), so the
-  module must import it;
+  already in the chain lists only SQLAlchemy loader calls that name each
+  relationship as `Class.attribute`, none of them the relationship (not
+  `*options`, an option a helper returns, or a relationship in a variable, a
+  constant or a string: `noload(REL)`, `noload("customer")`, which may be the
+  one the patch loads, and two loaders of one relationship conflict). A chain
+  through another class names that class on its own
+  (`.joinedload(Customer.country)`), so the module must import it;
+- a `joinedload` (a many-to-one) does not go on a statement with
+  `with_for_update()`, `group_by()`, `having()`, `distinct()` or a prefix or
+  suffix: its outer join would put `FOR UPDATE` on the nullable side of the
+  join, or the joined columns outside the `GROUP BY`. A `selectinload` does;
 - the file is inside the rootdir, UTF-8 with `\n` or `\r\n` line ends
   (which the patch keeps), and was not modified after the session started,
   so it is the code that ran.
