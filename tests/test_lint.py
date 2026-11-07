@@ -209,6 +209,15 @@ def test_comprehensions(models: lint.Models, comprehension: str) -> None:
     ]
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 15), reason="dict unpacking in comprehensions is 3.15+"
+)
+def test_a_dict_comprehension_that_unpacks(models: lint.Models) -> None:
+    # PEP 798: {**d for d in ...} is a DictComp without a value
+    code = "def f(session):\n    return {**o.customer.extra for o in session.scalars(select(Order))}\n"
+    assert found(models, code) == ["Order.customer"]
+
+
 def test_async_sessions(models: lint.Models) -> None:
     code = """
     async def f(session):
