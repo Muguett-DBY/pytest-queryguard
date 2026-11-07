@@ -62,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `selectinload(... Manager.reports)` and no managers): reads of the base
   class's rows counted as reads of instances that could have had the
   relationship.
+- The package metadata lists Python 3.15 (`Programming Language :: Python ::
+  3.15`). CI has tested 3.15 since 0.8.0, but the classifier was missing.
+- `python -m pytest_queryguard.mcp --help` prints a usage message. Before, it
+  started the server, which then waited for JSON-RPC on the terminal (or, with
+  stdin closed, exited silently). The server takes no arguments, and an
+  unknown one is now an error instead of being ignored.
 - Strict mode no longer drops a query or database-time budget failure: a
   budget the test (`max_queries`/`max_db_time` marker,
   `queryguard_max_queries`, the budget file) or a `max_queries()` block
@@ -173,6 +179,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The baseline, budget, JSON, SARIF and patch files are written with the
   permissions of the file they replace, or those of the umask for a new file,
   not owner-only (0600) as the temporary file they are written through.
+
+### Internal
+
+- `scripts/release_gate.py contents` checks the wheel's METADATA against the
+  repository: the Python classifiers are the versions `ci.yml` tests and
+  `Requires-Python` the oldest of them, the `pytest` and `sqlalchemy` lower
+  bounds are the versions the release gate's oldest-versions job installs,
+  `Framework :: Pytest`, `Typing :: Typed`, the license file, a Markdown long
+  description and the Homepage, Documentation, Changelog and Issues URLs are
+  there, and the Development Status is `5 - Production/Stable` exactly for a
+  final release from 1.0.0 on. The release workflow runs the check on the
+  files it publishes. `release_gate.py install` also runs `--help` of
+  `python -m pytest_queryguard.lint`, `.trend`, `.compare` and `.mcp`.
 
 ## [0.8.0] - 2026-11-06
 

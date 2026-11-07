@@ -50,8 +50,11 @@ jobs:
       - run: uv sync --only-group docs
       - run: uv run --no-sync python scripts/build_docs.py --strict
 
-  # Python 3.15 is a pre-release; setup-uv installs it like the others (uv
-  # downloads pre-release interpreters when the version is named explicitly).
+  # The Python versions here and in the other jobs are the package's Python
+  # classifiers: scripts/release_gate.py contents checks that they agree. A
+  # pre-release interpreter added here (uv downloads one when the version is
+  # named exactly, not as a range) goes in PRE_RELEASE_PYTHONS there until its
+  # final release.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
