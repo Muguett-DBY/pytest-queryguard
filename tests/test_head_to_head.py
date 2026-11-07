@@ -161,7 +161,8 @@ def test_score_of_a_binary_tool():
     rel, repeat = s.kinds[REL], s.kinds[REPEAT]
     assert rel is not None and (rel.flagged, rel.total) == (1, 1)
     assert repeat is not None and (repeat.flagged, repeat.total) == (0, 1)
-    assert s.misses == ["bug_repeat"]
+    assert s.misses == []  # the error is listed with the errors only
+    assert s.errors == [("bug_repeat", "crash")]
     assert common.kind_cell(tool, rel) == "- / 100%"
     assert common.kind_cell(tool, s.kinds[UNUSED]) == "n/a"
 

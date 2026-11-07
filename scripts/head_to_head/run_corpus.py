@@ -98,7 +98,9 @@ def run(tool: common.Tool, work: Path, timeout: int) -> dict[str, object]:
         if not lines and proc.returncode:
             # the session never started a test: say why (the last line of its error)
             verdict = common.Verdict(
-                common.ERROR, detail="session failed: " + common.first_line(proc.stderr)
+                common.ERROR,
+                detail="session failed: "
+                + common.first_line(proc.stderr or proc.stdout),
             )
         results[name] = {
             "status": verdict.status,
@@ -143,6 +145,8 @@ def main() -> int:
         + f" (pytest exit {payload['returncode']})"
     )
     if statuses.count(common.ERROR) == len(statuses):
+        # still data (a tool that cannot run scores nothing), but say so in CI
+        print(f"::warning::{tool.label}: every scenario is an error")
         print(payload["output_tail"], file=sys.stderr)
     return 0
 

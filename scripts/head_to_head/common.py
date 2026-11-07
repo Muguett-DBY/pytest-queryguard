@@ -20,7 +20,7 @@ scenario the result is one of:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 REL = "relationship-load"
 REPEAT = "repeated-statement"
@@ -80,16 +80,6 @@ TOOLS: dict[str, Tool] = {
             supported=frozenset(),
             reports_kinds=False,
             notes="Every plugin off: a scenario that fails here fails on its own.",
-        ),
-        Tool(
-            key="none-sa20",
-            label="no tool, SQLAlchemy 2.0 (baseline)",
-            requirement="",
-            args=("-p", "no:queryguard"),
-            supported=frozenset(),
-            reports_kinds=False,
-            notes="The baseline of the SQLAlchemy 2.0 runs.",
-            extra=("sqlalchemy==2.0.54",),
         ),
         Tool(
             key="queryguard",
@@ -173,30 +163,29 @@ TOOLS: dict[str, Tool] = {
                 "test call. On SQLAlchemy 2.1 the import fails (`LazyLoader` moved)."
             ),
         ),
-        Tool(
-            key="nplusone-sa20",
-            label="nplusone on SQLAlchemy 2.0",
-            requirement="nplusone==1.0.0",
-            extra=("sqlalchemy==2.0.54",),
-            args=("-p", "no:queryguard"),
-            supported=frozenset({REL, UNUSED}),
-            reports_kinds=True,
-            markers=(
-                "NPlusOneError",
-                "Potential n+1 query",
-                "Potential unnecessary eager load",
-            ),
-            kind_patterns=(
-                (r"Potential n\+1 query detected", REL),
-                (r"Potential unnecessary eager load detected", UNUSED),
-            ),
-            notes=(
-                "`import nplusone.ext.sqlalchemy` and `profiler.Profiler()` around each "
-                "test call, with SQLAlchemy 2.0.54 instead of 2.1 (nplusone does not import on 2.1)."
-            ),
-        ),
     )
 }
+
+# nplusone does not import on SQLAlchemy 2.1 (``strategies.LazyLoader``
+# moved), so it also runs on the last 2.0, with a baseline of its own.
+SQLALCHEMY_20 = ("sqlalchemy==2.0.54",)
+TOOLS["none-sa20"] = replace(
+    TOOLS["none"],
+    key="none-sa20",
+    label="no tool, SQLAlchemy 2.0 (baseline)",
+    notes="The baseline of the SQLAlchemy 2.0 runs.",
+    extra=SQLALCHEMY_20,
+)
+TOOLS["nplusone-sa20"] = replace(
+    TOOLS["nplusone"],
+    key="nplusone-sa20",
+    label="nplusone on SQLAlchemy 2.0",
+    notes=(
+        "`import nplusone.ext.sqlalchemy` and `profiler.Profiler()` around each "
+        "test call, with SQLAlchemy 2.0.54 instead of 2.1."
+    ),
+    extra=SQLALCHEMY_20,
+)
 
 # The tools the summary compares, in this order; "none" is the baseline.
 COMPARED = (
@@ -361,7 +350,7 @@ def score(
             if expected & tool.supported:
                 out.in_scope_bugs += 1
                 out.in_scope_flagged += flagged
-                if not flagged:
+                if verdict.status == PASSED:  # an error is listed with the errors
                     out.misses.append(name)
         elif flagged:
             out.clean_flagged += 1
@@ -402,7 +391,8 @@ def kind_cell(tool: Tool, tally: KindScore | None) -> str:
     if tool.reports_kinds:
         p = KindScore.ratio(tally.tp, tally.tp + tally.fp)
         r = KindScore.ratio(tally.tp, tally.tp + tally.fn)
-        return f"{pct(p)} / {pct(r)}"
+        # no finding of that kind at all: no precision to give
+        return f"{'-' if p is None else pct(p)} / {pct(r)}"
     return f"- / {pct(KindScore.ratio(tally.flagged, tally.total))}"
 
 
@@ -425,7 +415,7 @@ def accuracy_tables(scores: dict[str, ToolScore]) -> list[str]:
         (
             "Per kind, precision / recall. `n/a`: the tool does not claim that kind "
             "(for pytest-queryguard defaults: the rule is off by default). `-`: the tool "
-            "does not say which kind it found, so only the share of BUG scenarios of "
+            "does not say which kind it found (or reported no finding of it), so only the share of BUG scenarios of "
             "that kind it flagged (for any reason) is given."
         ),
         "",
