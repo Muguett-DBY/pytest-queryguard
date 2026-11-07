@@ -413,8 +413,11 @@ def test_a_budget_gone_over_before_the_access_is_in_the_error(
             "E*queryguard: expected at most 1 query, got *",
         ]
     )
-    # the budget part is in the error once, not also as a second failure
-    assert result.stdout.str().count("expected at most 1 query") == 1
+    # the budget part is in the error once, not also as a second failure;
+    # the short summary (which shows the whole message when CI is set) is
+    # left out
+    failures = result.stdout.str().split("short test summary info")[0]
+    assert failures.count("expected at most 1 query") == 1
 
 
 def test_a_time_budget_gone_over_before_the_access_is_in_the_error(
