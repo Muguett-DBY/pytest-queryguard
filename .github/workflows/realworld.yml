@@ -254,7 +254,7 @@ jobs:
               if [ -f "$file" ]; then
                 files+=("$file")
               else
-                echo "- $name: no summary (the job stopped before its tests ran; see its log)"
+                echo "- $name: no summary (the job stopped before its Summary step, or the summary script failed; see its log)"
               fi
             done
             echo

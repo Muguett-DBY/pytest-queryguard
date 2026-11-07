@@ -531,3 +531,37 @@ def test_the_project_list_is_well_formed() -> None:
         assert project["ref"] and project["ref"] not in ("main", "master", "HEAD")
         assert project["repository"].count("/") == 1
         assert "," not in project["name"]
+
+
+def test_a_plugin_run_is_not_judged_against_a_baseline_that_stopped(
+    summary: ModuleType, tmp_path: Path
+) -> None:
+    # both runs cut by the timeout, the plugin run after fewer tests: the
+    # suite is too slow without the plugin too, a harness problem only
+    write_runs(
+        tmp_path,
+        junit(("test_a", "passed"), ("test_b", "passed")),
+        junit(("test_a", "passed")),
+        baseline_meta={"exit": 2, "seconds": 600},
+        plugin_meta={"exit": 124, "seconds": 630},
+        counts=counts_file({}, complete=False),
+    )
+    result = summary.summarize(tmp_path, "demo", "v1")
+    assert result.problems == []
+    assert len(result.harness) == 1
+
+
+def test_the_table_puts_a_plugin_problem_first_and_escapes_errors(
+    summary: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    both = tmp_path / "both.json"
+    both.write_text(
+        json.dumps({"project": "p", "problems": ["x"], "harness": ["y"]}),
+        encoding="utf-8",
+    )
+    broken = tmp_path / "broken.json"
+    broken.write_text("{|", encoding="utf-8")
+    assert summary.main(["--table", str(both), str(broken)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[2].endswith("| plugin problem |")
+    assert lines[3].count("|") == 10  # one row of nine cells, no stray pipe

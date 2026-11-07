@@ -87,6 +87,8 @@ def _session_classes() -> tuple[type, ...]:
 
 def _is_session_method(frame: FrameType) -> bool:
     """Whether ``frame`` runs a method of a ``Session`` or ``AsyncSession`` subclass."""
+    if frame.f_code.co_name in _INLINED:
+        frame = _outer(frame)  # a comprehension in the method, before 3.12
     code = frame.f_code
     try:
         return _session_methods[code]

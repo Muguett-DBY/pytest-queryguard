@@ -236,3 +236,17 @@ def test_a_session_method_is_the_call_site_when_nothing_else_is() -> None:
     thread.join()
     assert session.site is not None
     assert session.site.function == "execute"  # type: ignore[attr-defined]
+
+
+def test_a_comprehension_in_a_session_method_is_passed_over() -> None:
+    class Many(_AppSession):
+        def many(self) -> list[object]:
+            return [find_callsite() for _ in range(2)]
+
+    from sqlalchemy.orm import Session
+
+    session = type("ManySession", (Many, Session), {})()
+    sites = session.many()
+    expected = inspect.currentframe().f_lineno - 1  # type: ignore[union-attr]
+    assert sites[0] is not None
+    assert sites[0].lineno == expected  # type: ignore[attr-defined]

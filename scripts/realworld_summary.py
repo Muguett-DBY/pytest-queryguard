@@ -266,7 +266,10 @@ def summarize(directory: Path, project: str, ref: str, samples: int = 5) -> Summ
 
     if baseline.outcomes is None:
         out += ["The run without the plugin left no JUnit XML.", ""]
-    if not _ran(baseline):
+    # The plugin run is only judged against a baseline that ran to the end:
+    # otherwise its exit status and its tests say nothing about the plugin.
+    judged = _ran(baseline)
+    if not judged:
         # Nothing to compare with: the install or test command is wrong (or the
         # project's suite is broken at this tag). Not the plugin's problem.
         harness.append(
@@ -275,9 +278,9 @@ def summarize(directory: Path, project: str, ref: str, samples: int = 5) -> Summ
             + "): check the project's install and pytest_args in "
             "scripts/realworld_projects.json and the end of baseline.log"
         )
-    if plugin.outcomes is None and baseline.outcomes is not None:
+    if plugin.outcomes is None and judged:
         problems.append("the run with the plugin left no JUnit XML")
-    if plugin.exit in (2, 3, 4, 124, 137) and plugin.exit != baseline.exit:
+    if plugin.exit in (2, 3, 4, 124, 137) and judged:
         problems.append(f"the run with the plugin ended with {_exit(plugin)}")
 
     # tests the plugin broke
@@ -305,7 +308,8 @@ def summarize(directory: Path, project: str, ref: str, samples: int = 5) -> Summ
         stats["fixed"] = len(fixed)
         if broken:
             out.append("")
-            problems.append(f"{len(broken)} test(s) pass only without the plugin")
+            if judged:
+                problems.append(f"{len(broken)} test(s) pass only without the plugin")
         if missing:
             out += [
                 (
@@ -314,7 +318,8 @@ def summarize(directory: Path, project: str, ref: str, samples: int = 5) -> Summ
                 ),
                 "",
             ]
-            problems.append(f"{len(missing)} test(s) did not run with the plugin")
+            if judged:
+                problems.append(f"{len(missing)} test(s) did not run with the plugin")
         if only_plugin:
             out += [
                 (
@@ -357,7 +362,6 @@ def summarize(directory: Path, project: str, ref: str, samples: int = 5) -> Summ
 
     # findings
     # what the plugin wrote is only judged when the suite ran without it
-    judged = _ran(baseline)
     if counts is None:
         out += ["### Findings", "", "No queryguard JSON file.", ""]
         if plugin.exit in (0, 1) and judged:
@@ -433,7 +437,8 @@ def table(files: list[Path]) -> str:
         try:
             stats = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
-            rows.append(f"| `{path}` | | | | | | | | unreadable: {error} |")
+            reason = _one_line(str(error)) or type(error).__name__
+            rows.append(f"| `{path}` | | | | | | | | unreadable: {reason} |")
             continue
         base = stats.get("baseline") or {}
         plug = stats.get("plugin") or {}
@@ -456,11 +461,12 @@ def table(files: list[Path]) -> str:
         else:
             found = "0"
         overhead_pct = stats.get("overhead_pct")
+        # as main()'s exit status: a plugin problem first
         status = (
-            "harness problem"
-            if stats.get("harness")
-            else "plugin problem"
+            "plugin problem"
             if stats.get("problems")
+            else "harness problem"
+            if stats.get("harness")
             else "ok"
         )
         rows.append(

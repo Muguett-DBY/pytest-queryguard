@@ -727,6 +727,13 @@ See also [Limitations](limitations.md).
 - The unused-columns check (experimental) does not see instances loaded
   through a relationship. It leaves out queries that pin the primary key (one
   row each), but otherwise reports three rows as readily as a thousand.
+- The parents of objects the test made (or loaded before the test body) are
+  grouped by the line that read the relationship: reading it through one
+  helper for a few objects on separate lines is reported like a loop, and a
+  loop that reads it on two lines (two branches) counts each line on its own,
+  so each needs the threshold. A service that opens a Session per call and is
+  called on separate lines is reported under the default scope
+  (`clean_133`).
 - Strict mode stops the test at the first N+1, so later ones are not
   reported.
 - `--queryguard-write-patch` writes a patch only for a `select(Class)` (or

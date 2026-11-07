@@ -1034,3 +1034,33 @@ def test_parents_reached_by_different_chains_give_no_chain() -> None:
     )
     assert f.parent_site == SITE
     assert (f.parent_root, f.parent_path) == (None, ())
+
+
+def test_strict_reports_the_site_the_report_names() -> None:
+    # Objects the test made are read in a loop at READ_2 (an N+1 of their
+    # own); then the rows of a query at OTHER are read in a loop at SITE.
+    # The report merges both groups and names READ_2 first, with parents of
+    # more than one line; the strict error must say the same.
+    seen: list[tuple[object, bool]] = []
+
+    def strict(
+        load: RelationshipLoadEvent, first: object, parents: int, other: bool
+    ) -> BaseException:
+        seen.append((first, other))
+        return RuntimeError("n+1")
+
+    c = QueryCollector()
+    c.strict = strict  # type: ignore[assignment]
+    loads = [
+        _read_at(1, None, READ_2),
+        _read_at(2, None, READ_2),
+        _read_at(3, ParentLoad(OTHER, None), SITE),
+        _read_at(4, ParentLoad(OTHER, None), SITE),
+    ]
+    for load in loads:
+        c.relationship_loads.append(load)
+        c.strict_check(load)
+    assert seen == [(READ_2, True)]
+    [f] = detect(c, relationship_threshold=2, repeat_threshold=5)
+    assert isinstance(f, RelationshipFinding)
+    assert f.first == READ_2
