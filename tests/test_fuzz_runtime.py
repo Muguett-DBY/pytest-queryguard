@@ -509,7 +509,7 @@ def generate(rng: random.Random, index: int, seed: int) -> Program:
         rows,
         links,
         [],
-        HAS_AIOSQLITE and rng.random() < 0.25,
+        rng.random() < 0.25 and HAS_AIOSQLITE,
         rng.random() < 0.7,
     )
     lists: list[tuple[str, str, bool]] = []  # (variable, class, unchecked)
@@ -997,7 +997,9 @@ if _collector is not None:
     def _add_relationship_load(self, event):
         parent = event.parent
         key = (_current, event.relationship)
-        if (parent is None or parent.callsite is None) and key not in _unknown:
+        # eager loader queries (no parent object) are no lazy loads
+        lazy = event.parent_key is not None
+        if lazy and (parent is None or parent.callsite is None) and key not in _unknown:
             _unknown.add(key)
             _log({"unknown_parent": event.relationship, "nodeid": _current})
         return _add(self, event)
@@ -1070,7 +1072,7 @@ def _run(pytester: pytest.Pytester, root: Path, label: str, *args: str) -> Run:
             "-q",
             *args,
             *([] if "no:queryguard" in args else [f"--queryguard-json={report}"]),
-            timeout=600,
+            timeout=300,
         )
     finally:
         del os.environ["QG_FUZZ_OUT"]
@@ -1300,6 +1302,7 @@ STATS: Counter[str] = Counter()
 
 @pytest.mark.parametrize("batch", range(BATCHES))
 def test_generated_programs(pytester: pytest.Pytester, batch: int) -> None:
+    STATS["batches"] += 1
     seed = SEED + 1000 * batch
     rng = random.Random(seed)
     settings = _settings(rng)
@@ -1317,7 +1320,8 @@ def test_generated_programs(pytester: pytest.Pytester, batch: int) -> None:
 
 def test_the_oracles_were_checked() -> None:
     """The batches above (run first, in file order) reached every oracle."""
-    if not STATS:
-        pytest.skip("no batch ran in this session")
+    if STATS["batches"] < BATCHES:
+        # run alone, shuffled or split between workers
+        pytest.skip("not every batch ran before this test in this process")
     for name in ("ignore checked", "selectinload checked", "strict raised"):
         assert STATS[name] > 0, STATS

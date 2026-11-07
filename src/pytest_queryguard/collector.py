@@ -220,7 +220,7 @@ class QueryCollector:
             return None
         assert group.report is not None
         first, other_lines = group.report
-        count = len(group.parents) + (load.parent_key not in group.parents)
+        count = self._strict_count(group, load)
         error = strict(load, first or group.first or load.callsite, count, other_lines)
         if error is None:
             group.suppressed = True
@@ -266,7 +266,7 @@ class QueryCollector:
         """(relationship, query site of the parents, scope), or None when the
         parent's query line is unknown (such loads never count here)."""
         parent = load.parent
-        if self.strict is None or parent is None or parent.callsite is None:
+        if parent is None or parent.callsite is None:
             return None
         scope = load.scope if self.strict_by_scope else None
         return (load.relationship, parent.callsite, scope)
@@ -282,9 +282,15 @@ class QueryCollector:
             group = self.strict_groups[key] = StrictGroup()
         if group.suppressed:
             return None
+        return (
+            group if self._strict_count(group, load) >= self.strict_threshold else None
+        )
+
+    def _strict_count(self, group: StrictGroup, load: RelationshipLoadEvent) -> int:
+        """The parents of the group with this load's, at most the threshold."""
         parents = group.parents
         count = len(parents) + (load.parent_key not in parents)
-        return group if count >= self.strict_threshold else None
+        return min(count, self.strict_threshold)
 
     def _strict_ran(self, load: RelationshipLoadEvent) -> None:
         """A lazy load ran its SELECT (or raised in strict mode): its parent
