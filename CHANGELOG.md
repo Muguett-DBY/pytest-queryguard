@@ -339,6 +339,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- CI runs one job against the newest pytest and SQLAlchemy on PyPI, not only the versions in uv.lock, so an upstream release that breaks the plugin fails CI before users see it.
 - `tests/test_public_api.py` also snapshots the keys and format numbers of
   the files the plugin writes (`--queryguard-json`, baseline, budget file,
   SARIF rule ids, fingerprint key and properties), the finding kinds, the

@@ -75,6 +75,13 @@ jobs:
           - python-version: "3.12"
             sqlalchemy: "2.0.49"
             pytest: "latest"
+          # "latest" above means the version in uv.lock, which exclude-newer
+          # holds back; this row installs what PyPI has today, so a new
+          # pytest or SQLAlchemy release that breaks the plugin shows up here
+          # first (pytest 9.2 made getini() raise UsageError, see #336)
+          - python-version: "3.14"
+            sqlalchemy: "newest"
+            pytest: "newest"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -89,6 +96,9 @@ jobs:
       - name: Pin SQLAlchemy to 2.0.49
         if: matrix.sqlalchemy == '2.0.49'
         run: uv pip install "sqlalchemy==2.0.49" sqlmodel
+      - name: Install the newest pytest and SQLAlchemy from PyPI
+        if: matrix.pytest == 'newest'
+        run: uv pip install --upgrade --exclude-newer "$(date -u +%Y-%m-%dT%H:%M:%SZ)" pytest sqlalchemy
       - name: Pin pytest to the oldest supported series
         if: matrix.pytest == '8.0'
         run: uv pip install "pytest==8.0.*"
