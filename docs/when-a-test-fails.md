@@ -248,7 +248,11 @@ git apply queryguard.patch      # from the rootdir
 
 The option goes on the `select(Order)` or `session.query(Order)` call of the
 line in `parents loaded at`: as `.options(...)` right after the call, or as
-one more argument of the `.options(...)` already in its chain. The loader is
+one more argument of the `.options(...)` already in its chain. When that line
+runs a statement built earlier in the function (`statement = select(Order)`
+and then `session.scalars(statement)`), the option goes on the line that
+builds it. A class named through its module (`select(models.Order)`) is
+named the same way in the option: `joinedload(models.Order.customer)`. The loader is
 `joinedload` or `selectinload`, the same as in the `fix:` hint, chained
 through the relationships that reached the parents. A loader the module does
 not import yet is added to its `from sqlalchemy.orm import` line, or on a new
@@ -261,16 +265,31 @@ certain, and otherwise only the `fix:` hint:
   selected;
 - that line is one statement with exactly one `select(...)` call, or
   `.query(...)` on something named like a session, with that class as its
-  only argument, and the statement runs nothing else. A query built on
-  another line (`statement = select(Order)` and then
-  `session.scalars(statement)`), a `session.get()`, a subquery, or a choice
-  between queries (`a if c else b`, `or`, a comprehension) gets no patch;
-- `select` is imported from SQLAlchemy or SQLModel, the classes are imported
-  (or defined) in the module under their own names, the function does not
-  rebind them, and an `.options(...)` already in the chain lists only loader
-  calls, none of them for the relationship (not `*options` or a variable);
-- the file is inside the rootdir, UTF-8 with `\n` line ends, and was not
-  modified after the session started, so it is the code that ran.
+  only argument (`Order`, or `models.Order` for a module imported with
+  `import` or `from ... import`), and the statement runs nothing else. A
+  `session.get()`, a subquery, or a choice between queries (`a if c else b`,
+  `or`, a comprehension) gets no patch;
+- or that line runs a variable on something named like a session
+  (`session.execute(statement)`, `session.scalars(statement)`) that the
+  function assigns once, on an earlier line, to such a `select(...)` with
+  only methods that keep its entities chained to it (`where`, `join`,
+  `order_by`, `limit`, `options` and the like), and reads nowhere else. A
+  variable that is reassigned or changed (`statement = statement.where(...)`),
+  read again (passed to a count, for example), a parameter, a module-level
+  name, assigned in a tuple or with `:=`, wrapped in a call
+  (`paginate(select(Order))`), turned into a union or subquery, run by a
+  helper (`repository.scalars(statement)`), or a `session.query()` kept in a
+  variable gets no patch;
+- `select` is imported from SQLAlchemy or SQLModel, the classes (and the
+  module in `models.Order`) are imported (or defined) in the module under
+  their own names, the function does not rebind them, and an `.options(...)`
+  already in the chain lists only loader calls, none of them for the
+  relationship (not `*options` or a variable). A chain through another class
+  names that class on its own (`.joinedload(Customer.country)`), so the
+  module must import it;
+- the file is inside the rootdir, UTF-8 with `\n` or `\r\n` line ends
+  (which the patch keeps), and was not modified after the session started,
+  so it is the code that ran.
 
 The diff paths are relative to the rootdir (`a/app/orders.py`). When the
 rootdir is a subdirectory of the git repository, apply it with

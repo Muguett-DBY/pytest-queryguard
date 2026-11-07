@@ -230,6 +230,36 @@ def test_a_chain_is_written_from_the_root_of_the_query(tmp_path: Path) -> None:
     ) in after
 
 
+def test_a_method_of_the_result_is_not_another_query(tmp_path: Path) -> None:
+    # .scalars() without an argument is Result.scalars(), not Session.scalars()
+    file = _write(
+        tmp_path,
+        """\
+        def load(session):
+            return session.execute(select(Order)).scalars().all()  # parents
+        """,
+    )
+    fix = _make(tmp_path, _finding(file))
+    assert fix is not None
+    after = _patched(tmp_path, fix)
+    assert (
+        "session.execute(select(Order).options(joinedload(Order.customer)))"
+        ".scalars().all()"
+    ) in after
+
+
+def test_a_scalar_of_a_query_on_the_line_is_another_query(tmp_path: Path) -> None:
+    file = _write(
+        tmp_path,
+        """\
+        def load(session):
+            q = session.query(Customer.id)
+            return session.scalars(select(Order).where(Order.id > q.scalar())).all()  # parents
+        """,
+    )
+    assert _make(tmp_path, _finding(file)) is None
+
+
 def test_a_statement_over_several_lines_is_found_from_any_of_them(
     tmp_path: Path,
 ) -> None:
@@ -272,15 +302,6 @@ def test_columns_count_characters_and_utf16_units(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("body", "header"),
     [
-        pytest.param(
-            """\
-            def load(session):
-                statement = select(Order)
-                return session.scalars(statement).all()  # parents
-            """,
-            HEADER,
-            id="query-built-on-another-line",
-        ),
         pytest.param(
             """\
             def load(session):
@@ -492,6 +513,405 @@ def test_no_patch_when_the_line_is_not_certain(
     assert _make(tmp_path, _finding(file)) is None
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order).where(Order.id > 0)  # built
+                return session.scalars(statement).all()  # parents
+            """,
+            id="assigned",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement: Any = select(Order)  # built
+                rows = session.execute(statement).scalars().all()  # parents
+                return rows
+            """,
+            id="annotated",
+        ),
+        pytest.param(
+            """\
+            async def load(session):
+                statement = (
+                    select(Order)  # built
+                    .where(Order.id > 0)
+                )
+                n = 1
+                for order in (await session.execute(statement)).scalars():  # parents
+                    print(order)
+            """,
+            id="over-several-lines-and-awaited",
+        ),
+    ],
+)
+def test_a_statement_built_on_an_earlier_line_is_patched_there(
+    tmp_path: Path, body: str
+) -> None:
+    file = _write(tmp_path, body)
+    fix = _make(tmp_path, _finding(file))
+    assert fix is not None
+    (option,) = [e for e in fix.insertions if e.text.startswith(".options")]
+    assert option.line == _line(file, "# built")
+    after = _patched(tmp_path, fix)
+    assert "select(Order).options(joinedload(Order.customer))" in after
+    assert "from sqlalchemy.orm import Session, joinedload\n" in after
+    compile(after, "views.py", "exec")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order)
+                statement = statement.limit(3)
+                return session.scalars(statement).all()  # parents
+            """,
+            id="reassigned",
+        ),
+        pytest.param(
+            """\
+            def load(session, limit):
+                statement = select(Order)
+                if limit:
+                    statement += limit
+                return session.scalars(statement).all()  # parents
+            """,
+            id="changed-under-a-condition",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order)
+                total = count(session, statement)
+                return session.scalars(statement).all()  # parents
+            """,
+            id="read-elsewhere-too",
+        ),
+        pytest.param(
+            """\
+            def load(session, statement=None):
+                statement = select(Order)
+                return session.scalars(statement).all()  # parents
+            """,
+            id="a-parameter",
+        ),
+        pytest.param(
+            """\
+            statement = select(Order)
+
+
+            def load(session):
+                return session.scalars(statement).all()  # parents
+            """,
+            id="a-module-level-statement",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order)
+
+                def reset():
+                    nonlocal statement
+                    statement = None
+
+                return session.scalars(statement).all()  # parents
+            """,
+            id="rebound-by-a-closure",
+        ),
+        pytest.param(
+            """\
+            def outer(session):
+                statement = select(Order)
+
+                def load():
+                    return session.scalars(statement).all()  # parents
+
+                return load
+            """,
+            id="assigned-in-the-enclosing-function",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                for n in range(2):
+                    if n:
+                        rows = session.scalars(statement).all()  # parents
+                    statement = select(Order)
+            """,
+            id="assigned-after-the-line",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement, n = select(Order), 1
+                return session.scalars(statement).all()  # parents
+            """,
+            id="assigned-in-a-tuple",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                if (statement := select(Order)) is not None:
+                    return session.scalars(statement).all()  # parents
+            """,
+            id="assigned-by-a-walrus",
+        ),
+        pytest.param(
+            """\
+            def load(session, cached):
+                statement = cached if cached else select(Order)
+                return session.scalars(statement).all()  # parents
+            """,
+            id="a-conditional-value",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = paginate(select(Order))
+                return session.scalars(statement).all()  # parents
+            """,
+            id="wrapped-in-a-call",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order).subquery()
+                return session.scalars(statement).all()  # parents
+            """,
+            id="a-subquery",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order).where(Order.id.in_(session.scalars(ids)))
+                return session.scalars(statement).all()  # parents
+            """,
+            id="a-query-runs-in-the-assignment",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                query = session.query(Order)
+                return session.execute(query).all()  # parents
+            """,
+            id="a-legacy-query-in-a-variable",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                query = session.query(Order)
+                return query.all()  # parents
+            """,
+            id="a-legacy-query-run-by-its-own-method",
+        ),
+        pytest.param(
+            """\
+            def load(session, other):
+                statement = select(Order)
+                return session.scalars(statement).all() + session.scalars(other).all()  # parents
+            """,
+            id="another-statement-runs-on-the-line",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order)
+                return session.scalars(statement.limit(3)).all()  # parents
+            """,
+            id="a-method-on-the-variable",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order)
+                return session.merge(statement)  # parents
+            """,
+            id="not-a-method-that-runs-a-statement",
+        ),
+        pytest.param(
+            """\
+            def load(session, other):
+                statement = select(Order).union(other)
+                return session.execute(statement).all()  # parents
+            """,
+            id="a-union",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(Order).with_only_columns(Order.id)
+                return session.execute(statement).all()  # parents
+            """,
+            id="other-columns",
+        ),
+        pytest.param(
+            """\
+            def load(session, paginator):
+                statement = select(Order)
+                return paginator.scalars(statement).all()  # parents
+            """,
+            id="run-by-something-not-a-session",
+        ),
+        pytest.param(
+            """\
+            class Repository:
+                statement = select(Order)
+                rows = session.scalars(statement).all()  # parents
+            """,
+            id="in-a-class-body",
+        ),
+    ],
+)
+def test_no_patch_for_a_statement_variable_that_is_not_certain(
+    tmp_path: Path, body: str
+) -> None:
+    file = _write(tmp_path, body)
+    assert _make(tmp_path, _finding(file)) is None
+
+
+MODULE_HEADER = """\
+from sqlalchemy import select
+
+import app.models
+from app import models
+from app.models import Customer
+"""
+
+
+@pytest.mark.parametrize(
+    ("query", "relationship", "path", "option"),
+    [
+        pytest.param(
+            "select(models.Order)",
+            "Order.customer",
+            (),
+            "joinedload(models.Order.customer)",
+            id="from-import-of-the-module",
+        ),
+        pytest.param(
+            "session.query(app.models.Order)",
+            "Order.customer",
+            (),
+            "joinedload(app.models.Order.customer)",
+            id="dotted-import-of-the-module",
+        ),
+        pytest.param(
+            "select(models.Order)",
+            "Customer.country",
+            (("Order.customer", True),),
+            "joinedload(models.Order.customer).joinedload(Customer.country)",
+            id="a-chain-through-an-imported-class",
+        ),
+    ],
+)
+def test_a_class_named_through_its_module(
+    tmp_path: Path,
+    query: str,
+    relationship: str,
+    path: tuple[tuple[str, bool], ...],
+    option: str,
+) -> None:
+    file = _write(
+        tmp_path,
+        f"""\
+        def load(session):
+            return list({query})  # parents
+        """,
+        header=MODULE_HEADER,
+    )
+    fix = _make(tmp_path, _finding(file, relationship=relationship, path=path))
+    assert fix is not None
+    assert fix.description.endswith(f": {option}")
+    after = _patched(tmp_path, fix)
+    assert f"{query}.options({option})" in after
+    assert (
+        "\nfrom app.models import Customer\nfrom sqlalchemy.orm import joinedload\n"
+        in after
+    )
+    compile(after, "views.py", "exec")
+
+
+@pytest.mark.parametrize(
+    ("body", "header"),
+    [
+        pytest.param(
+            """\
+            def load(session):
+                return session.scalars(select(models.Order)).all()  # parents
+            """,
+            MODULE_HEADER + "models = None\n",
+            id="module-name-assigned",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                return session.scalars(select(models.Order)).all()  # parents
+            """,
+            MODULE_HEADER + "from app import helpers as models\n",
+            id="module-imported-under-another-name",
+        ),
+        pytest.param(
+            """\
+            def load(session, models):
+                return session.scalars(select(models.Order)).all()  # parents
+            """,
+            MODULE_HEADER,
+            id="module-name-is-a-parameter",
+        ),
+        pytest.param(
+            """\
+            class Shop:
+                pass
+
+
+            def load(session):
+                return session.scalars(select(Shop.Order)).all()  # parents
+            """,
+            MODULE_HEADER,
+            id="a-class-attribute",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                return session.scalars(select(registry().Order)).all()  # parents
+            """,
+            MODULE_HEADER,
+            id="not-a-name-at-the-start",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                return session.scalars(select(models.Item)).all()  # parents
+            """,
+            MODULE_HEADER,
+            id="another-class",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                return session.scalars(select(models.Order)).all()  # parents
+            """,
+            MODULE_HEADER.replace("from app.models import Customer\n", ""),
+            id="a-chain-class-the-module-does-not-import",
+        ),
+    ],
+)
+def test_no_patch_for_a_module_attribute_that_is_not_certain(
+    tmp_path: Path, body: str, header: str
+) -> None:
+    file = _write(tmp_path, body, header=header)
+    finding = _finding(
+        file, relationship="Customer.country", path=(("Order.customer", True),)
+    )
+    assert _make(tmp_path, finding) is None
+
+
 def test_options_over_several_lines_with_a_comment(tmp_path: Path) -> None:
     file = _write(
         tmp_path,
@@ -616,14 +1036,35 @@ def test_no_patch_outside_the_rootdir(tmp_path: Path) -> None:
         ),
     ],
 )
-def test_windows_line_ends_are_kept(tmp_path: Path, header: str) -> None:
+@pytest.mark.parametrize(
+    ("body", "option"),
+    [
+        pytest.param(
+            """\
+            def load(session):
+                return session.scalars(select(Order)).all()  # parents
+            """,
+            b"select(Order).options(joinedload(Order.customer))",
+            id="on-the-line",
+        ),
+        pytest.param(
+            """\
+            def load(session):
+                statement = select(models.Order)
+                return session.scalars(statement).all()  # parents
+            """,
+            b"select(models.Order).options(joinedload(models.Order.customer))",
+            id="a-module-attribute-built-on-an-earlier-line",
+        ),
+    ],
+)
+def test_windows_line_ends_are_kept(
+    tmp_path: Path, header: str, body: str, option: bytes
+) -> None:
     file = _write(
         tmp_path,
-        """\
-        def load(session):
-            return session.scalars(select(Order)).all()  # parents
-        """,
-        header=header,
+        body,
+        header=header + "from app import models\n",
         newline="\r\n",
     )
     fix = _make(tmp_path, _finding(file))
@@ -632,7 +1073,7 @@ def test_windows_line_ends_are_kept(tmp_path: Path, header: str) -> None:
     _patched(tmp_path, fix)
     data = file.read_bytes()
     assert data.count(b"\n") == data.count(b"\r\n")
-    assert b".options(joinedload(Order.customer))" in data
+    assert option in data
     assert b"joinedload\r\n" in data
 
 
@@ -997,3 +1438,43 @@ def test_a_written_patch_for_windows_line_ends_applies(
     assert after.count(b"\n") == after.count(b"\r\n")
     assert b"from sqlalchemy.orm import joinedload\r\n" in after
     project.runpytest().assert_outcomes(passed=2, failed=1)
+
+
+BUILT = """\
+from sqlalchemy import select
+
+import qgmodels
+
+
+def test_statement():
+    session = qgmodels.make_sync_session()
+    statement = select(qgmodels.Customer).where(qgmodels.Customer.id > 0)
+    for customer in session.scalars(statement):
+        _ = customer.orders
+
+
+def test_result_scalars():
+    session = qgmodels.make_sync_session()
+    for order in session.execute(select(qgmodels.Order)).scalars():
+        _ = order.customer.name
+"""
+
+
+def test_a_statement_variable_and_a_module_attribute_are_patched(
+    pytester: pytest.Pytester,
+) -> None:
+    pytester.makepyfile(qgmodels=MODELS, test_built=BUILT)
+    result = pytester.runpytest("--queryguard-write-patch=fix.patch")
+    result.assert_outcomes(failed=2)
+    after = _git_apply(pytester.path, pytester.path / "fix.patch", "test_built.py")
+    assert (
+        "    statement = select(qgmodels.Customer)"
+        ".options(selectinload(qgmodels.Customer.orders))"
+        ".where(qgmodels.Customer.id > 0)\n"
+    ) in after
+    assert (
+        "session.execute(select(qgmodels.Order)"
+        ".options(joinedload(qgmodels.Order.customer))).scalars()"
+    ) in after
+    assert "\nfrom sqlalchemy.orm import joinedload\n" in after
+    pytester.runpytest().assert_outcomes(passed=2)

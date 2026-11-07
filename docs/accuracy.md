@@ -285,27 +285,35 @@ pytest session, runs the 29 BUG scenarios with a relationship-load with
 expects a patch; every other one expects none, so a patch that appears or
 disappears fails the test.
 
-Measured on 2026-11-06: **7 of the 29 get a patch; every patch applies, and in
-all 7 the relationship-load is gone after it, with no new finding** (a
+Measured on 2026-11-07: **17 of the 29 get a patch; every patch applies, and
+in all 17 the relationship-load is gone after it, with no new finding** (a
 `joinedload` next to another joined collection would be a cartesian-load).
 The other finding of `bug_88_strict_lazy_then_lookup_loop`, a
-repeated-statement, stays, as it should. The 22 without a patch, each a case
+repeated-statement, stays, as it should. The 12 without a patch, each a case
 where the patch cannot be certain of the change:
 
 | why no patch | scenarios |
 |---|---|
-| the class is reached through a module (`select(shop.Customer)`), not a name of the module | 14 (`bug_01`, `bug_02`, `bug_03`, `bug_04`, `bug_06`, `bug_11`, `bug_12`, `bug_14`, `bug_15`, `bug_16`, `bug_32`, `bug_37`, `bug_38`, `bug_43`) |
-| the statement is built on another line (`stmt = select(...)`, then `session.scalars(stmt)`) | 3 (`bug_41`, `bug_92`, `bug_95`) |
-| the query runs inside a comprehension | 2 (`bug_13`, `bug_19`) |
+| the query runs inside a comprehension or generator expression | 7 (`bug_03`, `bug_13`, `bug_16`, `bug_19`, `bug_41`, `bug_43`, `bug_92`) |
+| a recursive walk of a self-referential relationship: the deeper parents were loaded by the relationship itself, so no one query started them | 2 (`bug_37`, `bug_95`) |
 | Flask-SQLAlchemy's `db.select(Author)` | 1 (`bug_07`) |
 | `select(with_polymorphic(...))` | 1 (`bug_96`) |
 | the parents were loaded by a fixture, before the measurement | 1 (`bug_90`) |
 
-The first two rows are the common way to write a query in real code, so on
-code like this corpus most findings come without a patch. The `fix:` line of
-the report still shows the option for each of them.
+The `fix:` line of the report still shows the option for each of them.
 
-**Fixed with this measurement:** when one query got two findings, a
+**Fixed with the 2026-11-07 measurement:** 10 scenarios that got no patch now
+get one. A class named through its module (`select(shop.Customer)`, 14
+scenarios before) is patched as `selectinload(shop.Customer.orders)`; a
+statement built on an earlier line (`stmt = select(...)`, then
+`session.scalars(stmt)`, 3 scenarios before) is patched where it is built
+when the function assigns it once and reads it only there; and
+`session.execute(select(...)).scalars()` no longer counts the `.scalars()`
+of the result as a second query. The remaining scenarios of those two rows
+moved to the rows above: their query runs in a comprehension, or walks a
+tree.
+
+**Fixed with the 2026-11-06 measurement:** when one query got two findings, a
 relationship and a chain through it (`Playlist.entries` and
 `PlaylistEntry.track` in `bug_91_association_object_loop`), the combined patch
 added both options as two `.options()` calls,
@@ -479,8 +487,9 @@ See also [Limitations](limitations.md).
   (Pydantic, FastAPI's response validation) fails the test with its own error;
   the N+1 is in its message but not in the report, SARIF or JSON. Strict mode
   also stops the test at the first N+1, so later ones are not reported.
-- `--queryguard-write-patch` writes a patch only for a `select(Class)` written
-  on the line that ran it, with `Class` a name of the module: 7 of the 29
+- `--queryguard-write-patch` writes a patch only for a `select(Class)` (or
+  `select(module.Class)`) written on the line that ran it, or assigned once to
+  the variable that line runs, and not inside a comprehension: 17 of the 29
   relationship-load BUG scenarios.
 - The corpus is small and written by one person; precision and recall from 197
   scenarios have wide error bars. It ran on SQLite, and its first 141 scenarios

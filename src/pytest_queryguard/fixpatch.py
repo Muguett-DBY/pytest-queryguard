@@ -3,8 +3,9 @@
 A ``relationship-load`` finding knows the line of the parent query and the
 loader option that fixes it (``fix:`` in the report). When that line is
 certain, this module turns the hint into a source change: the option goes on
-the ``select(Entity)`` or ``session.query(Entity)`` call of that line, and the
-loader is imported if the module does not import it yet.
+the ``select(Entity)`` or ``session.query(Entity)`` call of that line (or of
+the one assignment of the statement that line runs), and the loader is
+imported if the module does not import it yet.
 
 A wrong patch costs more trust than no patch, so every doubt means none:
 
@@ -13,12 +14,18 @@ A wrong patch costs more trust than no patch, so every doubt means none:
   the session started;
 - the line belongs to the function the query ran in;
 - the line is one statement with exactly one ``select(...)`` call, or
-  ``.query(...)`` on something named like a session, with the parent class as
-  its only argument; the statement runs no other query and does not choose
-  between expressions; ``select`` is SQLAlchemy's (or SQLModel's);
-- the classes and loaders the option names are module-level names that the
-  function does not rebind; a loader missing from the module is added to its
-  ``from sqlalchemy.orm import`` line, or on a new line after its imports;
+  ``.query(...)`` on something named like a session, with the parent class
+  (``Order`` or ``models.Order``) as its only argument; the statement runs no
+  other query and does not choose between expressions; ``select`` is
+  SQLAlchemy's (or SQLModel's);
+- or the line runs a statement held in a local variable
+  (``session.scalars(statement)``) that the function assigns once, on an
+  earlier line, to such a ``select(...)`` and its methods, and reads nowhere
+  else;
+- the classes, modules and loaders the option names are module-level names
+  that the function does not rebind; a loader missing from the module is
+  added to its ``from sqlalchemy.orm import`` line, or on a new line after
+  its imports;
 - an ``.options(...)`` already in the chain gets the loader as one more
   argument, when its arguments are all calls and none mentions a
   relationship of the option.
@@ -40,28 +47,50 @@ from typing import Any
 
 from .detectors import RelationshipFinding
 from .findings import Insertion, SourceFix
-from .messages import loader_option, loader_steps
+from .messages import loader_steps
 
 _ORM = "sqlalchemy.orm"
 # Modules whose ``select`` builds a statement that takes loader options.
 _SELECT_MODULES = ("sqlalchemy", "sqlmodel")
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 _NAMED = (*_SCOPES, ast.ExceptHandler, ast.MatchAs, ast.MatchStar)
+# Session methods that run the statement given as their first argument.
+_EXECUTES = frozenset({"execute", "scalars", "scalar", "stream", "stream_scalars"})
 # Session methods that run a statement. On the parent line, one of them with
 # an argument that is not the select() call means another query may have run.
-_RUNS = frozenset(
+_RUNS = _EXECUTES | {"get", "get_one", "merge", "refresh"}
+# Select methods that keep the entities it loads and its loader options: a
+# statement in a variable is followed only through these (not a union, a
+# subquery or with_only_columns).
+_KEEPS_ENTITIES = frozenset(
     {
-        "execute",
-        "scalars",
-        "scalar",
-        "stream",
-        "stream_scalars",
-        "get",
-        "get_one",
-        "merge",
-        "refresh",
+        "where",
+        "filter",
+        "filter_by",
+        "join",
+        "outerjoin",
+        "join_from",
+        "outerjoin_from",
+        "select_from",
+        "order_by",
+        "group_by",
+        "having",
+        "limit",
+        "offset",
+        "slice",
+        "fetch",
+        "distinct",
+        "options",
+        "execution_options",
+        "params",
+        "with_for_update",
+        "correlate",
+        "prefix_with",
+        "suffix_with",
     }
 )
+# The origin of a module-level ``import x`` or ``import x.y as z``.
+_IMPORTED = "import "
 # Expressions that run one of several queries, or none: never certain.
 _BRANCHES = (
     ast.IfExp,
@@ -208,9 +237,9 @@ def inside(path: str, root: str, flavour: Any = os.path) -> str | None:
 def _module_names(tree: ast.Module) -> dict[str, str] | None:
     """Module-level names and where they come from, or None after a star import.
 
-    ``from X import name`` maps to X (with its leading dots), a class to
-    "class", anything else (an import under another name, an assignment, a
-    function) to "".
+    ``from X import name`` maps to X (with its leading dots), ``import X``
+    (or ``import X as name``) to "import X", a class to "class", anything else
+    (a from-import under another name, an assignment, a function) to "".
     """
     names: dict[str, str] = {}
     for stmt in tree.body:
@@ -225,7 +254,8 @@ def _module_names(tree: ast.Module) -> dict[str, str] | None:
                 names[alias.asname or alias.name] = origin
         elif isinstance(stmt, ast.Import):
             for alias in stmt.names:
-                names[alias.asname or alias.name.split(".", 1)[0]] = ""
+                bound = alias.asname or alias.name.split(".", 1)[0]
+                names[bound] = _IMPORTED + alias.name
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names[stmt.name] = "class" if isinstance(stmt, ast.ClassDef) else ""
         else:
@@ -370,7 +400,8 @@ def _query_call(module: _Module, line: int) -> ast.Call | None:
     None when the statement has no such call or several, when it chooses
     between expressions (``a if c else b``, ``or``, a lambda or a
     comprehension), or when it runs a statement that does not contain the call
-    (``session.scalars(stmt)``) or another query call.
+    (``session.scalars(other)``) or another query call. A statement without
+    a query call that runs a variable is looked up by ``_assigned_query``.
     """
     statements = module.statements_at(line)
     if len(statements) != 1:
@@ -382,14 +413,159 @@ def _query_call(module: _Module, line: int) -> ast.Call | None:
         return None
     calls = [node for node in nodes if isinstance(node, ast.Call)]
     found = [call for call in calls if _is_query(call)]
+    if not found:
+        return _assigned_query(module, stmt, calls)
     if len(found) != 1:
         return None
     query = found[0]
     for call in calls:
-        runs = isinstance(call.func, ast.Attribute) and call.func.attr in _RUNS
-        if runs and not any(query in ast.walk(argument) for argument in call.args):
+        if _runs(call) and not any(query in ast.walk(arg) for arg in call.args):
             return None
     return query
+
+
+def _runs(call: ast.Call) -> bool:
+    """A call that may run a query: a method of ``_RUNS``.
+
+    Except one without arguments on what such a call returned, which is a
+    method of the result (``session.execute(...).scalars()``): every session
+    method that runs a query takes the statement or instance. A ``.scalar()``
+    on anything else (a ``Query``) may run one.
+    """
+    func = call.func
+    if not (isinstance(func, ast.Attribute) and func.attr in _RUNS):
+        return False
+    if call.args or call.keywords:
+        return True
+    receiver = func.value
+    if isinstance(receiver, ast.Await):
+        receiver = receiver.value
+    return not (isinstance(receiver, ast.Call) and _runs(receiver))
+
+
+def _function(module: _Module, node: ast.AST) -> ast.AST | None:
+    """The function whose body holds ``node``; None in a class body or the module."""
+    scope = module.parents.get(node)
+    while scope is not None:
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return scope
+        if isinstance(scope, (ast.ClassDef, ast.Lambda)):
+            return None
+        scope = module.parents.get(scope)
+    return None
+
+
+def _assigned_query(
+    module: _Module, stmt: ast.stmt, calls: list[ast.Call]
+) -> ast.Call | None:
+    """The ``select(...)`` call of the variable that the statement runs.
+
+    ``statement = select(Order).where(...)`` and, on a later line of the same
+    function, ``session.scalars(statement)``: the call is certain when the
+    statement runs exactly one query, on something named like a session, with
+    the variable as its first argument; the function binds the variable once, in that assignment (no
+    other assignment, parameter, ``global`` or ``del``), and reads it only
+    there; and the assigned value is the ``select(...)`` call, alone or with
+    methods of ``_KEEPS_ENTITIES`` chained to it, with no other query and no choice between
+    expressions. None otherwise.
+    """
+    runs = [call for call in calls if _runs(call)]
+    if len(runs) != 1:
+        return None
+    run = runs[0]
+    assert isinstance(run.func, ast.Attribute)
+    if run.func.attr not in _EXECUTES or not run.args:
+        return None
+    # a helper that takes the statement (repo.execute(stmt)) may change it
+    if "session" not in _terminal(run.func.value).lower():
+        return None
+    variable = run.args[0]
+    function = _function(module, stmt)
+    if not isinstance(variable, ast.Name) or function is None:
+        return None
+    name = variable.id
+    if any(param.name == name for param in getattr(function, "type_params", ())):
+        return None
+    target: ast.Name | None = None
+    reads = 0
+    # nested scopes too: a closure that reads or rebinds it makes it uncertain
+    for node in ast.walk(function):
+        if node is function:
+            continue
+        if isinstance(node, ast.Name) and node.id == name:
+            if isinstance(node.ctx, ast.Load):
+                reads += 1
+            elif target is None:
+                target = node
+            else:
+                return None  # bound twice, or deleted
+        elif _binds(node, name):
+            return None
+    if target is None or reads != 1:
+        return None
+    assign = module.parents.get(target)
+    if isinstance(assign, ast.Assign):
+        if len(assign.targets) != 1 or assign.targets[0] is not target:
+            return None
+    elif not (
+        isinstance(assign, ast.AnnAssign)
+        and assign.target is target
+        and assign.value is not None
+    ):
+        return None
+    value = assign.value
+    assert value is not None
+    end = assign.end_lineno
+    if _function(module, assign) is not function or end is None or end >= stmt.lineno:
+        return None
+    nodes = list(ast.walk(value))
+    if any(isinstance(node, _BRANCHES) for node in nodes):
+        return None
+    inner = [node for node in nodes if isinstance(node, ast.Call)]
+    found = [call for call in inner if _is_query(call)]
+    # select() only: a session.query() is not a statement for execute()
+    if len(found) != 1 or not isinstance(found[0].func, ast.Name):
+        return None
+    if any(_runs(call) for call in inner):
+        return None
+    query = found[0]
+    chain = _chain(module, query)
+    if any(method not in _KEEPS_ENTITIES for method, _ in chain):
+        return None
+    if (chain[-1][1] if chain else query) is not value:
+        return None
+    return query
+
+
+def _binds(node: ast.AST, name: str) -> bool:
+    """Whether ``node`` binds ``name`` other than as a plain variable.
+
+    As a parameter, ``global`` or ``nonlocal``, an import, def or class, an
+    ``except ... as`` or a match capture.
+    """
+    if isinstance(node, ast.arg):
+        return node.arg == name
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return name in node.names
+    return name in _bound(node)
+
+
+def _reference(argument: ast.expr, entity: str) -> tuple[str, str] | None:
+    """(the code that names the parent class, the name it starts with).
+
+    ``Order`` or a module attribute such as ``models.Order``; None for
+    anything else.
+    """
+    if isinstance(argument, ast.Name):
+        return (entity, entity) if argument.id == entity else None
+    if not (isinstance(argument, ast.Attribute) and argument.attr == entity):
+        return None
+    base: ast.expr = argument.value
+    while isinstance(base, ast.Attribute):
+        base = base.value
+    if not isinstance(base, ast.Name):
+        return None
+    return ast.unparse(argument), base.id
 
 
 def _chain(module: _Module, call: ast.Call) -> list[tuple[str, ast.Call]]:
@@ -539,26 +715,31 @@ def make(finding: RelationshipFinding, root: Path, since: float) -> SourceFix | 
     call = _query_call(module, site.lineno)
     if call is None or call.keywords or len(call.args) != 1:
         return None
-    argument = call.args[0]
-    if not (isinstance(argument, ast.Name) and argument.id == entity):
+    reference = _reference(call.args[0], entity)
+    if reference is None or _scope_name(module, call) != site.function:
         return None
-    if _scope_name(module, call) != site.function:
-        return None
+    text, base = reference
     names = module.names
     if names is None:
         return None
     steps = loader_steps(finding)
-    classes: set[str] = {entity}
+    # the classes named on their own; the parent class as the query names it
+    classes: set[str] = {entity} if text == entity else set()
     attributes: set[str] = set()
-    for _, label in steps:
+    parts: list[str] = []
+    for loader, label in steps:
         owner, _, attribute = label.partition(".")
         if not (owner.isidentifier() and attribute.isidentifier()):
             return None
-        classes.add(owner)
+        if owner == entity:
+            owner = text
+        else:
+            classes.add(owner)
+        parts.append(f"{loader}({owner}.{attribute})")
         attributes.add(attribute)
     loaders = {loader for loader, _ in steps}
     local = _local_names(module, call)
-    needed = classes | loaders
+    needed = classes | loaders | {base}
     if isinstance(call.func, ast.Name):
         needed.add("select")
         origin = names.get("select", "")
@@ -567,12 +748,17 @@ def make(finding: RelationshipFinding, root: Path, since: float) -> SourceFix | 
     if needed & local:
         return None
     for name in classes:
-        if not names.get(name):  # not imported under its own name, nor a class
+        origin = names.get(name, "")
+        # not from-imported under its own name, nor a class
+        if not origin or origin.startswith(_IMPORTED):
             return None
+    # the module of models.Order: imported, not assigned or a class
+    if base not in classes and names.get(base, "") in ("", "class"):
+        return None
     for loader in loaders:
         if loader in names and names[loader] != _ORM:
             return None
-    option = loader_option(finding)
+    option = ".".join(parts)
     edit = _option_edit(module, call, option, attributes)
     imports = _import_edits(module, names, loaders)
     if edit is None or imports is None:
