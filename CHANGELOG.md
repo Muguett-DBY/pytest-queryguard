@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-06
+
+This release offers the fix of an N+1 as a patch (`--queryguard-show-patch`,
+`--queryguard-write-patch` for `git apply`, SARIF `fixes`), adds an
+experimental static check (`python -m pytest_queryguard.lint`), an
+experimental MCP server for coding agents (`python -m pytest_queryguard.mcp`),
+the query-count trend across runs in the GitHub Action, and findings in the
+HTML page in the in-application mode. Most of the rest is stabilization before
+1.0: the relationship rule no longer reports two single-object lookups, strict
+mode and the report agree, the in-app mode and the plugin share one listener
+path, and every private SQLAlchemy name is checked by a test of its own.
+
+Upgrading from 0.7.0:
+
+- `relationship-load` counts the parents per query line that loaded them, as
+  strict mode does: two lookups at different lines that each read a
+  relationship are no longer an N+1. Baselines are unaffected; a finding that
+  only came from such lookups disappears.
+- `queryguard_repeat_scope` is now `queryguard_scope`, `repeat_scope=` is
+  `scope=`, and `max_queries(n=…)` takes a positional limit or `limit=`. The
+  old names keep working until 2.0 but emit `QueryGuardDeprecationWarning`,
+  which a suite with `filterwarnings = error` turns into an error: rename them,
+  or filter that warning.
+- `@pytest.mark.queryguard_ignore` is the new name of `allow_nplusone`, which
+  stays as an alias. `queryguard_max_queries` / `queryguard_max_db_time` are
+  new marker names that pytest-querycount does not read.
+
 ### Added
 
 - `queryguard_scope`, the new name of `queryguard_repeat_scope`: it scopes
@@ -2276,7 +2303,8 @@ First release.
 - An internal error disables the plugin with a single warning instead of
   failing the test suite.
 
-[Unreleased]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MaciejZiel/pytest-queryguard/compare/v0.5.0rc3...v0.5.0
