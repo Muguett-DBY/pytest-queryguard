@@ -375,13 +375,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
-- `tests/inapp/test_cursor_loads.py` pins the in-app attribution from the
-  cursor's ORM options (#289): a `SELECT` run by an `after_begin` hook does
-  not take the next lazy load's label, the in-app report labels lazy,
-  `selectin`, deferred and refresh loads as `record_queries()` does,
-  `watch()` leaves an application's own `do_orm_execute` listeners alone,
-  and `yield_per` (also with `AsyncSession.stream_scalars()`) and
-  `autoflush=False` with `selectinload()` work while the engine is watched
+- `tests/inapp/test_cursor_loads.py` adds tests for the in-app load
+  attribution that 0.8.0 shipped; nothing changes for users. A `SELECT` run
+  by an `after_begin` hook does not take the next lazy load's label, the
+  in-app report labels lazy, `selectin`, deferred and refresh loads as
+  `record_queries()` does, `watch()` leaves an application's own
+  `do_orm_execute` listeners alone, and `yield_per` with `selectinload()`
+  works through `AsyncSession.stream_scalars()` while the engine is watched
   (#293).
 - CI runs one job against the newest pytest and SQLAlchemy on PyPI, not only the versions in uv.lock, so an upstream release that breaks the plugin fails CI before users see it.
 - `.github/workflows/head-to-head.yml` (started by hand and monthly) runs

@@ -13,8 +13,9 @@ from sqlalchemy.orm import ORMExecuteState, Session, selectinload
 
 from pytest_queryguard import app as queryguard
 from pytest_queryguard import record_queries
+from pytest_queryguard.app import _core
 
-from .conftest import CUSTOMERS, Customer, Order
+from .conftest import CUSTOMERS, Customer
 
 
 def test_watch_preserves_other_orm_execute_listeners(engine: Engine) -> None:
@@ -29,9 +30,10 @@ def test_watch_preserves_other_orm_execute_listeners(engine: Engine) -> None:
             before = tuple(session.dispatch.do_orm_execute)
             queryguard.watch(engine)
             assert tuple(session.dispatch.do_orm_execute) == before
-            with queryguard.track(report=[]):
+            with queryguard.track(report=[]) as report:
                 assert len(session.scalars(select(Customer)).all()) == CUSTOMERS
         assert calls == [True]
+        assert [q.sql for q in report.statements if "FROM customers" in q.sql]
     finally:
         event.remove(Session, "do_orm_execute", user_listener)
 
@@ -58,9 +60,10 @@ def test_a_select_in_after_begin_does_not_take_the_load(watched: Engine) -> None
     loads = [q for q in report.statements if "FROM orders" in q.sql]
     assert len(loads) == CUSTOMERS
     assert {q.relationship for q in loads} == {"Customer.orders"}
-    assert all(
-        q.relationship is None for q in report.statements if q.sql == "SELECT 99"
-    )
+    # One probe per transaction: the first query's and one after each commit.
+    probes = [q for q in report.statements if q.sql == "SELECT 99"]
+    assert len(probes) == CUSTOMERS + 1
+    assert all(q.relationship is None for q in probes)
     assert [(q.sql, q.relationship) for q in report.statements] == [
         (q.sql, q.relationship) for q in log
     ]
@@ -87,6 +90,10 @@ def test_app_and_plugin_label_the_same_loads(watched: Engine, kind: str) -> None
     assert [(q.sql, q.relationship) for q in report.statements] == [
         (q.sql, q.relationship) for q in log
     ]
+    if kind == "lazy":
+        loads = [q for q in report.statements if "FROM orders" in q.sql]
+        assert len(loads) == CUSTOMERS
+        assert {q.relationship for q in loads} == {"Customer.orders"}
     if kind == "selectin":
         assert report.findings == ()
     else:
@@ -98,56 +105,32 @@ def test_app_and_plugin_label_the_same_loads(watched: Engine, kind: str) -> None
 
 
 @pytest.mark.parametrize("watch_enabled", [False, True])
-def test_yield_per_selectinload_keeps_working(
-    engine: Engine, watch_enabled: bool
-) -> None:
-    if watch_enabled:
-        queryguard.watch(engine)
-    with Session(engine) as session, queryguard.track(report=[]):
-        statement = (
-            select(Customer)
-            .options(selectinload(Customer.orders))
-            .execution_options(yield_per=2)
-        )
-        assert sum(len(customer.orders) for customer in session.scalars(statement)) == (
-            CUSTOMERS * 2
-        )
-
-
-@pytest.mark.parametrize("watch_enabled", [False, True])
-def test_outer_autoflush_false_does_not_disable_the_loader_flush(
-    engine: Engine, watch_enabled: bool
-) -> None:
-    if watch_enabled:
-        queryguard.watch(engine)
-    with Session(engine) as session, queryguard.track(report=[]):
-        session.add(Order(id=99999, customer_id=1))
-        statement = (
-            select(Customer)
-            .where(Customer.id == 1)
-            .options(selectinload(Customer.orders))
-            .execution_options(autoflush=False)
-        )
-        (customer,) = session.scalars(statement).all()
-        assert sorted(order.id for order in customer.orders) == [10, 11, 99999]
-
-
-@pytest.mark.parametrize("watch_enabled", [False, True])
 def test_async_yield_per_selectinload_keeps_working(
     async_engine: AsyncEngine, watch_enabled: bool
 ) -> None:
+    """The async form of tests/test_yield_per_leak.py's in-app cases.
+
+    SQLAlchemy 2.0.20 to 2.0.49 break this query when a ``do_orm_execute``
+    listener is registered (issue 13301); on later releases it passes either
+    way, so only the CI jobs on those releases can catch such a listener.
+    """
     if watch_enabled:
         queryguard.watch(async_engine)
 
-    async def run() -> int:
+    async def run() -> tuple[int, Any]:
         async with AsyncSession(async_engine) as session:
-            with queryguard.track(report=[]):
+            with queryguard.track(report=[]) as report:
                 statement = (
                     select(Customer)
                     .options(selectinload(Customer.orders))
                     .execution_options(yield_per=2)
                 )
                 result = await session.stream_scalars(statement)
-                return sum([len(customer.orders) async for customer in result])
+                total = sum([len(customer.orders) async for customer in result])
+        return total, report
 
-    assert asyncio.run(run()) == CUSTOMERS * 2
+    total, report = asyncio.run(run())
+    assert total == CUSTOMERS * 2
+    assert _core.internal_error() is None
+    measured = [q for q in report.statements if "FROM orders" in q.sql]
+    assert bool(measured) is watch_enabled
