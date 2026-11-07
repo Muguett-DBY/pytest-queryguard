@@ -25,7 +25,8 @@ pytestmark = [
 def splitting_snippet() -> str:
     """The lines of the real action that turn QG_ARGS into the `args` array."""
     text = ACTION.read_text(encoding="utf-8")
-    match = re.search(r"^ *args=\(\)\n.*?^ *fi\n", text, re.MULTILINE | re.DOTALL)
+    # from `args=()` to the `fi` at the same indentation
+    match = re.search(r"^( *)args=\(\)\n.*?^\1fi\n", text, re.MULTILINE | re.DOTALL)
     assert match, "the args splitting block is missing from action.yml"
     run_pytest = text.split("- name: Run pytest", 1)[1].split("- name: Find the SARIF")[
         0
@@ -134,3 +135,16 @@ def test_an_explicit_package_is_installed_as_given(tmp_path: Path) -> None:
 def package_input() -> str:
     text = ACTION.read_text(encoding="utf-8")
     return text.split("  package:", 1)[1].split("\n  baseline:", 1)[0]
+
+
+def test_an_unclosed_quote_stops_the_step(tmp_path: Path) -> None:
+    # Before, the failure of the splitting went unnoticed and pytest ran
+    # without any of the arguments: the whole suite, without -k or paths.
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        split_with_bash('-k "a or b tests/', tmp_path)
+    assert "::error::pytest-args cannot be split" in raised.value.stdout
+
+
+def test_non_ascii_words_survive(tmp_path: Path) -> None:
+    words, _ = split_with_bash("-k 'zażółć or b' tests/", tmp_path)
+    assert words == ["-k", "zażółć or b", "tests/"]
