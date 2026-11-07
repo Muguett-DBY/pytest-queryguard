@@ -312,6 +312,10 @@ middleware_options = {"report": ["log", to_my_tracker]}
 ```
 
 An exception in a callable is logged and does not reach the request.
+Callables are called synchronously when the request ends, in the request's
+thread or on the event loop, so keep them fast: hand the report to a queue
+or schedule a task. A coroutine function (`async def`) is refused with a
+`ValueError` when the settings are made, since it would never be awaited.
 
 **Sampling and fast requests.** `sample_rate=0.1` measures one request in
 ten, chosen at random; the others run as if the middleware were not there

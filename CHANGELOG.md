@@ -59,6 +59,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In-app mode: a request's stored statements and loads, with their bound
+  parameters, are released as soon as its report is made. A context that outlives the
+  request (a pool worker that inherited it on Python 3.14+, a task the
+  request started and left running) kept them all until it ended: 20 MB for
+  ten such requests with 2 MB of parameters each. The `RequestReport` keeps
+  its `statements` as before.
+- In-app mode: a coroutine function given as `report` (or in its list) is
+  refused when the settings are made, with a `ValueError`. Called without
+  `await`, it never ran: each reported request only made a "coroutine was
+  never awaited" warning. A callable that returns a coroutine anyway has it
+  closed, and an ERROR record is logged for each report it gets.
+- In-app mode: a `report` list is copied when the settings are made, as
+  `budgets` already was, so changing the list later changes nothing; an
+  iterator as `report` is no longer used up by the check, which left no
+  target at all. A `report` that is neither a target nor a sequence of them
+  (`None`, a number) is a `ValueError` naming the setting, not a bare
+  `TypeError`; so is a dictionary or a set, which gave its keys or an
+  unordered list of targets.
+
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
   `response_model`), or that the code swallowed before the test failed on
