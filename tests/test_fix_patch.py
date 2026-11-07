@@ -1945,7 +1945,9 @@ def _non_utf8_dir(root: Path) -> Path:
 def test_git_quotes_a_name_as_git_does() -> None:
     assert fixpatch.git_path("a/", "app/views.py") == "a/app/views.py"
     assert fixpatch.git_path("a/", "app/żółw.py") == "a/app/żółw.py"
-    assert fixpatch.git_path("b/", "caf\udce9/v.py") == '"b/caf\\351/v.py"'
+    # on Windows os.fsencode writes the surrogate as its three UTF-8 bytes
+    byte = "\\355\\263\\251" if sys.platform == "win32" else "\\351"
+    assert fixpatch.git_path("b/", "caf\udce9/v.py") == f'"b/caf{byte}/v.py"'
     # once quoted, every byte that is not printable ASCII is escaped
     assert fixpatch.git_path("a/", "ż\udce9.py") == '"a/\\305\\274\\351.py"'
     assert fixpatch.git_path("a/", 'q"\\\t\n.py') == '"a/q\\"\\\\\\t\\n.py"'
