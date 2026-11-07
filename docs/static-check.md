@@ -71,6 +71,7 @@ A finding needs all of these:
      with or without `.all()`, `.unique()` or `.fetchall()`, or inside
      `list()`, `tuple()` or `sorted()`;
    - `session.query(C)...` and Flask-SQLAlchemy's `C.query...`;
+   - SQLModel's `session.exec(select(C)...)`, in a file that imports SQLModel;
    - `select(C)` followed by `where`, `order_by`, `join`, `options`, `limit`
      and the other methods that keep it a select of `C`. `select` has to be
      SQLAlchemy's (or SQLModel's) by the file's imports: `from sqlalchemy

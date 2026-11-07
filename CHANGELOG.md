@@ -97,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `queryguard-lint` reads SQLModel's `session.exec(select(Model))` as a query over `Model` objects, so a lazy relationship read in a loop over it is reported.
 - With pytest 9.2, an ini option of the wrong type (`queryguard_max_events =
   many`, `queryguard_index_check = maybe`, a number for `queryguard_mode` in
   native TOML) is reported as before: `<option> must be ...`, naming the

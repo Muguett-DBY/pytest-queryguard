@@ -601,6 +601,12 @@ class _File:
             if full == "flask_sqlalchemy.SQLAlchemy":
                 yield from (t.id for t in node.targets if isinstance(t, ast.Name))
 
+    @property
+    def uses_sqlmodel(self) -> bool:
+        """Whether the module imports SQLModel (whose sessions have ``exec``)."""
+        imported = [*self.module_imports.values(), *self.from_imports.values()]
+        return any(full.split(".")[0] == "sqlmodel" for full in imported)
+
     def is_sqlalchemy(self, func: ast.expr, name: str) -> bool:
         """Whether ``func`` is SQLAlchemy's (or SQLModel's) ``name``, by the imports."""
         if isinstance(func, ast.Name):
@@ -719,6 +725,12 @@ class _File:
         if method in ("execute", "stream") and node.args:
             query = self.statement(node.args[0], scope, line)
             return None if query is None else ("rows", query.run_by(node, func.value))
+        if method == "exec" and node.args and self.uses_sqlmodel:
+            # SQLModel's Session.exec(select(C)) returns C objects, not rows
+            query = self.statement(node.args[0], scope, line)
+            if query is None:
+                return None
+            return "entities", query.run_by(node, func.value)
         if method == "query":
             if len(node.args) != 1 or node.keywords:
                 return None

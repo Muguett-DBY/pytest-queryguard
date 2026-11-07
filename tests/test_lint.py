@@ -160,6 +160,35 @@ def test_a_lazy_many_to_one_read_in_a_loop_over_a_query(
     assert found(models, code) == ["Order.customer"]
 
 
+def test_sqlmodel_exec_returns_objects(models: lint.Models) -> None:
+    # SQLModel's Session.exec(select(C)) yields C objects, like scalars()
+    source = textwrap.dedent(
+        f"""\
+        from sqlmodel import Session, select
+        from {MODULE} import Order
+
+        def names(session):
+            return [order.customer.name for order in session.exec(select(Order))]
+        """
+    )
+    found_ = lint.lint_source(source, "app.py", models)
+    assert [f.relationship for f in found_] == ["Order.customer"]
+
+
+def test_exec_without_sqlmodel_is_not_a_query(models: lint.Models) -> None:
+    # without SQLModel, .exec() is someone else's method
+    assert (
+        found(
+            models,
+            """
+        def names(runner):
+            return [order.customer.name for order in runner.exec(select(Order))]
+        """,
+        )
+        == []
+    )
+
+
 def test_the_finding_has_the_lines_and_the_fix(models: lint.Models) -> None:
     source = HEADER + textwrap.dedent(
         """
