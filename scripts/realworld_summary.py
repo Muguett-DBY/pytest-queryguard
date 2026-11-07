@@ -17,12 +17,20 @@ with ``file:line`` samples, and the overhead in wall time.
 
 The exit status is 1 when the plugin broke something (a test it made fail, an
 internal warning or error, a run that stopped or timed out only with the
-plugin, a JSON file that is missing or incomplete) and 0 otherwise. Findings
-alone are not a failure: they are what is being measured.
+plugin, a JSON file that is missing or incomplete), 2 when the harness did not
+run the project's tests at all (no JUnit XML or an exit status other than 0 or
+1 without the plugin: a wrong install or test command in
+scripts/realworld_projects.json), and 0 otherwise. Findings alone are never a
+failure: they are what is being measured.
+
+``--json-out`` also writes the numbers of the report as JSON, and ``--table``
+reads such files (one per project) and prints one table for all of them.
 
 Standard library only:
 
-    python scripts/realworld_summary.py --dir out --project sqlmodel --ref 0.0.24
+    python scripts/realworld_summary.py --dir out --project sqlmodel --ref 0.0.24 \
+        --json-out out/summary.json
+    python scripts/realworld_summary.py --table */summary.json
 """
 
 from __future__ import annotations
@@ -186,16 +194,42 @@ def overhead(baseline: Run, plugin: Run) -> float | None:
     return (plugin.seconds - baseline.seconds) / baseline.seconds * 100
 
 
-def summarize(
-    directory: Path, project: str, ref: str, samples: int = 5
-) -> tuple[str, list[str]]:
-    """The Markdown report and the list of problems (empty: nothing broke)."""
+@dataclass
+class Summary:
+    """One project's report, what broke and the numbers for ``--table``."""
+
+    report: str
+    # the plugin broke something
+    problems: list[str]
+    # the harness did not run the project's tests (not the plugin's fault)
+    harness: list[str]
+    stats: dict[str, Any]
+
+
+def _ran(run: Run) -> bool:
+    """Whether the run collected and ran tests to the end."""
+    return run.outcomes is not None and run.exit in (0, 1)
+
+
+def summarize(directory: Path, project: str, ref: str, samples: int = 5) -> Summary:
+    """The Markdown report, the problems and the numbers of one project."""
     baseline = read_run(directory, "baseline")
     plugin = read_run(directory, "plugin")
     counts = read_counts(directory / "queryguard.json")
     events = read_probe(directory / "probe.jsonl")
     problems: list[str] = []
+    harness: list[str] = []
+    stats: dict[str, Any] = {"project": project, "ref": ref}
     out: list[str] = [f"## {project} @ `{ref}`", ""]
+    versions = directory / "versions.txt"
+    if versions.is_file():
+        lines = versions.read_text(encoding="utf-8", errors="replace").splitlines()
+        plugin_version = [
+            line.split()[-1] for line in lines if line.startswith("pytest-queryguard ")
+        ]
+        if plugin_version:
+            stats["plugin_version"] = plugin_version[0]
+        out += [", ".join(line.strip() for line in lines[1:] if line.strip()), ""]
 
     # the two runs side by side
     out += [
@@ -209,9 +243,22 @@ def summarize(
             str(run.count(outcome)) if run.outcomes is not None else "no JUnit XML"
             for run in (baseline, plugin)
         ]
+        if baseline.outcomes is not None and plugin.outcomes is not None:
+            cells[1] += f" ({plugin.count(outcome) - baseline.count(outcome):+d})"
         out.append(f"| {outcome} | {cells[0]} | {cells[1]} |")
     out.append("")
+    for name, run in (("baseline", baseline), ("plugin", plugin)):
+        stats[name] = {
+            "exit": run.exit,
+            "seconds": run.seconds,
+            **(
+                {o: run.count(o) for o in ("passed", "failed", "skipped")}
+                if run.outcomes is not None
+                else {}
+            ),
+        }
     extra = overhead(baseline, plugin)
+    stats["overhead_pct"] = None if extra is None else round(extra, 1)
     if extra is not None:
         out += [f"Overhead: **{extra:+.1f} %** wall time (one run each, noisy).", ""]
     else:
@@ -219,9 +266,21 @@ def summarize(
 
     if baseline.outcomes is None:
         out += ["The run without the plugin left no JUnit XML.", ""]
-    if plugin.outcomes is None and baseline.outcomes is not None:
+    # The plugin run is only judged against a baseline that ran to the end:
+    # otherwise its exit status and its tests say nothing about the plugin.
+    judged = _ran(baseline)
+    if not judged:
+        # Nothing to compare with: the install or test command is wrong (or the
+        # project's suite is broken at this tag). Not the plugin's problem.
+        harness.append(
+            f"the tests did not run without the plugin ({_exit(baseline)}"
+            + (", no JUnit XML" if baseline.outcomes is None else "")
+            + "): check the project's install and pytest_args in "
+            "scripts/realworld_projects.json and the end of baseline.log"
+        )
+    if plugin.outcomes is None and judged:
         problems.append("the run with the plugin left no JUnit XML")
-    if plugin.exit in (2, 3, 4, 124, 137) and plugin.exit != baseline.exit:
+    if plugin.exit in (2, 3, 4, 124, 137) and judged:
         problems.append(f"the run with the plugin ended with {_exit(plugin)}")
 
     # tests the plugin broke
@@ -245,9 +304,12 @@ def summarize(
             out.append(f"- `{test}`" + (f": {message}" if message else ""))
         if len(broken) > 50:
             out.append(f"- … and {len(broken) - 50} more")
+        stats["broken"] = len(broken)
+        stats["fixed"] = len(fixed)
         if broken:
             out.append("")
-            problems.append(f"{len(broken)} test(s) pass only without the plugin")
+            if judged:
+                problems.append(f"{len(broken)} test(s) pass only without the plugin")
         if missing:
             out += [
                 (
@@ -256,7 +318,8 @@ def summarize(
                 ),
                 "",
             ]
-            problems.append(f"{len(missing)} test(s) did not run with the plugin")
+            if judged:
+                problems.append(f"{len(missing)} test(s) did not run with the plugin")
         if only_plugin:
             out += [
                 (
@@ -277,6 +340,8 @@ def summarize(
     # the plugin's own errors
     internal = [e for e in events if e.get("event") == "internal-warning"]
     errors = [e for e in events if e.get("event") == "internal-error"]
+    stats["internal_warnings"] = len(internal)
+    stats["internal_errors"] = len(errors)
     out += [
         f"### Internal warnings: {len(internal)}, internal errors: {len(errors)}",
         "",
@@ -296,16 +361,18 @@ def summarize(
         )
 
     # findings
+    # what the plugin wrote is only judged when the suite ran without it
     if counts is None:
         out += ["### Findings", "", "No queryguard JSON file.", ""]
-        if plugin.exit in (0, 1):
+        if plugin.exit in (0, 1) and judged:
             problems.append("the run with the plugin wrote no queryguard JSON")
     elif isinstance(counts, str):
         out += ["### Findings", "", f"Unusable queryguard JSON file: {counts}.", ""]
-        problems.append(f"the queryguard JSON file is unusable: {counts}")
+        if judged:
+            problems.append(f"the queryguard JSON file is unusable: {counts}")
     else:
         tests = counts.get("tests") or {}
-        if counts.get("complete") is not True:
+        if counts.get("complete") is not True and judged:
             problems.append("the queryguard JSON says the run is incomplete")
         by_kind: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
         statements = 0
@@ -317,6 +384,8 @@ def summarize(
                     continue
                 by_kind[str(finding.get("kind", "?"))].append((test_id, finding))
         total = sum(len(v) for v in by_kind.values())
+        stats["measured_tests"] = len(tests)
+        stats["findings"] = {kind: len(items) for kind, items in by_kind.items()}
         out += [
             f"### Findings: {total}",
             "",
@@ -343,21 +412,102 @@ def summarize(
 
     if problems:
         out += ["### Problems", ""] + [f"- {p}" for p in problems] + [""]
-    return "\n".join(out), problems
+    if harness:
+        out += ["### Harness problems", ""] + [f"- {p}" for p in harness] + [""]
+    stats["problems"] = problems
+    stats["harness"] = harness
+    return Summary("\n".join(out), problems, harness, stats)
+
+
+def _cell(value: object) -> str:
+    return "?" if value is None else str(value)
+
+
+def table(files: list[Path]) -> str:
+    """One Markdown table of the ``--json-out`` files of several projects."""
+    rows = [
+        (
+            "| project | plugin | tests (pass/fail/skip, no plugin) | pass/fail delta "
+            "| broken by plugin | findings | internal warnings/errors | overhead "
+            "| status |"
+        ),
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for path in files:
+        try:
+            stats = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            reason = _one_line(str(error)) or type(error).__name__
+            rows.append(f"| `{path}` | | | | | | | | unreadable: {reason} |")
+            continue
+        base = stats.get("baseline") or {}
+        plug = stats.get("plugin") or {}
+        tests = "/".join(_cell(base.get(o)) for o in ("passed", "failed", "skipped"))
+        if "passed" in base and "passed" in plug:
+            delta = (
+                f"{plug['passed'] - base['passed']:+d} / "
+                f"{plug['failed'] - base['failed']:+d}"
+            )
+        else:
+            delta = "?"
+        findings = stats.get("findings")
+        if findings is None:
+            found = "?"
+        elif findings:
+            found = ", ".join(
+                f"{kind} {n}"
+                for kind, n in sorted(findings.items(), key=lambda kv: -kv[1])
+            )
+        else:
+            found = "0"
+        overhead_pct = stats.get("overhead_pct")
+        # as main()'s exit status: a plugin problem first
+        status = (
+            "plugin problem"
+            if stats.get("problems")
+            else "harness problem"
+            if stats.get("harness")
+            else "ok"
+        )
+        rows.append(
+            f"| {stats.get('project', path.parent.name)} "
+            f"| {_cell(stats.get('plugin_version'))} "
+            f"| {tests} | {delta} | {_cell(stats.get('broken'))} | {found} "
+            f"| {_cell(stats.get('internal_warnings'))}/"
+            f"{_cell(stats.get('internal_errors'))} "
+            f"| {'?' if overhead_pct is None else f'{overhead_pct:+.1f} %'} "
+            f"| {status} |"
+        )
+    return "\n".join(rows) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--dir", type=Path, required=True, help="the runs' outputs")
-    parser.add_argument("--project", required=True)
-    parser.add_argument("--ref", required=True)
+    parser.add_argument("--dir", type=Path, help="the runs' outputs")
+    parser.add_argument("--project")
+    parser.add_argument("--ref")
     parser.add_argument("--samples", type=int, default=5, help="per finding kind")
+    parser.add_argument("--json-out", type=Path, help="also write the numbers here")
+    parser.add_argument(
+        "--table", nargs="+", type=Path, metavar="JSON", help="--json-out files"
+    )
     args = parser.parse_args(argv)
-    report, problems = summarize(args.dir, args.project, args.ref, args.samples)
-    sys.stdout.write(report)
-    return 1 if problems else 0
+    if args.table:
+        sys.stdout.write(table(args.table))
+        return 0
+    if args.dir is None or args.project is None or args.ref is None:
+        parser.error("--dir, --project and --ref are required without --table")
+    summary = summarize(args.dir, args.project, args.ref, args.samples)
+    sys.stdout.write(summary.report)
+    if args.json_out is not None:
+        args.json_out.write_text(
+            json.dumps(summary.stats, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    if summary.problems:
+        return 1
+    return 2 if summary.harness else 0
 
 
 if __name__ == "__main__":

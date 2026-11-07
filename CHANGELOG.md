@@ -147,6 +147,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after a run that stopped early (`-x`, `--maxfail`, Ctrl-C, a collection
   error). Before, only a stopped pytest-xdist worker added the note.
 
+- `queryguard_strict` counted a lazy load as soon as the ORM began it, so a
+  load that a `do_orm_execute` listener answers without a `SELECT` (a result
+  cache, as in the dogpile.cache recipes) or that SQLAlchemy rejects before
+  sending one (a loader option conflict) raised `NPlusOneDetected`, while the
+  report, which counts the `SELECT`s, found no N+1. A load now counts for
+  strict mode once its `SELECT` runs. Found by the new runtime fuzzer.
+- The relationship-load rule groups the parents whose query is unknown
+  (objects the test created, loaded before the test body or read by two
+  queries) by the line that read the relationship, as it groups the others by
+  the line of their query. Code that creates a few objects and reads each
+  one's relationship on a line of its own is no longer an N+1; a loop over
+  them still is, and so is a loop over such objects mixed with the rows of a
+  query. All 9 findings of the real-world run in SQLModel's tutorials were
+  of this kind. Strict mode's report site follows the same grouping.
+- A method of a `Session` or `AsyncSession` subclass outside
+  `site-packages` (SQLModel's `Session` in an editable install, an
+  application's own override of `execute()`) is no longer the call site of
+  the queries that go through it; the line that called the session is. Every
+  query had the override's `super().execute()` line as call site: findings
+  pointed there (all of SQLModel's in the real-world workflow), and
+  single-object lookups at different lines were grouped as one query line
+  and reported as a relationship-load.
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
   `response_model`), or that the code swallowed before the test failed on
@@ -281,6 +303,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limits: one category per matrix job, the first run without a base
   artifact, the comment size, re-runs and concurrent runs, exit codes,
   cancelled runs, macOS and Windows runners.
+- [Comparison](docs/comparison.md#head-to-head-in-github-actions) and
+  [accuracy](docs/accuracy.md#comparison-with-other-tools): new numbers
+  from the head-to-head workflow, on the 252 scenarios of the corpus, for
+  queryspy 0.6.0, pytest-querycount 0.4.0, n-plus-one-sniffer and nplusone
+  1.0.0 (which does not import on SQLAlchemy 2.1, and is also run on 2.0),
+  with precision and recall per kind and the overhead of each tool on one
+  runner.
+
+- [Limitations](docs/limitations.md): with the plugin installed, a
+  `populate_existing` query with a `subqueryload()` of a self-referential
+  relationship makes SQLAlchemy emit `SAWarning: Loading context for ... has
+  changed within a load/refresh handler`. SQLAlchemy checks for it only while
+  a `refresh` listener exists, and the plugin always has one; the data loaded
+  is the same. Found by the new runtime fuzzer.
 - API-freeze audit before 1.0: the [stability policy](docs/stability.md)
   now states the naming, value and unit conventions of the public options
   and files (every time in seconds; `0` turns a threshold off in an ini
@@ -339,6 +375,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- CI runs one job against the newest pytest and SQLAlchemy on PyPI, not only the versions in uv.lock, so an upstream release that breaks the plugin fails CI before users see it.
+- `.github/workflows/head-to-head.yml` (started by hand and monthly) runs
+  the accuracy corpus under queryspy, pytest-querycount, n-plus-one-sniffer
+  and nplusone, each pinned and set up as its documentation says, one job
+  per tool, plus the per-statement and suite overhead of every tool on one
+  runner, and puts the results together as a Markdown summary and a JSON
+  artifact (`scripts/head_to_head/`, tested in `tests/test_head_to_head.py`).
+  A test that fails for another reason than the tool's report counts as an
+  error, never as a pass. `scripts/compare/bench_micro.py` also measures
+  n-plus-one-sniffer and nplusone.
+
+- `tests/test_fuzz_runtime.py` fuzzes the detection path itself: it
+  generates small SQLAlchemy programs (random mapped schemas with
+  many-to-one, one-to-many, many-to-many and self-referential relationships,
+  sometimes joined or single-table inheritance, random `lazy=` strategies;
+  random rows; `select()`, `session.query()`, `session.get()`, Core and
+  `text()` statements with random loader option chains, `populate_existing`,
+  `yield_per`, commits, expiry and refreshes; loops, nested loops,
+  comprehensions and early `break` over the results), sync and on
+  aiosqlite, and runs them under random plugin settings. It checks that the
+  plugin never fails on its own or adds a warning, that the programs read
+  the same values as with `-p no:queryguard`, that `ignore("*")` leaves out
+  every finding, that `selectinload` of a reported relationship removes its
+  relationship-load, that strict mode raises exactly when the report has a
+  relationship-load, and that two runs give the same findings. Seeded and
+  bounded; `QUERYGUARD_FUZZ=1` runs 40 batches instead of 2.
+- The real-world workflow (`.github/workflows/realworld.yml`) resolves
+  `plugin-ref` to a commit once, so a branch deleted or pushed to while the
+  matrix runs no longer breaks the plugin checkout. Its summary tells a
+  project whose tests did not run without the plugin (a harness problem) from
+  one the plugin broke, never fails a job for findings, shows the pass/fail
+  delta, and a report job puts one table of all projects on the run's page.
+  The full-stack template's tests path is fixed (`app/tests`).
 - `tests/test_public_api.py` also snapshots the keys and format numbers of
   the files the plugin writes (`--queryguard-json`, baseline, budget file,
   SARIF rule ids, fingerprint key and properties), the finding kinds, the
