@@ -130,6 +130,8 @@ EXPECTED_INI = {
 
 EXPECTED_FLAGS = [
     "--no-queryguard-index-check",
+    "--no-queryguard-show-patch",
+    "--no-queryguard-strict",
     "--queryguard-baseline",
     "--queryguard-budgets",
     "--queryguard-index-check",

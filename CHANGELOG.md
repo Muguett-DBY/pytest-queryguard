@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`python -m pytest_queryguard.trend --format json`) starts with
   `"format": 1`, like the other JSON files, and its keys are documented in
   [CI](docs/ci.md#query-counts-over-the-last-runs).
+- `--no-queryguard-strict` and `--no-queryguard-show-patch` turn
+  `queryguard_strict` and `queryguard_show_patch` off for one run, as
+  `--no-queryguard-index-check` does for the index check; of a flag and its
+  `--no-` form, the last one wins. An invalid `queryguard_strict` or
+  `queryguard_show_patch` value in the ini file is now reported even when a
+  flag overrides it, as for `queryguard_index_check`.
 
 ### Changed
 
@@ -42,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
+  replaced with its own error (Pydantic's `from_attributes`, FastAPI's
+  `response_model`), or that the code swallowed before the test failed on
+  its own, is now recorded: SARIF, `--queryguard-json` and the summary of
+  findings in several tests include it, and the report is shown in a
+  `queryguard` section of the failed test. The test keeps failing with its
+  own error. Before, the analysis at the end of the test did not run.
 - The fix patch (`--queryguard-show-patch`, `--queryguard-write-patch`,
   SARIF `fixes`) now covers three common shapes of the parent query that got
   only the `fix:` hint: a class named through its module
