@@ -54,8 +54,11 @@ A relationship is reported when all of these hold:
 - it was eager-loaded in the test body;
 - no instance of that class (or a related class in the hierarchy) had that
   relationship read, from anywhere in the process, during the test body;
-- some attribute of some instance of that class was read, so the code does
-  use these instances through attribute access;
+- some attribute of some instance of that class (or of a subclass) was read,
+  so the code does use these instances through attribute access. A read of
+  an instance of a base class does not count: it cannot have a subclass's
+  relationship, so a `with_polymorphic` query whose subclass has no rows in
+  the test gives no finding;
 - it is not a relationship with delete cascade on a class deleted in the test
   (SQLAlchemy loads those to delete them);
 - in a chain (`selectinload(A.b).selectinload(B.c)`), only the highest unused
@@ -87,7 +90,8 @@ before the change (Core about 30 %, ORM about 40 %, within run-to-run noise).
 The check is conservative on purpose (when unsure it reports nothing) but it
 can still be wrong.
 
-- Code that reads `instance.__dict__` or `vars(instance)` is invisible. If the
+- Code that reads `instance.__dict__`, `vars(instance)` or
+  `inspect(instance).attrs.name.loaded_value` is invisible. If the
   code under test never reads any attribute of the instances through normal
   access, no finding is made (this is what "some attribute was read" is for);
   if it reads some attributes normally and the relationship through

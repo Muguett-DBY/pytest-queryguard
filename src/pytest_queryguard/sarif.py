@@ -70,11 +70,13 @@ _RULES: dict[str, Rule] = {
     KIND_COLUMN_LOAD: Rule(
         "ColumnLoad",
         "Deferred or expired columns are loaded instance by instance",
-        "Instances loaded their deferred columns, or columns expired by "
-        "commit(), expire() or refresh(), one query each.",
+        "Instances loaded their deferred columns, columns expired by "
+        "commit(), expire() or refresh(), or the columns of their subclass "
+        "that a query of the base class left out, one query each.",
         "Use undefer(Model.column) in the query (or drop defer(), load_only() "
         "or deferred()); for expired attributes create the Session with "
-        "expire_on_commit=False or reload the instances with one query.",
+        "expire_on_commit=False or reload the instances with one query; for "
+        "subclass columns use with_polymorphic() or selectin_polymorphic().",
     ),
     KIND_WRITE_LOOP: Rule(
         "WriteLoop",

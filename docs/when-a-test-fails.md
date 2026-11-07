@@ -67,6 +67,7 @@ write a pattern with a wildcard.
 | `Order.customer was lazy-loaded 50 times` | `relationship-load` | `Order.customer` | `joinedload` (many-to-one) or `selectinload` (collection) on the query that loaded the parents |
 | `the same statement ran 7 times` | `repeated-statement` | the normalized SQL, on the `kind:` line | one query with `WHERE id IN (...)`, or a join, instead of a loop |
 | `Customer had its columns reloaded 50 times for 50 instances, after commit(), ...` | `column-load` | `Customer (expired)` | `expire_on_commit=False`, or load the objects again with one query |
+| `Engineer loaded its subclass columns on its own 50 times ...` | `column-load` | `Engineer (polymorphic)` | `selectin_polymorphic(Employee, [Engineer])` or `with_polymorphic` on the query, or `polymorphic_load` on the mapping |
 | `Customer.name was loaded on its own 50 times for 50 instances (deferred column)` | `column-load` | `Customer.name` | `undefer(Customer.name)`, or drop `defer()` / `load_only()` |
 | `the same INSERT ran 6 times, one row at a time` (opt-in) | `write-loop` | the normalized `INSERT`, `UPDATE` or `DELETE` | `session.add_all()` and one flush, or `session.execute(insert(Model), rows)` |
 | `Customer.notes and Customer.orders were joined into one query side by side, once` (warns by default) | `cartesian-load` | `Customer.notes + Customer.orders` | `selectinload` for all collections but one, see [How detection works](how-detection-works.md#cartesian-load) |

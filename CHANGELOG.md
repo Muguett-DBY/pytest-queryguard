@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The column-load report no longer says that subclass columns were expired
+  by `commit()` or `expire()`. A query of the base class of a joined- or
+  single-table hierarchy (`select(Employee)`) leaves the subclass columns out,
+  and SQLAlchemy loads them per instance, which was reported as
+  `Engineer (expired)` with the `expire_on_commit=False` hint, for a test that
+  committed nothing. It is now its own cause, labelled
+  `Engineer (polymorphic)`, with the class the query selected and
+  `selectin_polymorphic` (`with_polymorphic` for single-table inheritance)
+  or `polymorphic_load` as the fix; an instance loaded as its own class
+  keeps the expired cause. The finding and its kind are
+  unchanged; an ignore pattern or baseline entry with the old label must be
+  updated.
+- The unused-eager-load check no longer reports an eager load of a
+  subclass's relationship when the data has no rows of that subclass
+  (`with_polymorphic(Employee, [Manager])` with
+  `selectinload(... Manager.reports)` and no managers): reads of the base
+  class's rows counted as reads of instances that could have had the
+  relationship.
 - Strict mode no longer drops a query or database-time budget failure: a
   budget the test (`max_queries`/`max_db_time` marker,
   `queryguard_max_queries`, the budget file) or a `max_queries()` block
@@ -19,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stopped at the access under "stale ignores": the block may be for a
   finding after the access, which the test never reached. Its
   `queryguard_ignore` patterns were already left out the same way.
+
+### Changed
+
+- The accuracy corpus has 57 more scenarios (254): inheritance (single,
+  concrete, `selectin_polymorphic`, polymorphic collections), association
+  proxies, `deferred_group`, `query_expression`, `WriteOnlyMapped`,
+  `viewonly` relationships, composite keys, `lazy="immediate"`, `"subquery"`
+  and `"noload"`, `populate_existing`, the identity map, `merge(load=False)`,
+  `bulk_save_objects`, dataclass and imperative mappings, and shapes
+  reported to other N+1 tools. The release gate now needs 250 scenarios and a
+  column-load recall of 90%. See docs/accuracy.md.
 
 ## [0.8.0] - 2026-11-06
 

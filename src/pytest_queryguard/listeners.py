@@ -39,6 +39,7 @@ from ._compat import (
     QUERY_REFRESH_STATE,
     REFRESH_STATE,
     RUNID,
+    STATE_LOAD_PATH,
     TOP_LEVEL_ORM_CONTEXT,
     QueryContext,
     load_option_attribute,
@@ -48,6 +49,7 @@ from .callsite import Sites, find_callsite, find_flush
 from .events import (
     CAUSE_DEFERRED,
     CAUSE_EXPIRED,
+    CAUSE_POLYMORPHIC,
     CAUSE_REFRESH,
     CallSite,
     ColumnLoadEvent,
@@ -578,10 +580,16 @@ def column_load_of(
     # session.refresh(obj, ["name"]) expires the names before it loads them,
     # so without the flag it would look like an expired load.
     user_refresh = bool(getattr(load_options, IS_USER_REFRESH, False))
+    base: tuple[str, bool] | None = None
     if only is None or user_refresh:
         cause, names = CAUSE_REFRESH, ()
-    elif instance.expired or (only and set(only) <= expired):
+    elif instance.expired:
         cause, names = CAUSE_EXPIRED, ()
+    elif only and set(only) <= expired:
+        cause, names = CAUSE_EXPIRED, ()
+        base = _unselected_subclass_base(instance, only)
+        if base is not None:
+            cause = CAUSE_POLYMORPHIC
     else:
         cause = CAUSE_DEFERRED
         names = tuple(sorted(set(only) & columns or only))
@@ -594,8 +602,40 @@ def column_load_of(
         find_callsite(sites),
         scope=scope_of_session(session),
         ignores=ignores,
+        base=None if base is None else base[0],
+        single_table=base is not None and base[1],
     )
     return instance, load
+
+
+def _unselected_subclass_base(instance: Any, names: Any) -> tuple[str, bool] | None:
+    """The class the query selected, when it left out these subclass columns.
+
+    A query of a base class of an inheritance hierarchy selects that class's
+    columns only. SQLAlchemy marks the subclass columns of each row as
+    expired (not deferred) and loads them per instance on first access, so
+    they reach here like attributes ``expire()`` named. They are told apart
+    by the entity the instance was loaded as (the end of its load path):
+    a strict base class of the instance that maps none of the columns. The
+    second value is True when the columns are in that class's table
+    (single-table inheritance). None when the instance was loaded as its own
+    class (a ``session.expire(obj, [...])`` after ``select(Engineer)``), when
+    the load path is unknown, or for any other shape.
+    """
+    path = getattr(instance, STATE_LOAD_PATH, None)
+    entity = getattr(path, "entity", None)
+    queried = getattr(entity, "mapper", None)
+    mapper = instance.mapper
+    if queried is None or queried is mapper or not mapper.isa(queried):
+        return None
+    if any(name in queried.attrs for name in names):
+        return None
+    single = all(
+        getattr(mapper.attrs.get(name), "parent", mapper).local_table
+        is queried.local_table
+        for name in names
+    )
+    return str(queried.class_.__name__), single
 
 
 class _Labels(NamedTuple):
