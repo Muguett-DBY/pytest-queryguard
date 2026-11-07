@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only there; and `session.execute(select(Order)).scalars()`, whose
   `.scalars()` of the result was taken for a second query. Every other shape
   still gets no patch.
+- Strict mode no longer drops a query or database-time budget failure: a
+  budget the test (`max_queries`/`max_db_time` marker,
+  `queryguard_max_queries`, the budget file) or a `max_queries()` block
+  had gone over before the access is shown under the N+1 in the
+  `NPlusOneDetected` error. Before, the error replaced the whole report and
+  the budget failure was lost.
+- Strict mode no longer lists an `ignore()` block entered by a test it
+  stopped at the access under "stale ignores": the block may be for a
+  finding after the access, which the test never reached. Its
+  `queryguard_ignore` patterns were already left out the same way.
 
 ## [0.8.0] - 2026-11-06
 
