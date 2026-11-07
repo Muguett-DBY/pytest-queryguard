@@ -115,12 +115,19 @@ class _Columns:
         for comp in mapper.composites:
             special.update(c for p in comp.props for c in p.columns)
         primary = set(mapper.primary_key)
-        # (table, name) of each primary key column, for _one_row()
-        self.primary_columns = frozenset((c.table, c.name) for c in primary)
         self.keys: tuple[str, ...] = tuple(p.key for p in mapper.column_attrs)
         self.primary = frozenset(
             p.key for p in mapper.column_attrs if any(c in primary for c in p.columns)
         )
+        # (table, name) -> attribute, of every column of a primary key
+        # attribute, for _one_row(): under joined-table inheritance
+        # ``Sub.id`` is both ``sub.id`` and the base table's ``id``
+        self.primary_columns: dict[tuple[Any, str], str] = {
+            (c.table, c.name): p.key
+            for p in mapper.column_attrs
+            if p.key in self.primary
+            for c in p.columns
+        }
         self.needed = frozenset(
             p.key
             for p in mapper.column_attrs
@@ -184,14 +191,14 @@ def _group(tracker: Tracker, state: Any, site: CallSite) -> Group:
 
 
 def _one_row(statement: Any, mapper: Any) -> bool:
-    """Whether the WHERE clause pins every primary key column of ``mapper``.
+    """Whether the WHERE clause pins every primary key attribute of ``mapper``.
 
     Only ``column = <bound value>`` in the top-level AND counts, and only on
     the mapped table itself: an aliased copy of the table pins the alias,
     not the rows of the entity.
     """
-    wanted = _columns_of(mapper).primary_columns
-    pinned: set[tuple[Any, str]] = set()
+    columns = _columns_of(mapper)
+    pinned: set[str] = set()
     clauses = list(getattr(statement, WHERE_CRITERIA, ()))
     while clauses:
         clause = clauses.pop()
@@ -206,10 +213,10 @@ def _one_row(statement: Any, mapper: Any) -> bool:
             (clause.right, clause.left),
         ):
             if isinstance(side, ColumnClause) and isinstance(other, BindParameter):
-                column = (side.table, side.name)
-                if column in wanted:
-                    pinned.add(column)
-    return pinned == wanted
+                key = columns.primary_columns.get((side.table, side.name))
+                if key is not None:
+                    pinned.add(key)
+    return pinned == columns.primary
 
 
 def _note_loaded(group: Group, state: Any, attrs: Any) -> None:

@@ -415,6 +415,26 @@ class Version(MappedBase):
     file_id: Mapped[int] = mapped_column(ForeignKey("cm_file.id"))
 
 
+class Shop(MappedBase):
+    __tablename__ = "cm_shop"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # lazy=False is the old spelling of lazy="joined"
+    shelves: Mapped[list[Shelf]] = relationship(lazy=False)
+    clerks: Mapped[list[Clerk]] = relationship(lazy=False)
+
+
+class Shelf(MappedBase):
+    __tablename__ = "cm_shelf"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("cm_shop.id"))
+
+
+class Clerk(MappedBase):
+    __tablename__ = "cm_clerk"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("cm_shop.id"))
+
+
 def _found_with_mapping(statement: Any) -> str | None:
     from pytest_queryguard.cartesian import _roots
 
@@ -426,6 +446,15 @@ def _found_with_mapping(statement: Any) -> str | None:
     ("statement", "expected"),
     [
         (select(Project), "Project.members + Project.milestones"),
+        (select(Shop), "Shop.clerks + Shop.shelves"),
+        (
+            # the wildcard sets Board's own relationships; the joinedload
+            # still loads the projects, with their mapping's joins
+            select(Board).options(
+                Load(Board).lazyload("*"), joinedload(Board.projects)
+            ),
+            "Project.members + Project.milestones",
+        ),
         (
             select(Project).where(Project.id == 1).limit(1),
             "Project.members + Project.milestones",
@@ -449,6 +478,8 @@ def _found_with_mapping(statement: Any) -> str | None:
     ],
     ids=[
         "plain-select",
+        "lazy-false",
+        "option-below-a-bound-wildcard",
         "one-row-lookup",
         "aliased",
         "option-for-another-relationship",
@@ -525,3 +556,56 @@ def test_a_select_without_options_is_checked_for_the_mapping() -> None:
     assert [label(load.collections) for load in loads] == [
         "Project.members + Project.milestones"
     ] * 2
+
+
+@pytest.mark.allow_nplusone
+def test_a_backref_configured_later_is_seen() -> None:
+    # The result kept per entity is dropped when SQLAlchemy configures new
+    # mappers: a backref adds a relationship to a class already checked.
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session, backref, configure_mappers
+
+    from pytest_queryguard import cartesian, listeners, record_queries
+
+    class LateBase(DeclarativeBase):
+        pass
+
+    class Hub(LateBase):
+        __tablename__ = "late_hub"
+        id: Mapped[int] = mapped_column(primary_key=True)
+
+    configure_mappers()
+    listeners.install()
+    cartesian.enable()
+    try:
+        engine = create_engine("sqlite://")
+        with record_queries() as log:
+            LateBase.metadata.create_all(engine)
+            with Session(engine) as session:
+                session.scalars(select(Hub)).all()
+            assert log._collector.cartesian_loads == []
+
+            class Spoke(LateBase):
+                __tablename__ = "late_spoke"
+                id: Mapped[int] = mapped_column(primary_key=True)
+                hub_id: Mapped[int] = mapped_column(ForeignKey("late_hub.id"))
+                hub: Mapped[Hub] = relationship(
+                    backref=backref("spokes", lazy="joined")
+                )
+
+            class Rim(LateBase):
+                __tablename__ = "late_rim"
+                id: Mapped[int] = mapped_column(primary_key=True)
+                hub_id: Mapped[int] = mapped_column(ForeignKey("late_hub.id"))
+                hub: Mapped[Hub] = relationship(backref=backref("rims", lazy="joined"))
+
+            configure_mappers()
+            # a new engine: the first one keeps the SQL it compiled before
+            engine = create_engine("sqlite://")
+            LateBase.metadata.create_all(engine)
+            with Session(engine) as session:
+                session.scalars(select(Hub)).unique().all()
+    finally:
+        cartesian.disable()
+    (load,) = log._collector.cartesian_loads
+    assert label(load.collections) == "Hub.rims + Hub.spokes"

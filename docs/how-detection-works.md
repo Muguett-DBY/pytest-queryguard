@@ -330,7 +330,8 @@ rows grow as the product of the collections, which is slow and memory-heavy
 long before a test notices.
 
 The rule reads the loader options of each top-level ORM SELECT, and the
-loader strategies of the mapping (`relationship(lazy="joined")`) of each
+loader strategies of the mapping (`relationship(lazy="joined")`, or the old
+`lazy=False`) of each
 entity it loads. It reports a statement in which two collections are joined
 side by side:
 

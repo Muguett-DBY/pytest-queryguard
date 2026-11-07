@@ -392,8 +392,17 @@ def test_it():
         "session.scalars(select(Account).where(Account.id == 2)).one()",
         "session.scalars(select(Account).filter_by(name='account 2', id=2)).one()",
         "session.query(Account).filter(Account.id == 2).one()",
+        "session.scalars(select(Premium).where(Premium.id == 2)).one()",
+        "session.get(Premium, 2)",
     ],
-    ids=["get", "where-primary-key", "filter-by", "legacy-query"],
+    ids=[
+        "get",
+        "where-primary-key",
+        "filter-by",
+        "legacy-query",
+        "subclass-where",
+        "subclass-get",
+    ],
 )
 def test_a_primary_key_lookup_is_not_reported(
     pytester: pytest.Pytester, lookup: str
@@ -401,8 +410,24 @@ def test_a_primary_key_lookup_is_not_reported(
     # one row by construction: trimming its columns saves one row's width;
     # a lookup per item is the repeat rule's finding
     body = f"""
+from sqlalchemy import ForeignKey, text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from qgmodels import Base
+
+
+class Premium(Account):
+    # joined-table inheritance: Premium.id is premium.id, the mapper's
+    # primary key is accounts.id
+    __tablename__ = "premium"
+    id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
+    tier: Mapped[str] = mapped_column(default="gold")
+
+
 def test_it():
     session = make_sync_session()
+    Base.metadata.create_all(session.get_bind())
+    session.execute(text("INSERT INTO premium (id, tier) VALUES (2, 'gold')"))
     account = {lookup}
     assert account.name == "account 2"
 """

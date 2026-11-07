@@ -29,6 +29,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import event
+from sqlalchemy.orm import Mapper
 from sqlalchemy.sql import Select
 
 from . import blocks, collector, listeners
@@ -64,7 +66,16 @@ _EAGER = frozenset(LOADERS)
 _MAX_DEPTH = 8
 # the result for a statement without options, by its entities
 _by_entities: dict[tuple[Any, ...], tuple[str, tuple[Path_, ...]] | None] = {}
+# the relationships each mapper's mapping loads eagerly (_eager_of)
+_eager: dict[Any, tuple[Any, ...]] = {}
 _MAX_CACHED = 1024
+
+
+def _forget_mappings() -> None:
+    """Drop what was worked out from the mappings: SQLAlchemy configured new
+    mappers, and a backref may have added a relationship to a known one."""
+    _by_entities.clear()
+    _eager.clear()
 
 
 def _effective(strategy: str | None, prop: Any) -> str:
@@ -72,7 +83,13 @@ def _effective(strategy: str | None, prop: Any) -> str:
     if strategy is not None:
         return strategy
     lazy = getattr(prop, "lazy", "select")
-    return lazy if isinstance(lazy, str) else "select"
+    if isinstance(lazy, str):
+        return lazy
+    # the old spellings: lazy=False is "joined", None "noload", True "select"
+    return _OLD_LAZY.get(lazy, "select")
+
+
+_OLD_LAZY = {False: "joined", None: "noload", True: "select"}
 
 
 def _roots(statement: Any) -> tuple[Any, ...]:
@@ -88,10 +105,10 @@ def _roots(statement: Any) -> tuple[Any, ...]:
         return ()
     roots: list[Any] = []
     for column in getattr(statement, RAW_COLUMNS, ()):
-        if not getattr(column, "is_selectable", False):
-            continue
-        entity = getattr(column, ANNOTATIONS, {}).get(PARENT_ENTITY)
-        if entity is not None and entity not in roots:
+        annotations = getattr(column, ANNOTATIONS, None)
+        entity = annotations.get(PARENT_ENTITY) if annotations else None
+        # an entity is its table or alias; a column of it is no selectable
+        if entity is not None and column.is_selectable and entity not in roots:
             roots.append(entity)
     return tuple(roots)
 
@@ -122,6 +139,18 @@ def _is_token(step: Any) -> bool:
     return isinstance(step, str) and step.startswith(RELATIONSHIP_TOKEN)
 
 
+def _eager_of(mapper: Any) -> tuple[Any, ...]:
+    """The relationships of ``mapper`` that its mapping loads eagerly."""
+    found = _eager.get(mapper)
+    if found is None:
+        if len(_eager) >= _MAX_CACHED:
+            _eager.clear()
+        found = _eager[mapper] = tuple(
+            p for p in mapper.relationships if _effective(None, p) in _EAGER
+        )
+    return found
+
+
 def _mapping_defaults(
     root: Any,
     strategies: dict[tuple[Any, ...], tuple[str, str | None]],
@@ -135,19 +164,24 @@ def _mapping_defaults(
     and stops at a mapper already on the path unless the relationship has a
     ``join_depth``, which then limits the depth.
     """
+    # the relationships the options name, by the key of their parent
+    named: dict[tuple[Any, ...], list[Any]] = {}
+    for key in strategies:
+        named.setdefault(key[:-1], []).append(key[-1])
     stack: list[tuple[tuple[Any, ...], tuple[Any, ...]]] = [((root,), (root.mapper,))]
     while stack:
         key, mappers = stack.pop()
-        if key in wildcards:
-            continue
-        for prop in mappers[-1].relationships:
+        # a wildcard sets every relationship at this level that no option
+        # names: the mapping's strategies do not apply there
+        props = named.get(key, [])
+        if key not in wildcards:
+            props = [*props, *(p for p in _eager_of(mappers[-1]) if p not in props)]
+        for prop in props:
             child = (*key, prop)
             if child in strategies:
                 name = strategies[child][0]
             else:
                 name = _effective(None, prop)
-                if name not in _EAGER:
-                    continue
                 depth = len(child) - 1
                 if prop.join_depth:
                     if depth > prop.join_depth:
@@ -173,9 +207,9 @@ def _collections(
         roots[key] = path[0]
     if entities:
         top, below = _wildcards(options)
-        if not top:
-            for root in entities:
-                _mapping_defaults(root, strategies, roots, below)
+        for root in entities:
+            covered = below | {(root,)} if top else below
+            _mapping_defaults(root, strategies, roots, covered)
     # joined collections by the statement that loads them: the root mapper
     # and the prefix up to the last step that is not joined
     statements: dict[tuple[Any, ...], list[tuple[Any, ...]]] = {}
@@ -295,6 +329,7 @@ def enable() -> None:
     _enabled += 1
     if _enabled == 1:
         listeners.cartesian_check = _check
+        event.listen(Mapper, "after_configured", _forget_mappings)
 
 
 def disable() -> None:
@@ -304,7 +339,8 @@ def disable() -> None:
     _enabled -= 1
     if _enabled == 0:
         listeners.cartesian_check = None
-        _by_entities.clear()
+        event.remove(Mapper, "after_configured", _forget_mappings)
+        _forget_mappings()
 
 
 def label(collections: tuple[Path_, ...]) -> str:
