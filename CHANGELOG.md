@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A method of a `Session` or `AsyncSession` subclass outside
+  `site-packages` (SQLModel's `Session` in an editable install, an
+  application's own override of `execute()`) is no longer the call site of
+  the queries that go through it; the line that called the session is. Every
+  query had the override's `super().execute()` line as call site, so
+  single-object lookups and refreshes at different lines were grouped as
+  one query line and reported as a relationship-load (9 false findings in
+  SQLModel's tutorials, found by the real-world workflow).
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
   `response_model`), or that the code swallowed before the test failed on
@@ -206,6 +214,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- The real-world workflow (`.github/workflows/realworld.yml`) resolves
+  `plugin-ref` to a commit once, so a branch deleted or pushed to while the
+  matrix runs no longer breaks the plugin checkout. Its summary tells a
+  project whose tests did not run without the plugin (a harness problem) from
+  one the plugin broke, never fails a job for findings, shows the pass/fail
+  delta, and a report job puts one table of all projects on the run's page.
+  The full-stack template's tests path is fixed (`app/tests`).
 - `tests/test_public_api.py` also snapshots the keys and format numbers of
   the files the plugin writes (`--queryguard-json`, baseline, budget file,
   SARIF rule ids, fingerprint key and properties), the finding kinds, the

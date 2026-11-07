@@ -7,12 +7,16 @@ From SQLModel 0.0.24 (``sqlmodel/orm/session.py``, its tutorial
 refreshes three new heroes, one per line, and prints each hero's teams. Three
 lazy loads of ``Hero.teams``, but each for the one parent a line of its own
 refreshed: no loop over rows (see ``clean_93_two_single_object_lookups``).
+Here three customers are looked up at three lines, through ``get()``,
+``exec()`` and ``execute()``, which all go through the override, as
+``refresh()`` does.
 
 In SQLModel's own test suite its package is not in ``site-packages`` (an
 editable install), and the same holds for any application that subclasses
 ``Session`` in its own code. The plugin took the override's
 ``return super().execute(...)`` line for the line that loaded each parent, so
-the three refreshes looked like one query line returning three rows.
+the three refreshes looked like one query line returning three rows, and
+reported them as a relationship-load.
 """
 
 from typing import Any
@@ -39,12 +43,10 @@ class AppSession(Session):
 def run(ctx: Ctx) -> None:
     with AppSession(ctx.engine()) as session:
         first = session.get(shop.Customer, 1)
-        second = session.get(shop.Customer, 2)
-        third = session.exec(select(shop.Customer).where(shop.Customer.id == 3)).one()
-        assert first is not None and second is not None
-        session.expire_all()
-        session.refresh(first)
-        session.refresh(second)
-        session.refresh(third)
+        second = session.exec(select(shop.Customer).where(shop.Customer.id == 2)).one()
+        third = session.execute(
+            select(shop.Customer).where(shop.Customer.id == 3)
+        ).scalar_one()
+        assert first is not None
         counts = [len(first.orders), len(second.orders), len(third.orders)]
     assert all(count > 0 for count in counts)

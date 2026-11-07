@@ -20,7 +20,11 @@ it saw.
 3. Each statement is stored with its call site: the first stack frame outside
    SQLAlchemy, pytest, the standard library, `site-packages` and the plugin
    itself. For async sessions the search continues in the parent greenlets,
-   where the awaiting code runs.
+   where the awaiting code runs. The methods of a `Session` or `AsyncSession`
+   subclass (SQLModel's `exec()`, an application's override of `execute()`)
+   are passed over too: they are part of the session, and the line that
+   called the session is the call site. Only when no other frame of the
+   application is on the stack is the session method the call site.
 4. After the test, the stored events are checked against the budget and the
    rules below. A test stores at most `queryguard_max_events` statements;
    past that they are only counted, and the report says so.
