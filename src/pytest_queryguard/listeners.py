@@ -335,12 +335,16 @@ def _query_site(context: Any) -> CallSite | None:
         origin = _current_origin(parent)
         return None if origin is None else origin[0]
     statement = target.query
-    last = _last_read
-    if last[0] is statement:
-        return last[1]
-    entry = _reads.get(id(statement))
-    if entry is not None and entry[0] is statement and entry[1] is not _AMBIGUOUS:
-        return entry[1]
+    # The noted reads are of this measurement only: a statement object that
+    # ran in an earlier one, and whose result was made outside this one, has
+    # no site here (the walk below finds none on its cursor either).
+    if _reads_generation == collector._generation:
+        last = _last_read
+        if last[0] is statement:
+            return last[1]
+        entry = _reads.get(id(statement))
+        if entry is not None and entry[0] is statement and entry[1] is not _AMBIGUOUS:
+            return entry[1]
     if _CHUNKS_CODE is None:
         return None
     frame: Any = sys._getframe(2)

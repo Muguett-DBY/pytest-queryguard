@@ -2610,7 +2610,12 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         record_error(exc, "start of the measurement")
         _report_internal_error(item.config)
         return (yield)
+    # Before the collector is pushed: a bad ignore marker fails the test here
+    # (pytest.fail), and would otherwise leave the collector on the stack.
+    strict_hook = None
     try:
+        if settings.strict and settings.mode != "off":
+            strict_hook = _strict_hook(item, settings)
         collector, trackers = _start_measuring(
             settings,
             budgets=limit is not None or time_limit is not None,
@@ -2620,8 +2625,8 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
         record_error(exc, "start of the measurement")
         _report_internal_error(item.config)
         return (yield)
-    if settings.strict and settings.mode != "off":
-        collector.strict = _strict_hook(item, settings)
+    if strict_hook is not None:
+        collector.strict = strict_hook
         collector.strict_threshold = settings.relationship
         collector.strict_by_scope = settings.repeat_scope == SCOPE_SESSION
     strict_error: NPlusOneDetected | None = None

@@ -158,6 +158,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bulk_save_objects`, dataclass and imperative mappings, and shapes
   reported to other N+1 tools. The release gate now needs 250 scenarios and a
   column-load recall of 90%. See docs/accuracy.md.
+- With `queryguard_strict`, a test whose `queryguard_ignore` or
+  `allow_nplusone` marker has invalid arguments no longer leaves its
+  collector measuring for the rest of the session: the marker error now
+  fails the test before measurement starts.
+- A relationship-load finding no longer names, as the place its parents were
+  loaded, a line of an earlier test that ran the same statement object when
+  the rows became instances from a result made outside the measurement (in a
+  fixture).
+- The SARIF file is written when a finding's path is not valid UTF-8 (a lone
+  surrogate in the file name), as the baseline file already was: the location
+  URI carries the file name's bytes percent-encoded and the file stays valid
+  UTF-8. Before, the whole file failed to write.
+- The baseline, budget, JSON, SARIF and patch files are written with the
+  permissions of the file they replace, or those of the umask for a new file,
+  not owner-only (0600) as the temporary file they are written through.
 
 ## [0.8.0] - 2026-11-06
 

@@ -471,3 +471,34 @@ def test_a_block_of_a_stopped_test_is_not_listed_as_stale(
     result.stdout.fnmatch_lines(["*kind: relationship-load  label: Order.customer"])
     result.stdout.no_fnmatch_line("*queryguard: stale ignores*")
     result.stdout.no_fnmatch_line("*ignore('repeated-statement')*")
+
+
+BAD_MARKER = """
+import pytest
+from pytest_queryguard import collector
+from qgmodels import Order, make_sync_session
+
+
+@pytest.mark.allow_nplusone(1)
+def test_a_bad_marker():
+    pass
+
+
+@pytest.mark.allow_nplusone
+def test_b_allowed():
+    assert len(collector.active()) == 1  # this test's own collector only
+    session = make_sync_session()
+    for order in session.query(Order).all():
+        _ = order.customer.name
+"""
+
+
+def test_a_bad_ignore_marker_leaves_no_strict_collector_behind(
+    pytester: pytest.Pytester,
+) -> None:
+    # the bad marker fails its test before it runs; the collector of its
+    # measurement must not stay on the stack for the rest of the session
+    pytester.makepyfile(qgmodels=MODELS, test_bad_marker=BAD_MARKER)
+    result = _run(pytester, "--queryguard-strict")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["*allow_nplusone on *test_a_bad_marker takes*"])

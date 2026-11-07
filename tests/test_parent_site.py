@@ -523,6 +523,33 @@ def test_an_origin_noted_in_an_earlier_measurement_is_not_used(
     assert finding.parent_site is None
 
 
+def test_a_read_noted_in_an_earlier_measurement_does_not_name_the_parents(
+    engine: Engine,
+) -> None:
+    # The same statement object ran in an earlier measurement; this time its
+    # result was made before the measurement and its rows become instances in
+    # it. The earlier run's line is not where these parents came from.
+    statement = select(Order)
+    with Session(engine) as session:
+        first = collector.QueryCollector()
+        collector.push(first)
+        try:
+            session.scalars(statement).all()
+        finally:
+            collector.pop(first)
+        session.expunge_all()
+        pending = session.scalars(statement)  # not measured
+        rec = collector.QueryCollector()
+        collector.push(rec)
+        try:
+            for order in pending:
+                _ = order.customer
+        finally:
+            collector.pop(rec)
+    finding = _finding(rec, "Order.customer")
+    assert finding.parent_site is None
+
+
 def test_a_new_select_per_iteration_keeps_the_site_once_the_map_is_full(
     engine: Engine, rec: collector.QueryCollector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
