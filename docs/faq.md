@@ -144,13 +144,11 @@ them.
 ## Does it work with pytest-xdist?
 
 Yes for detection, budgets, the baseline and SARIF: each worker measures its
-own tests, and the controller merges what the workers saw. The session report
-(`--queryguard-report`) needs one process and prints
-`queryguard report: not available with pytest-xdist`. The summary sections of
-the index check and the stale-ignore list are printed by the process that runs
-the tests, so they are not shown under xdist, except for stale `ignore()`
-blocks, which the workers send to the controller. The test suite runs the plugin
-under `-n 2` and `-n 4` in CI.
+own tests, and the controller merges what the workers saw: the session report
+(`--queryguard-report`), the index check's summary and the stale-ignore list
+are the same as in a serial run, and so are the JSON, SARIF, baseline, budget
+and patch files. The test suite runs the plugin under `-n 2` to `-n 4`, with
+each `--dist` mode, in CI and compares the outputs with a serial run.
 
 ## Which PostgreSQL drivers work?
 

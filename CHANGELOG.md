@@ -59,6 +59,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Under pytest-xdist, the summary is the same as in a serial run: the
+  workers now send their counts, the ignore patterns and markers they used
+  and their index-check notes to the controller, so `--queryguard-report`
+  lists the heaviest tests (it printed `not available with pytest-xdist`),
+  and the "stale ignores" list and the index check's summary are shown (they
+  were left out, except for `ignore()` blocks). A worker that crashes leaves
+  the report marked incomplete. In the report, tests with equal counts are
+  listed by node id, not in the order they ran, so the list is the same with
+  pytest-xdist and with any pytest-randomly seed, and so is the order of the
+  stale markers.
+- The stale lists no longer name a pattern or entry whose test did not run.
+  After a partial run (`-k`, `--deselect`, a file argument, `--lf`), one that
+  stopped early (`-x`, `--maxfail`, Ctrl-C, a collection error) or
+  `--collect-only`, the stale-baseline list held every entry of the tests left
+  out, and the "stale ignores" list every `queryguard_ignore` pattern and
+  `ignore()` block they would have used. Such a run now lists only the
+  baseline entries of tests that ran, as a partial update would replace them,
+  and no pattern or block; the markers of the tests that ran are still listed.
+- `--collect-only` no longer writes an empty SARIF file, which would close
+  every alert; the file is left as it was, as after an interrupted run.
+- The summary of `--queryguard-write-patch` says the patch is incomplete
+  after a run that stopped early (`-x`, `--maxfail`, Ctrl-C, a collection
+  error). Before, only a stopped pytest-xdist worker added the note.
+
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
   `response_model`), or that the code swallowed before the test failed on

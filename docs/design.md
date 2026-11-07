@@ -177,10 +177,10 @@ The active collector is a process-wide variable, not thread-local or
 context-local, because FastAPI's `TestClient` runs the application in a
 separate thread. Tests in one process run sequentially, so there is one
 active collector at a time. `pytest-xdist` workers are separate processes
-and need no special handling for detection and budgets. The
-`--queryguard-report` summary needs the counts in a single process, so
-under xdist the controller prints
-`queryguard report: not available with pytest-xdist` instead.
+and need no special handling for detection and budgets. For
+`--queryguard-report` and the summary sections, each worker sends its counts,
+the ignores it used and its index-check notes to the controller
+(`workeroutput`), which merges them and prints what a serial run prints.
 
 ### 5.4 Detection rules
 

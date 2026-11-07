@@ -128,25 +128,6 @@ def test_report_error_does_not_break_the_session(
     result.stdout.fnmatch_lines(["*QueryGuardInternalWarning*report broke*"])
 
 
-def test_report_under_xdist_says_it_is_not_available(
-    pytester: pytest.Pytester,
-) -> None:
-    # xdist registers a plugin named "dsession" on the controller when it
-    # distributes tests; a stand-in is enough to exercise the check.
-    pytester.makeconftest(
-        """
-        def pytest_configure(config):
-            config.pluginmanager.register(object(), "dsession")
-        """
-    )
-    pytester.makepyfile(test_a=_test_module([1, 4]))
-    result = pytester.runpytest("--queryguard-report")
-    result.assert_outcomes(passed=2)
-    assert _report_lines(result) == [
-        "queryguard report: not available with pytest-xdist"
-    ]
-
-
 def test_report_after_internal_error_says_it_is_incomplete(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
