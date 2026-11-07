@@ -20,6 +20,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finding after the access, which the test never reached. Its
   `queryguard_ignore` patterns were already left out the same way.
 
+### Documentation
+
+- New recipe, docs/recipes-test-transaction.md: a session per request in a
+  test transaction. A test that hands every
+  request one shared `Session` makes the requests one unit of work and gets
+  repeated-statement findings for endpoints without a loop; the recipe gives
+  each request its own `Session` bound to the test's connection with
+  `join_transaction_mode="create_savepoint"`, so the test's transaction is
+  still rolled back and, with `queryguard_scope = session`, each request is
+  counted on its own.
+- New recipes: GraphQL resolvers, docs/recipes-graphql.md (a per-object
+  resolver, fixed with `selectinload` or a data loader), and background tasks
+  in tests, docs/recipes-background-tasks.md (tasks that `TestClient` or an
+  eager task queue runs in the test body).
+- Ignoring findings: an N+1 made inside an installed library is reported at
+  the line of your code that called it, because frames under `site-packages`
+  are never call sites. `file=`, `function=` and `stack=` patterns that name
+  the library match nothing; name the calling line or use an `ignore()` block
+  (docs/ignoring.md, "An N+1 inside an installed library").
+- FAQ: the `--queryguard-json` file is the integration point for tools that
+  want every finding; there is no per-finding hook in the test run.
+- Comparison: adds django-nplus1, django-query-doctor and
+  n-plus-one-sniffer (read, not run), and a section on problems users report
+  with other N+1 tools that pytest-queryguard avoids, with the issues as
+  evidence.
+
 ## [0.8.0] - 2026-11-06
 
 This release offers the fix of an N+1 as a patch (`--queryguard-show-patch`,

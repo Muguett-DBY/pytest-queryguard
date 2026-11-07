@@ -412,3 +412,10 @@ and does not change). Other ways out: write one request per test with
 `@pytest.mark.queryguard_ignore` (see [Ignoring findings](ignoring.md)). A
 `with max_queries(4):` around each request does not help: it checks its own
 block, and the repeated-statement rule still looks at the whole test.
+
+If the override hands every request the test's own `Session` (to keep the
+test's transaction), `queryguard_scope = session` does not help, because all
+requests are then one `Session`.
+[A session per request in a test transaction](recipes-test-transaction.md)
+shows an override that gives each request its own `Session` in the same
+transaction.
