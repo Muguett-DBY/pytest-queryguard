@@ -1058,8 +1058,10 @@ def test_strict_reports_the_site_the_report_names() -> None:
         _read_at(4, ParentLoad(OTHER, None), SITE),
     ]
     for load in loads:
-        c.relationship_loads.append(load)
+        # as the listeners do: the check when the ORM begins the load, the
+        # record once its SELECT ran
         c.strict_check(load)
+        c.add_relationship_load(load)
     assert seen == [(READ_2, True)]
     [f] = detect(c, relationship_threshold=2, repeat_threshold=5)
     assert isinstance(f, RelationshipFinding)
