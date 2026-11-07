@@ -149,8 +149,9 @@ verdict, corrected. No verdict was wrong. Two causes were bugs:
   included) is not reported. 4 `xfail`s fewer, with the check on and with
   all opt-in rules.
 
-The other 60 are limits, each explained where a user looks for it (the page
-in brackets) with what to do:
+The other 58 are limits, each explained where a user looks for it (the page
+in brackets) with what to do. (`bug_04` and `bug_06` in strict mode, a strict
+error that Pydantic wraps, were limits too; they are fixed since.)
 
 | scenarios | configurations | limit | what to do |
 |---|---|---|---|
@@ -162,7 +163,6 @@ in brackets) with what to do:
 | `bug_47`, `bug_48`, `bug_52`, `bug_53` | session-scope | each Session is counted on its own, by design ([Several sessions](several-sessions.md)) | the default scope |
 | `bug_86_unused_columns_via_selectinload` | unused-columns, all opt-in | rows loaded through a relationship are not grouped ([Unused columns](unused-columns.md)) | `selectinload(...).load_only(...)` by hand |
 | `clean_124_collection_checked_through_inspect` | unused-eager-load, all opt-in | reads through `inspect()` are invisible ([Unused eager loads](unused-eager-load.md)) | ignore it |
-| `bug_04`, `bug_06` | strict | Pydantic turns the strict exception into its own error, so the report at the end does not run ([When a test fails](when-a-test-fails.md#strict-mode-fail-at-the-access)) | the test still fails with the N+1 in its message; run without strict mode for SARIF and JSON |
 | `bug_88_strict_lazy_then_lookup_loop` | strict | strict mode stops the test at the first N+1 ([When a test fails](when-a-test-fails.md#strict-mode-fail-at-the-access)) | fix it and run again, or run without strict mode |
 
 Before and after, every configuration, on the 252 scenarios that ran (no
