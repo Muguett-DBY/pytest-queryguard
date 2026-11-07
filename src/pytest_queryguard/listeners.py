@@ -8,7 +8,7 @@ import sys
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, NamedTuple
 
 from sqlalchemy import event
@@ -39,6 +39,7 @@ from ._compat import (
     QUERY_REFRESH_STATE,
     REFRESH_STATE,
     RUNID,
+    STATE_LOAD_PATH,
     TOP_LEVEL_ORM_CONTEXT,
     QueryContext,
     load_option_attribute,
@@ -48,6 +49,7 @@ from .callsite import Sites, find_callsite, find_flush
 from .events import (
     CAUSE_DEFERRED,
     CAUSE_EXPIRED,
+    CAUSE_POLYMORPHIC,
     CAUSE_REFRESH,
     CallSite,
     ColumnLoadEvent,
@@ -333,12 +335,16 @@ def _query_site(context: Any) -> CallSite | None:
         origin = _current_origin(parent)
         return None if origin is None else origin[0]
     statement = target.query
-    last = _last_read
-    if last[0] is statement:
-        return last[1]
-    entry = _reads.get(id(statement))
-    if entry is not None and entry[0] is statement and entry[1] is not _AMBIGUOUS:
-        return entry[1]
+    # The noted reads are of this measurement only: a statement object that
+    # ran in an earlier one, and whose result was made outside this one, has
+    # no site here (the walk below finds none on its cursor either).
+    if _reads_generation == collector._generation:
+        last = _last_read
+        if last[0] is statement:
+            return last[1]
+        entry = _reads.get(id(statement))
+        if entry is not None and entry[0] is statement and entry[1] is not _AMBIGUOUS:
+            return entry[1]
     if _CHUNKS_CODE is None:
         return None
     frame: Any = sys._getframe(2)
@@ -467,25 +473,51 @@ def _loader_path(
     return found
 
 
-def _current_origin(state: Any) -> tuple[Any, ...] | None:
-    """(call site, load path, generation) of an instance, if noted in this
-    measurement."""
+def _current_origin(state: Any, *, oldest: bool = False) -> tuple[Any, ...] | None:
+    """(call site, load path, generation) of an instance, if noted while the
+    innermost measurement that wants loads was running (``oldest``: the
+    outermost one).
+
+    Compared with the generation that measurement started in, not with the
+    current one: another measurement starting or ending (a
+    ``record_queries()`` block, in the test or in any other thread) changes
+    the generation and must not take the test's origins away. The origins
+    noted from now on use the innermost measurement, so a block never builds
+    on an origin from before it; a lazy load's parent uses the outermost one,
+    and ``_for_target`` leaves it out for each measurement that started later.
+    """
     origin = state.__dict__.get(_ORIGIN_ATTR)
-    if origin is None or origin[2] != collector._generation:
+    if origin is None:
+        return None
+    full = collector._active_full  # one read: another thread may push or pop
+    # pushed in order: [0] is the oldest, [-1] the innermost
+    if not full or origin[2] < full[0 if oldest else -1].since:
         return None
     return origin  # type: ignore[no-any-return]
 
 
+def _for_target(
+    load: RelationshipLoadEvent, target: collector.QueryCollector
+) -> RelationshipLoadEvent:
+    """``load`` as ``target`` records it: without the parent's origin when that
+    was noted before ``target`` started (an object loaded before a
+    ``record_queries()`` block has none there)."""
+    parent = load.parent
+    if parent is None or parent.noted >= target.since:
+        return load
+    return replace(load, parent=None)
+
+
 def _parent_load(parent: Any, prop: Any) -> ParentLoad | None:
     """Where the parent of this lazy load came from; None when unknown."""
-    origin = _current_origin(parent)
+    origin = _current_origin(parent, oldest=True)
     if origin is None:
         return None
-    site, path, _ = origin
+    site, path, noted = origin
     root, chain = _loader_path(path, prop)
     if site is None and root is None:
         return None
-    return ParentLoad(site, root, chain)
+    return ParentLoad(site, root, chain, noted)
 
 
 def _reset_for_tests() -> None:
@@ -573,17 +605,22 @@ def column_load_of(
             f"SQLAlchemy's column-load compile options have no {ONLY_LOAD_PROPS}; "
             "this SQLAlchemy version is not supported by the column-load kind"
         )
-    expired = instance.expired_attributes
-    columns = {prop.key for prop in instance.mapper.column_attrs}
     # session.refresh(obj, ["name"]) expires the names before it loads them,
     # so without the flag it would look like an expired load.
     user_refresh = bool(getattr(load_options, IS_USER_REFRESH, False))
+    base: tuple[str, bool] | None = None
     if only is None or user_refresh:
         cause, names = CAUSE_REFRESH, ()
-    elif instance.expired or (only and set(only) <= expired):
+    elif instance.expired:
         cause, names = CAUSE_EXPIRED, ()
+    elif only and set(only) <= instance.expired_attributes:
+        cause, names = CAUSE_EXPIRED, ()
+        base = _unselected_subclass_base(instance, only)
+        if base is not None:
+            cause = CAUSE_POLYMORPHIC
     else:
         cause = CAUSE_DEFERRED
+        columns = {prop.key for prop in instance.mapper.column_attrs}
         names = tuple(sorted(set(only) & columns or only))
     key = instance.key if instance.key is not None else id(instance)
     load = ColumnLoadEvent(
@@ -594,8 +631,40 @@ def column_load_of(
         find_callsite(sites),
         scope=scope_of_session(session),
         ignores=ignores,
+        base=None if base is None else base[0],
+        single_table=base is not None and base[1],
     )
     return instance, load
+
+
+def _unselected_subclass_base(instance: Any, names: Any) -> tuple[str, bool] | None:
+    """The class the query selected, when it left out these subclass columns.
+
+    A query of a base class of an inheritance hierarchy selects that class's
+    columns only. SQLAlchemy marks the subclass columns of each row as
+    expired (not deferred) and loads them per instance on first access, so
+    they reach here like attributes ``expire()`` named. They are told apart
+    by the entity the instance was loaded as (the end of its load path):
+    a strict base class of the instance that maps none of the columns. The
+    second value is True when the columns are in that class's table
+    (single-table inheritance). None when the instance was loaded as its own
+    class (a ``session.expire(obj, [...])`` after ``select(Engineer)``), when
+    the load path is unknown, or for any other shape.
+    """
+    path = getattr(instance, STATE_LOAD_PATH, None)
+    entity = getattr(path, "entity", None)
+    queried = getattr(entity, "mapper", None)
+    mapper = instance.mapper
+    if queried is None or queried is mapper or not mapper.isa(queried):
+        return None
+    if any(name in queried.attrs for name in names):
+        return None
+    single = all(
+        getattr(mapper.attrs.get(name), "parent", mapper).local_table
+        is queried.local_table
+        for name in names
+    )
+    return str(queried.class_.__name__), single
 
 
 class _Labels(NamedTuple):
@@ -699,7 +768,7 @@ def _orm_load(
         session = _loader_session(orm.execution_options)
     load = _relationship_load(prop, parent, session, conn, ignores, sites, parents)
     for target in targets:
-        target.add_relationship_load(load)
+        target.add_relationship_load(_for_target(load, target))
     return _Labels(load.relationship, None, parent is not None, load.callsite)
 
 
@@ -808,6 +877,7 @@ def _on_orm_execute_strict(state: ORMExecuteState) -> None:
     if _error is not None:
         return
     strict: BaseException | None = None
+    raiser: collector.QueryCollector | None = None
     try:
         full = collector.full_active()
         if not any(target.strict is not None for target in full):
@@ -823,16 +893,20 @@ def _on_orm_execute_strict(state: ORMExecuteState) -> None:
             if target.strict is not None:
                 # every strict collector counts the load; the first error wins
                 # (strict_check skips a load its ignore() blocks cover)
-                error = target.strict_check(load)
-                if strict is None:
-                    strict = error
+                error = target.strict_check(_for_target(load, target))
+                if strict is None and error is not None:
+                    strict, raiser = error, target
         if strict is not None:
             for target in full:
-                target.add_relationship_load(load)
+                target.add_relationship_load(_for_target(load, target))
     except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
         _fail(exc, "do_orm_execute listener (strict mode)")
         return
     if strict is not None:
+        if raiser is not None:
+            # only the test whose error this is: it may then fail with
+            # another one (a library that wrapped it), see the plugin
+            raiser.strict_raised = True
         # queryguard_strict: the N+1 fails here, at the attribute access, with
         # the test's own traceback (outside the try: this is meant to raise)
         raise strict

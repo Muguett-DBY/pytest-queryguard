@@ -1,9 +1,10 @@
 """Seeded, property-style tests for the source patch of fixpatch.py.
 
 A generator writes many variants of a module with a parent query line
-(``select(X)`` or ``session.query(X)``, existing options, comments, line
-continuations, decorators, nested functions, tabs, CRLF, unicode, no final
-newline, import variants) and says for each whether a patch must be made,
+(``select(X)`` or ``session.query(X)``, ``X`` or ``models.X``, the statement
+on that line or in a variable assigned before it, existing options, comments,
+line continuations, decorators, nested functions, tabs, CRLF, unicode, no
+final newline, import variants) and says for each whether a patch must be made,
 must not be made, or may be made. Every patch made must:
 
 - apply with ``git apply`` (skipped without git);
@@ -36,7 +37,7 @@ from pytest_queryguard import fixpatch
 from pytest_queryguard.detectors import RelationshipFinding
 from pytest_queryguard.events import CallSite
 from pytest_queryguard.findings import SourceFix
-from pytest_queryguard.messages import loader_option, loader_steps
+from pytest_queryguard.messages import loader_steps
 
 pytestmark = [
     pytest.mark.allow_nplusone,
@@ -75,6 +76,17 @@ class Case:
     final_newline: bool = True
     prefix: bytes = b""  # a BOM
     lone_cr: bool = False
+    reference: str = ""  # the class through its module: "models.Order"
+
+    @property
+    def ref(self) -> str:
+        """The code that names the query's class."""
+        return self.reference or self.entity
+
+    @property
+    def base(self) -> str:
+        """The name the class reference starts with, which must stay bound."""
+        return self.ref.split(".", 1)[0]
 
     @property
     def expect(self) -> bool | None:
@@ -102,7 +114,7 @@ class Case:
 
     def describe(self) -> str:
         return (
-            f"line {self.line}, {self.relationship} via {self.entity}, "
+            f"line {self.line}, {self.relationship} via {self.ref}, "
             f"features {self.features}, negative {self.negative}, "
             f"unsure {self.unsure}\n{self.source()}"
         )
@@ -172,7 +184,23 @@ def _header(rng: random.Random, case: Case, style: str) -> list[str]:
         "from app import models\nfrom app.models import Customer as Customer, Order",
         "from app.models import Customer, Order  # zażółć 😀",
     ]
-    if _pick(rng, 0.05):
+    if case.reference:
+        if case.base == "app":
+            lines.append("import app.models")
+        else:
+            lines += _block(
+                rng.choice(["from app import models", "import app.models as models"]),
+                0,
+            )
+        if _pick(rng, 0.8):
+            lines += _block(rng.choice(models), 0)
+        elif case.path:
+            # the chain names Customer on its own, which is not imported
+            case.negative.append("chain-class-not-imported")
+        if _pick(rng, 0.05):
+            case.negative.append("module-under-another-name")
+            lines.append(f"from app import helpers as {case.base}")
+    elif _pick(rng, 0.05):
         case.negative.append("class-under-another-name")
         lines.append(f"from app.models import Customer, Order, Item as {case.entity}")
     else:
@@ -206,11 +234,11 @@ def _module_noise(rng: random.Random, case: Case) -> list[str]:
         lines += [""] + _block(rng.choice(choices), 0)
     if _pick(rng, 0.04):
         case.negative.append("global-rebinding")
-        lines += ["", *_block(f"def reset():\n    global {case.entity}\n"
-                               f"    {case.entity} = None", 0)]  # fmt: skip
+        lines += ["", *_block(f"def reset():\n    global {case.base}\n"
+                               f"    {case.base} = None", 0)]  # fmt: skip
     if _pick(rng, 0.03):
         case.negative.append("module-level-match-capture")
-        lines += ["", *_block(f"match X:\n    case {case.entity}:\n        pass", 0)]
+        lines += ["", *_block(f"match X:\n    case {case.base}:\n        pass", 0)]
     return lines
 
 
@@ -236,7 +264,7 @@ def _body_noise(rng: random.Random, case: Case) -> list[str]:
         lines += _block(rng.choice(choices), 0)
     if _pick(rng, 0.04):
         case.negative.append("entity-rebound-in-the-function")
-        lines.append(f"{case.entity} = None")
+        lines.append(f"{case.base} = None")
     if _pick(rng, 0.04):
         case.negative.append("loader-rebound-in-the-function")
         lines.append(f"{_loaders(case)[-1]} = None")
@@ -254,6 +282,13 @@ def _chain(rng: random.Random, case: Case, style: str, multiline: bool) -> list[
         f".order_by({entity}.id)",
     ]
     parts = [rng.choice(filters) for _ in range(rng.randint(0, 2))]
+    if _pick(rng, 0.08):
+        # FOR UPDATE, GROUP BY and DISTINCT take a selectinload, not a joinedload
+        parts.append(
+            rng.choice([".with_for_update()", f".group_by({entity}.id)", ".distinct()"])
+        )
+        if "joinedload" in _loaders(case):
+            case.negative.append("joined-load-of-a-locked-or-grouped-query")
     first = case.path[0][0] if case.path else case.relationship
     options: list[tuple[str, str | None]] = [
         ("", None),
@@ -269,13 +304,21 @@ def _chain(rng: random.Random, case: Case, style: str, multiline: bool) -> list[
         (f".options(lazyload({first}))", "negative:option-for-the-relationship"),
         (".options(a()).options(b())", "negative:two-options-calls"),
     ]  # fmt: skip
+    # a loader whose relationship the code does not name: it may be this one
+    owner, _, attribute = first.partition(".")
+    unnamed = [
+        (".options(noload(REL))", "negative:loader-of-a-variable"),
+        (f".options(noload({owner}.RELATIONSHIP))", "negative:loader-of-a-constant"),
+        (f'.options(noload("{attribute}"))', "negative:loader-of-a-string"),
+        (f".options(selectinload(getattr({entity}, name)))", "negative:computed-attribute"),
+    ]  # fmt: skip
     if multiline:
         options += [
             (f".options(\n    selectinload({entity}.extra),\n)", None),
             (f".options(selectinload({entity}.extra)  # keep\n)", None),
             (f".options(\n    (selectinload({entity}.extra))\n)", "unsure:parenthesized-option"),
         ]  # fmt: skip
-    text, mark = rng.choice(options)
+    text, mark = rng.choice(unnamed if _pick(rng, 0.06) else options)
     if mark is not None:
         kind, _, reason = mark.partition(":")
         (case.negative if kind == "negative" else case.unsure).append(reason)
@@ -289,16 +332,17 @@ def _statement(
 ) -> tuple[list[str], list[int]]:
     """The parent query statement and the indexes of the lines it may report."""
     entity = case.entity
+    ref = case.ref
     if style == "select":
-        core = rng.choice(
-            [f"select({entity})", f"select( {entity} )", f"(select({entity}))"]
-        )
+        core = rng.choice([f"select({ref})", f"select( {ref} )", f"(select({ref}))"])
     else:
-        sessions = ["session", "db_session"] + (["self.session"] if method else [])
-        core = f"{rng.choice(sessions)}.query({entity})"
+        sessions = ["session", "db_session", "db"] + (
+            ["self.session", "self.db"] if method else []
+        )
+        core = f"{rng.choice(sessions)}.query({ref})"
     shape = rng.choice(
         ["assign", "return", "for", "parens", "backslash", "walrus", "same-line",
-         "await", "fstring", "negative"]
+         "await", "fstring", "variable", "negative"]
     )  # fmt: skip
     if shape == "await" and not asynchronous:
         shape = "assign"
@@ -326,7 +370,37 @@ def _statement(
         # 3.12 parses f-strings into exact positions; earlier versions too
         return [f'print(f"{{ {run(one_line)}.all() }}")'], [0]
     if shape == "await":
+        if style != "select":
+            # a Query is not awaitable: this is not what ran
+            case.negative.append("awaited-query")
         return [f"rows = (await {run(one_line)}).all()"], [0]
+    if shape == "variable":
+        if style != "select":
+            # a Query object runs through its own methods: never followed
+            case.negative.append("query-object-in-a-variable")
+            return [f"query = {one_line}", "rows = query.all()"], [1]
+        between = []
+        if _pick(rng, 0.15):
+            reason, between = rng.choice(
+                [
+                    ("statement-reassigned", ["statement = statement.limit(3)"]),
+                    ("statement-read-twice", ["print(statement)"]),
+                    ("statement-deleted", ["rows = session.scalars(statement)",
+                                           "del statement"]),
+                ]
+            )  # fmt: skip
+            case.negative.append(reason)
+        run_line = rng.choice(
+            [
+                f"rows = {run('statement')}.all()",
+                "rows = session.execute(statement).scalars().all()",
+                "for row in session.scalars(statement):",
+            ]
+        )
+        lines = [f"statement = {one_line}", *between, run_line]
+        if run_line.endswith(":"):
+            lines.append("    print(row)")
+        return lines, [len(between) + 1]
     if shape == "backslash":
         return ["rows = \\", f"    {run(one_line)}.all()"], [0, 1]
     if shape == "parens":
@@ -340,6 +414,44 @@ def _statement(
     other = (
         "select(Customer.id)" if style == "select" else "db_session.query(Customer.id)"
     )
+    if style == "select":
+        # the select is not the statement that runs, or not as it is
+        shapes = [
+            (
+                "in-a-union",
+                f"rows = session.execute(union_all({one_line}, other)).all()",
+            ),
+            ("in-an-exists", f"found = session.scalar(exists({one_line}).select())"),
+            (
+                "a-subquery",
+                f"rows = session.execute({one_line}.subquery().select()).all()",
+            ),
+            ("a-cte", f"rows = session.execute({one_line}.cte().select()).all()"),
+            ("a-helper", f"rows = session.scalars(paginate({one_line})).all()"),
+            (
+                "other-columns",
+                f"rows = session.execute({one_line}.with_only_columns({entity}.id)).all()",
+            ),
+            (
+                "insert-from-select",
+                f'session.execute(insert(Archive).from_select(["id"], {one_line}))',
+            ),
+            ("not-run-by-a-session", f"rows = repository.scalars({one_line}).all()"),
+            ("not-run", f"subquery = {one_line}.scalar_subquery()"),
+        ]
+    else:
+        shapes = [
+            ("other-entities", f"rows = {one_line}.with_entities({entity}.id).all()"),
+            ("its-statement", f"rows = session.execute({one_line}.statement).all()"),
+            ("a-helper", f"rows = paginate({one_line})"),
+            ("a-union", f"rows = {one_line}.union_all(others).all()"),
+            ("a-subquery", f"subquery = {one_line}.subquery()"),
+            ("not-run", f"return {one_line}"),
+        ]
+    if _pick(rng, 0.5):
+        reason, line = rng.choice(shapes)
+        case.negative.append(reason)
+        return [line], [0]
     reason, line = rng.choice(
         [
             ("two-statements", f"n = 0; rows = {run(one_line)}.all()"),
@@ -358,6 +470,9 @@ def generate(rng: random.Random) -> Case:
     case = Case([], 0, entity, relationship, scalar, path)
     style = rng.choice(["select", "query"])
     case.features.append(style)
+    if _pick(rng, 0.3):
+        case.reference = rng.choice([f"models.{entity}", f"app.models.{entity}"])
+        case.features.append("through-a-module")
     lines = _header(rng, case, style)
     lines += _module_noise(rng, case)
     wrapper = rng.choice(["def", "async", "method", "static", "nested", "decorated"])
@@ -367,7 +482,7 @@ def generate(rng: random.Random) -> Case:
     params = rng.choice(["session", "session: 'Session'", "session, *args, **kwargs"])
     if _pick(rng, 0.04):
         case.negative.append("entity-is-a-parameter")
-        params = f"{entity}, {params}"
+        params = f"{case.base}, {params}"
     type_params = ""
     if sys.version_info >= (3, 12) and _pick(rng, 0.1):
         type_params = "[T]"
@@ -487,11 +602,24 @@ def _undo(tree: ast.Module, option: str, loaders: set[str]) -> tuple[str, int, i
     return ast.dump(tree), undo.count, imports
 
 
-def _is_query_call(node: ast.AST, entity: str) -> bool:
+def _option(finding: RelationshipFinding, reference: str) -> str:
+    """The loader option, with the query's class named as the query names it."""
+    parts = []
+    for loader, label in loader_steps(finding):
+        owner, _, attribute = label.partition(".")
+        if owner == finding.parent_root:
+            owner = reference
+        parts.append(f"{loader}({owner}.{attribute})")
+    return ".".join(parts)
+
+
+def _is_query_call(node: ast.AST, reference: str) -> bool:
     if not (isinstance(node, ast.Call) and len(node.args) == 1):
         return False
     arg = node.args[0]
-    if not (isinstance(arg, ast.Name) and arg.id == entity):
+    if not (
+        isinstance(arg, (ast.Name, ast.Attribute)) and ast.unparse(arg) == reference
+    ):
         return False
     func = node.func
     if isinstance(func, ast.Name):
@@ -499,7 +627,7 @@ def _is_query_call(node: ast.AST, entity: str) -> bool:
     return isinstance(func, ast.Attribute) and func.attr == "query"
 
 
-def _option_receiver(tree: ast.Module, option: str, entity: str) -> list[int]:
+def _option_receiver(tree: ast.Module, option: str, reference: str) -> list[int]:
     """The lines of the query calls that the new option is chained to."""
     found: list[int] = []
     for node in ast.walk(tree):
@@ -511,7 +639,7 @@ def _option_receiver(tree: ast.Module, option: str, entity: str) -> list[int]:
         ):
             continue
         current: ast.AST = node.func.value
-        while not _is_query_call(current, entity):
+        while not _is_query_call(current, reference):
             if not (
                 isinstance(current, ast.Call)
                 and isinstance(current.func, ast.Attribute)
@@ -570,7 +698,17 @@ def check(case: Case, root: Path, index: int, use_git: bool) -> SourceFix | None
     assert case.expect is not False, f"a patch\n{fix.diff}\n" + case.describe()
     assert fix.file == f"app/views{index}.py"
     query_line = _query_line(ast.parse(source), case)  # the generator writes valid code
-    verify(root, source, finding, fix, query_line, index, use_git, case.describe())
+    verify(
+        root,
+        source,
+        finding,
+        fix,
+        query_line,
+        index,
+        use_git,
+        case.describe(),
+        case.ref,
+    )
     return fix
 
 
@@ -583,8 +721,13 @@ def verify(
     index: int,
     use_git: bool,
     context: str,
+    reference: str | None = None,
 ) -> None:
-    """The invariants of a patch made for ``source``."""
+    """The invariants of a patch made for ``source``.
+
+    ``reference`` names the query's class as the query does (``models.Order``);
+    by default its name.
+    """
     original = ast.parse(source)
     by_insertions = _apply_insertions(source, fix)
     # (a) git applies it, to the same text as its insertions
@@ -597,14 +740,15 @@ def verify(
     else:
         assert "\r" not in by_insertions
     # (c) the AST changed by exactly the option, on the query, and the imports
-    option = loader_option(finding)
+    entity = finding.parent_root
+    assert entity is not None
+    reference = reference or entity
+    option = _option(finding, reference)
     option_dump = ast.dump(ast.parse(option, mode="eval").body)
     loaders = {loader for loader, _ in loader_steps(finding)}
     # the new import lines all go above the query
     added = by_insertions.count("\n") - source.count("\n")
-    entity = finding.parent_root
-    assert entity is not None
-    receivers = _option_receiver(patched, option_dump, entity)
+    receivers = _option_receiver(patched, option_dump, reference)
     # the module may have the same option on another query already
     assert query_line + added in receivers, f"{fix.diff}\n{context}"
     missing = loaders - _imported(original)
@@ -627,9 +771,7 @@ def _imported(tree: ast.Module) -> set[str]:
 
 def _query_line(tree: ast.Module, case: Case) -> int:
     """The line of the module's one query call of the case's class."""
-    lines = [
-        node.lineno for node in ast.walk(tree) if _is_query_call(node, case.entity)
-    ]
+    lines = [node.lineno for node in ast.walk(tree) if _is_query_call(node, case.ref)]
     assert len(lines) == 1, case.describe()
     return lines[0]
 
@@ -845,6 +987,7 @@ def test_every_line_of_a_generated_module_is_safe(tmp_path: Path) -> None:
                     case.relationship,
                     case.scalar,
                     case.path,
+                    reference=case.reference,
                 ),
                 str(file),
             )
@@ -852,7 +995,7 @@ def test_every_line_of_a_generated_module_is_safe(tmp_path: Path) -> None:
             if fix is None:
                 continue
             patched = _apply_insertions(source, fix)
-            option = ast.dump(ast.parse(loader_option(finding), mode="eval").body)
+            option = ast.dump(ast.parse(_option(finding, case.ref), mode="eval").body)
             loaders = {loader for loader, _ in loader_steps(finding)}
             before = _undo(ast.parse(source), option, loaders)
             after = _undo(ast.parse(patched), option, loaders)

@@ -7,8 +7,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The JSON output of the experimental trend
+  (`python -m pytest_queryguard.trend --format json`) starts with
+  `"format": 1`, like the other JSON files, and its keys are documented in
+  [CI](docs/ci.md#query-counts-over-the-last-runs).
+- `--no-queryguard-strict` and `--no-queryguard-show-patch` turn
+  `queryguard_strict` and `queryguard_show_patch` off for one run, as
+  `--no-queryguard-index-check` does for the index check; of a flag and its
+  `--no-` form, the last one wins. An invalid `queryguard_strict` or
+  `queryguard_show_patch` value in the ini file is now reported even when a
+  flag overrides it, as for `queryguard_index_check`.
+
+### Changed
+
+- The accuracy corpus has 57 more scenarios (254): inheritance (single,
+  concrete, `selectin_polymorphic`, polymorphic collections), association
+  proxies, `deferred_group`, `query_expression`, `WriteOnlyMapped`,
+  `viewonly` relationships, composite keys, `lazy="immediate"`, `"subquery"`
+  and `"noload"`, `populate_existing`, the identity map, `merge(load=False)`,
+  `bulk_save_objects`, dataclass and imperative mappings, and shapes
+  reported to other N+1 tools. The release gate now needs 250 scenarios and a
+  column-load recall of 90%. See docs/accuracy.md.
+- With `queryguard_strict`, a test whose `queryguard_ignore` or
+  `allow_nplusone` marker has invalid arguments no longer leaves its
+  collector measuring for the rest of the session: the marker error now
+  fails the test before measurement starts.
+- A relationship-load finding no longer names, as the place its parents were
+  loaded, a line of an earlier test that ran the same statement object when
+  the rows became instances from a result made outside the measurement (in a
+  fixture).
+- The SARIF file is written when a finding's path is not valid UTF-8 (a lone
+  surrogate in the file name), as the baseline file already was: the location
+  URI carries the file name's bytes percent-encoded and the file stays valid
+  UTF-8. Before, the whole file failed to write.
+- `--queryguard-write-patch` and `--queryguard-show-patch` handle a file name
+  that is not valid UTF-8: its diff headers quote the name as git does
+  (`--- "a/caf\351/views.py"`), which `git apply` reads back to the same
+  bytes. Before, the patch file failed to write.
+- A column load builds the set of the mapper's column names only for a
+  deferred column, the one cause that reads it.
+- The FastAPI recipes and examples explain the `StarletteDeprecationWarning`
+  of Starlette 1.2 and later (its test client finds `httpx` without `httpx2`):
+  their `filterwarnings` line, which works with every Starlette version, must
+  come after `error`, and installing `httpx2` as well removes the warning.
+  A test checks that the documented line quiets the warning.
+- The baseline, budget, JSON, SARIF and patch files are written with the
+  permissions of the file they replace, or those of the umask for a new file,
+  not owner-only (0600) as the temporary file they are written through.
+
 ### Fixed
 
+- In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
+  replaced with its own error (Pydantic's `from_attributes`, FastAPI's
+  `response_model`), or that the code swallowed before the test failed on
+  its own, is now recorded: SARIF, `--queryguard-json` and the summary of
+  findings in several tests include it, and the report is shown in a
+  `queryguard` section of the failed test. The test keeps failing with its
+  own error. Before, the analysis at the end of the test did not run.
+- The fix patch (`--queryguard-show-patch`, `--queryguard-write-patch`,
+  SARIF `fixes`) now covers three common shapes of the parent query that got
+  only the `fix:` hint: a class named through its module
+  (`select(models.Order)`, patched as `joinedload(models.Order.customer)`); a
+  statement built on an earlier line of the function and run through a
+  variable (`statement = select(Order)` then `session.scalars(statement)`),
+  patched where it is built when the variable is assigned once and read
+  only there; and `session.execute(select(Order)).scalars()`, whose
+  `.scalars()` of the result was taken for a second query. Every other shape
+  still gets no patch.
+- The fix patch no longer adds the loader to a statement it would not fix
+  or would break. The `select(Order)` (or `session.query(Order)`) of the
+  parent line must now be the statement the line runs, with only methods that
+  keep its entities: not one inside `union_all()`, `exists()`, a subquery, a
+  CTE, an `insert().from_select()` or another statement, passed to a helper,
+  turned into other columns (`with_only_columns`, `with_entities`), a union
+  or `from_statement`, nor run by a helper (`repository.scalars(...)`).
+  A session is now also recognized by the name `db` (`db.scalars(...)`,
+  `self.db`, `db.query(Order)`) or by a parameter annotated with a session
+  type (`conn: Session`, `"AsyncSession"`,
+  `Annotated[Session, Depends(get_db)]`), on the parent line and for a
+  statement in a variable; SQLModel's `session.exec()` runs a statement. An
+  existing `.options(...)` must name every relationship it loads
+  (`noload(REL)` or `noload("customer")` may be the relationship of the patch,
+  which SQLAlchemy rejects as a conflicting loader), and a `joinedload` no
+  longer goes on the parent query of a statement with `with_for_update()` (PostgreSQL refuses
+  `FOR UPDATE` on an outer join's nullable side), `group_by()`, `having()`,
+  `distinct()` or a prefix or suffix. These get the `fix:` hint only.
+- The cartesian-load check now sees collections joined by the mapping.
+  Two collections with `relationship(lazy="joined")` make one row per pair
+  of their items on every `select()` of the class, as two `joinedload()`
+  options do, but the check read only the options of the query and missed
+  them. It now follows the loader strategies of the mapping for each entity
+  a SELECT loads, the way SQLAlchemy applies them: an option or a wildcard
+  (`lazyload("*")`) of the query wins, a lazy relationship is not followed,
+  and a self-referential one only as deep as its `join_depth`. Like the
+  rest of the check, it warns by default.
+- The unused-columns check (experimental) no longer reports a query that
+  pins the whole primary key of the class with `=` (`session.get()`, a
+  detail page's `where(Article.id == id)`): it returns one row, so
+  `load_only()` would save one row's width. A group of the class and the
+  function with any query that can return more rows is still reported.
+- The column-load report no longer says that subclass columns were expired
+  by `commit()` or `expire()`. A query of the base class of a joined- or
+  single-table hierarchy (`select(Employee)`) leaves the subclass columns out,
+  and SQLAlchemy loads them per instance, which was reported as
+  `Engineer (expired)` with the `expire_on_commit=False` hint, for a test that
+  committed nothing. It is now its own cause, labelled
+  `Engineer (polymorphic)`, with the class the query selected and
+  `selectin_polymorphic` (`with_polymorphic` for single-table inheritance)
+  or `polymorphic_load` as the fix; an instance loaded as its own class
+  keeps the expired cause. The finding and its kind are
+  unchanged; an ignore pattern or baseline entry with the old label must be
+  updated.
+- The unused-eager-load check no longer reports an eager load of a
+  subclass's relationship when the data has no rows of that subclass
+  (`with_polymorphic(Employee, [Manager])` with
+  `selectinload(... Manager.reports)` and no managers): reads of the base
+  class's rows counted as reads of instances that could have had the
+  relationship.
+- The package metadata lists Python 3.15 (`Programming Language :: Python ::
+  3.15`). CI has tested 3.15 since 0.8.0, but the classifier was missing.
+- `python -m pytest_queryguard.mcp --help` prints a usage message. Before, it
+  started the server, which then waited for JSON-RPC on the terminal (or, with
+  stdin closed, exited silently). The server takes no arguments, and an
+  unknown one is now an error instead of being ignored.
+- The static check (`python -m pytest_queryguard.lint`) no longer stops
+  with an `AttributeError` on a dict comprehension that unpacks
+  (`{**d for d in rows}`, new in Python 3.15).
 - Strict mode no longer drops a query or database-time budget failure: a
   budget the test (`max_queries`/`max_db_time` marker,
   `queryguard_max_queries`, the budget file) or a `max_queries()` block
@@ -19,6 +145,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stopped at the access under "stale ignores": the block may be for a
   finding after the access, which the test never reached. Its
   `queryguard_ignore` patterns were already left out the same way.
+- `python -m pytest_queryguard.compare` and `python -m pytest_queryguard.trend`
+  report a `--queryguard-json` file with a malformed test entry (no
+  statement count, a finding without a kind or label) as not a
+  pytest-queryguard JSON file, exit status 2, instead of a traceback; with
+  `--skip-unreadable`, as the GitHub Action runs the trend, such a file is
+  left out; so is JSON nested too deeply to parse. The MCP server's
+  `compare` tool returns it as a tool error. A file with a UTF-8 byte order
+  mark is read.
+- `compare`, `trend` and `lint` report an `--output` file that cannot be
+  written (a missing directory, a directory) with a message and exit
+  status 2 instead of a traceback.
+- `python -m pytest_queryguard.lint` reads a file with a byte order mark or a
+  PEP 263 coding declaration as Python does; it skipped it before. A file
+  named twice (`app app/models.py`) is checked once, not reported twice.
+- The MCP server no longer stops on a line that is not UTF-8 or JSON nested
+  too deeply for Python's parser (both now a parse error), or on a request
+  with a lone surrogate escape such as `"\ud800"`, which it could not write
+  back; `params` that are not an object (`[]` and `0` included) get
+  `-32602 Invalid params` instead of `-32600 Invalid Request` or being
+  taken as no params.
+
+### Documentation
+
+- API-freeze audit before 1.0: the [stability policy](docs/stability.md)
+  now states the naming, value and unit conventions of the public options
+  and files (every time in seconds; `0` turns a threshold off in an ini
+  option, `None` in Python; `format` versus the baseline's `version` key),
+  the two defaults of `app.Settings` that differ from the plugin on purpose,
+  a table of deprecated names with their removal release, the exit status
+  of the plugin and the tools, and what is not public (environment
+  variables, submodule exceptions, the object `ignore()` returns).
+- `llms.txt` lists every ini option and flag: `queryguard_cartesian_load`,
+  `queryguard_strict`, `queryguard_stack_depth`, `queryguard_budgets`,
+  `queryguard_max_queries`, `--queryguard-strict`, `--queryguard-budgets`,
+  `--queryguard-update-budgets` and `--queryguard-json` were missing.
+- New recipe, docs/recipes-test-transaction.md: a session per request in a
+  test transaction. A test that hands every
+  request one shared `Session` makes the requests one unit of work and gets
+  repeated-statement findings for endpoints without a loop; the recipe gives
+  each request its own `Session` bound to the test's connection with
+  `join_transaction_mode="create_savepoint"`, so the test's transaction is
+  still rolled back and, with `queryguard_scope = session`, each request is
+  counted on its own.
+- New recipes: GraphQL resolvers, docs/recipes-graphql.md (a per-object
+  resolver, fixed with `selectinload` or a data loader), and background tasks
+  in tests, docs/recipes-background-tasks.md (tasks that `TestClient` or an
+  eager task queue runs in the test body).
+- Ignoring findings: an N+1 made inside an installed library is reported at
+  the line of your code that called it, because frames under `site-packages`
+  are never call sites. `file=`, `function=` and `stack=` patterns that name
+  the library match nothing; name the calling line or use an `ignore()` block
+  (docs/ignoring.md, "An N+1 inside an installed library").
+- FAQ: the `--queryguard-json` file is the integration point for tools that
+  want every finding; there is no per-finding hook in the test run.
+- Comparison: adds django-nplus1, django-query-doctor and
+  n-plus-one-sniffer (read, not run), and a section on problems users report
+  with other N+1 tools that pytest-queryguard avoids, with the issues as
+  evidence.
+
+### Internal
+
+- `tests/test_public_api.py` also snapshots the keys and format numbers of
+  the files the plugin writes (`--queryguard-json`, baseline, budget file,
+  SARIF rule ids, fingerprint key and properties), the finding kinds, the
+  arguments of the compare, trend and static-check tools (with their
+  defaults and choices), the trend's JSON keys, the compare
+  marker, the GitHub Action's inputs, defaults and outputs, the MCP tools and
+  their arguments, the deprecated names with their removal release, and the
+  defaults of `app.Settings`.
+- The flag that strict mode puts on its `NPlusOneDetected` is now the private
+  attribute `_queryguard_strict`; the undocumented `queryguard_strict`
+  attribute looked public.
+- `scripts/release_gate.py contents` checks the wheel's METADATA against the
+  repository: the Python classifiers are the versions `ci.yml` tests and
+  `Requires-Python` the oldest of them, the `pytest` and `sqlalchemy` lower
+  bounds are the versions the release gate's oldest-versions job installs,
+  `Framework :: Pytest`, `Typing :: Typed`, the license file, a Markdown long
+  description and the Homepage, Documentation, Changelog and Issues URLs are
+  there, and the Development Status is `5 - Production/Stable` exactly for a
+  final release from 1.0.0 on. The release workflow runs the check on the
+  files it publishes. `release_gate.py install` also runs `--help` of
+  `python -m pytest_queryguard.lint`, `.trend`, `.compare` and `.mcp`.
+- A `record_queries()` or `max_queries()` block, in the test or in any other
+  thread, no longer takes from the test where its objects were loaded. Any
+  such block starting or ending made the objects loaded before it lose their
+  origin, so strict mode did not raise at a lazy load of those objects (the
+  N+1 failed only at the end of the test) and the report left out "parents
+  loaded at". A block still uses only the origins noted inside it.
+- An attribute read of a mapped object in another thread while the last
+  session with `queryguard_unused_eager_load` or `queryguard_unused_columns`
+  ends (pytest's own end, or a `pytester` run) no longer raises
+  `TypeError: 'NoneType' object is not callable` into that thread.
 
 ## [0.8.0] - 2026-11-06
 

@@ -14,9 +14,14 @@ lazy relationship runs a SELECT of its own. Inside one statement, two joined
 collections are a product when neither is on the path of the other; the finding
 names the topmost collection of each of the two branches. ``joinedload(A.bs)
 .joinedload(B.cs)`` is a chain whose rows grow with the number of ``cs``, not a
-product, and is left alone. Loader strategies set on the mapping
-(``relationship(lazy="joined")``) are not options of the query and are not
-seen, except on a ``defaultload()`` step.
+product, and is left alone.
+
+Loader strategies set on the mapping (``relationship(lazy="joined")``) join
+as an option would, so the relationships of each entity the SELECT loads are
+followed the way SQLAlchemy does: a strategy of the mapping counts where no
+option names the relationship and no wildcard (``lazyload("*")``) covers it,
+through eager steps only (not into a lazy load that may never run), and not
+into a mapper already on the path (a cycle) unless ``join_depth`` allows it.
 """
 
 from __future__ import annotations
@@ -24,8 +29,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import event
+from sqlalchemy.orm import Mapper
+from sqlalchemy.sql import Select
+
 from . import blocks, collector, listeners
-from ._compat import WITH_OPTIONS
+from ._compat import (
+    ANNOTATIONS,
+    COMPILE_OPTIONS,
+    ELEMENT_PATH,
+    ENABLE_EAGERLOADS,
+    LOAD_CONTEXT,
+    PARENT_ENTITY,
+    RAW_COLUMNS,
+    RELATIONSHIP_TOKEN,
+    WITH_OPTIONS,
+)
 from .blocks import IgnoreBlock
 from .eager import LOADERS, loader_paths
 from .events import CallSite, CartesianLoadEvent
@@ -40,6 +59,23 @@ Path_ = tuple[tuple[str, str], ...]
 # steps that load nothing: their children are never loaded either
 _NOT_LOADED = frozenset(("noload", "raise", "raise_on_sql"))
 _OPTION_NAMES = {**LOADERS, "select": "lazyload"}
+# strategies that load with the query (or right after it): the strategies of
+# the mapping below them run too, so they are followed
+_EAGER = frozenset(LOADERS)
+# deeper than this, a mapping's chain of eager loads is not followed
+_MAX_DEPTH = 8
+# the result for a statement without options, by its entities
+_by_entities: dict[tuple[Any, ...], tuple[str, tuple[Path_, ...]] | None] = {}
+# the relationships each mapper's mapping loads eagerly (_eager_of)
+_eager: dict[Any, tuple[Any, ...]] = {}
+_MAX_CACHED = 1024
+
+
+def _forget_mappings() -> None:
+    """Drop what was worked out from the mappings: SQLAlchemy configured new
+    mappers, and a backref may have added a relationship to a known one."""
+    _by_entities.clear()
+    _eager.clear()
 
 
 def _effective(strategy: str | None, prop: Any) -> str:
@@ -47,17 +83,133 @@ def _effective(strategy: str | None, prop: Any) -> str:
     if strategy is not None:
         return strategy
     lazy = getattr(prop, "lazy", "select")
-    return lazy if isinstance(lazy, str) else "select"
+    if isinstance(lazy, str):
+        return lazy
+    # the old spellings: lazy=False is "joined", None "noload", True "select"
+    return _OLD_LAZY.get(lazy, "select")
 
 
-def _collections(options: Any) -> tuple[str, tuple[Path_, ...]] | None:
-    """(root class, collection paths) of the first product among the options."""
+_OLD_LAZY = {False: "joined", None: "noload", True: "select"}
+
+
+def _roots(statement: Any) -> tuple[Any, ...]:
+    """The entities (Mapper or AliasedInsp) whose rows a SELECT loads.
+
+    Columns of an entity (``select(A.id)``) load no instances and are left
+    out, and so is everything when the query turns eager loads off.
+    ``from_statement()`` is no ``Select``: SQLAlchemy adds no joins to it.
+    """
+    if not isinstance(statement, Select):
+        return ()
+    if not getattr(getattr(statement, COMPILE_OPTIONS, None), ENABLE_EAGERLOADS, True):
+        return ()
+    roots: list[Any] = []
+    for column in getattr(statement, RAW_COLUMNS, ()):
+        annotations = getattr(column, ANNOTATIONS, None)
+        entity = annotations.get(PARENT_ENTITY) if annotations else None
+        # an entity is its table or alias; a column of it is no selectable
+        if entity is not None and column.is_selectable and entity not in roots:
+            roots.append(entity)
+    return tuple(roots)
+
+
+def _wildcards(options: Any) -> tuple[bool, set[tuple[Any, ...]]]:
+    """Where a relationship wildcard (``lazyload("*")``) sets the strategy.
+
+    (whether one applies to the entities themselves, the keys of the
+    relationships below whose own relationships one applies to)
+    """
+    top = False
+    below: set[tuple[Any, ...]] = set()
+    for option in options:
+        elements = getattr(option, LOAD_CONTEXT, None)
+        if elements is None:  # an unbound wildcard: its path is the token
+            token = getattr(option, ELEMENT_PATH, None)
+            if isinstance(token, tuple) and token and _is_token(token[-1]):
+                top = True
+            continue
+        for element in elements:
+            path: Any = getattr(getattr(element, ELEMENT_PATH, None), "path", ())
+            if len(path) >= 2 and _is_token(path[-1]):
+                below.add((path[0], *path[1:-1:2]))
+    return top, below
+
+
+def _is_token(step: Any) -> bool:
+    return isinstance(step, str) and step.startswith(RELATIONSHIP_TOKEN)
+
+
+def _eager_of(mapper: Any) -> tuple[Any, ...]:
+    """The relationships of ``mapper`` that its mapping loads eagerly."""
+    found = _eager.get(mapper)
+    if found is None:
+        if len(_eager) >= _MAX_CACHED:
+            _eager.clear()
+        found = _eager[mapper] = tuple(
+            p for p in mapper.relationships if _effective(None, p) in _EAGER
+        )
+    return found
+
+
+def _mapping_defaults(
+    root: Any,
+    strategies: dict[tuple[Any, ...], tuple[str, str | None]],
+    roots: dict[tuple[Any, ...], Any],
+    wildcards: set[tuple[Any, ...]],
+) -> None:
+    """Add the relationships that the mapping loads eagerly below ``root``.
+
+    Mirrors SQLAlchemy's loaders: an option or a wildcard wins over the
+    mapping; a strategy of the mapping is followed only from an eager step,
+    and stops at a mapper already on the path unless the relationship has a
+    ``join_depth``, which then limits the depth.
+    """
+    # the relationships the options name, by the key of their parent
+    named: dict[tuple[Any, ...], list[Any]] = {}
+    for key in strategies:
+        named.setdefault(key[:-1], []).append(key[-1])
+    stack: list[tuple[tuple[Any, ...], tuple[Any, ...]]] = [((root,), (root.mapper,))]
+    while stack:
+        key, mappers = stack.pop()
+        # a wildcard sets every relationship at this level that no option
+        # names: the mapping's strategies do not apply there
+        props = named.get(key, [])
+        if key not in wildcards:
+            props = [*props, *(p for p in _eager_of(mappers[-1]) if p not in props)]
+        for prop in props:
+            child = (*key, prop)
+            if child in strategies:
+                name = strategies[child][0]
+            else:
+                name = _effective(None, prop)
+                depth = len(child) - 1
+                if prop.join_depth:
+                    if depth > prop.join_depth:
+                        continue
+                elif any(m.isa(prop.mapper) for m in mappers):
+                    continue
+                strategies[child] = (name, None)
+                roots[child] = root
+            if name in _EAGER and len(child) <= _MAX_DEPTH:
+                stack.append((child, (*mappers, prop.mapper)))
+
+
+def _collections(
+    options: Any, entities: tuple[Any, ...] = ()
+) -> tuple[str, tuple[Path_, ...]] | None:
+    """(root class, collection paths) of the first product among the options
+    and, for each of ``entities``, the eager loads of the mapping."""
     strategies: dict[tuple[Any, ...], tuple[str, str | None]] = {}
     roots: dict[tuple[Any, ...], Any] = {}
     for path, strategy in loader_paths(options):
         key = (path[0], *path[1::2])
         strategies[key] = (_effective(strategy, path[-2]), strategy)
         roots[key] = path[0]
+    if entities:
+        top, below = _wildcards(options)
+        for root in entities:
+            covered = below | {(root,)} if top else below
+            _mapping_defaults(root, strategies, roots, covered)
     # joined collections by the statement that loads them: the root mapper
     # and the prefix up to the last step that is not joined
     statements: dict[tuple[Any, ...], list[tuple[Any, ...]]] = {}
@@ -127,11 +279,23 @@ def _check(
     if _broken:
         return
     try:
-        # most statements have no loader options: one attribute read, then out
-        options = getattr(statement, WITH_OPTIONS, ())
-        if not options or not getattr(statement, "is_select", False):
+        if not getattr(statement, "is_select", False):
             return
-        found = _collections(options)
+        options = getattr(statement, WITH_OPTIONS, ())
+        entities = _roots(statement)
+        if options:
+            found = _collections(options, entities)
+        elif not entities:
+            return
+        else:
+            # most statements have no loader options: what the mapping
+            # loads depends on the entities only, worked out once
+            try:
+                found = _by_entities[entities]
+            except KeyError:
+                if len(_by_entities) >= _MAX_CACHED:
+                    _by_entities.clear()
+                found = _by_entities[entities] = _collections((), entities)
         if found is None:
             return
         load = CartesianLoadEvent(found[1], found[0], site, ignores)
@@ -165,6 +329,7 @@ def enable() -> None:
     _enabled += 1
     if _enabled == 1:
         listeners.cartesian_check = _check
+        event.listen(Mapper, "after_configured", _forget_mappings)
 
 
 def disable() -> None:
@@ -174,6 +339,8 @@ def disable() -> None:
     _enabled -= 1
     if _enabled == 0:
         listeners.cartesian_check = None
+        event.remove(Mapper, "after_configured", _forget_mappings)
+        _forget_mappings()
 
 
 def label(collections: tuple[Path_, ...]) -> str:

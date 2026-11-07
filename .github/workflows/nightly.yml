@@ -15,6 +15,7 @@ jobs:
   upstream-dev:
     name: "allowed to fail: ${{ matrix.name }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -28,8 +29,10 @@ jobs:
             python-version: "3.13"
             sqlalchemy: stable
             pytest: pre
-          - name: Python 3.15 (pre-release interpreter)
-            python-version: "3.15"
+          # uv downloads a pre-release interpreter when the version is named
+          # exactly, not as a range.
+          - name: Python 3.16 (pre-release interpreter)
+            python-version: "3.16"
             sqlalchemy: stable
             pytest: stable
     steps:

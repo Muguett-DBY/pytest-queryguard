@@ -78,7 +78,14 @@ A group is reported when all of these hold:
   key, foreign keys and other columns of relationships, the discriminator,
   the version counter and the columns of a `composite()` count as read;
 - some attribute of some of its instances was read, so the code does look at
-  these instances through attribute access.
+  these instances through attribute access;
+- some query of the group can return more than one row. A query whose
+  `WHERE` pins every primary key column of the class with `=` (a detail page's
+  `select(Article).where(Article.id == id)`, `session.get()`, `filter_by(id=...)`)
+  returns at most one row, so `load_only()` would save one row's width. A
+  lookup per item is reported by the repeated-statement rule instead, and the
+  batched query that fixes it is checked here. A condition on an aliased copy
+  of the table, an `OR` or a range does not count as pinning.
 
 The thresholds are constants, not options, while the check is experimental.
 

@@ -31,9 +31,15 @@ empty), `app/db.py`, `app/models.py`, `app/main.py`, `tests/conftest.py`,
 
 `pytest.ini` puts the project directory on `sys.path`, so that the tests can
 `import app` (see [getting started](getting-started.md)). The `filterwarnings`
-line hides a Starlette deprecation warning about its test client and `httpx`,
-which is not about pytest-queryguard; leave it out if your Starlette does not
-print it:
+line hides a Starlette warning about its test client, which is not about
+pytest-queryguard. Starlette 1.2 and later prefer the `httpx2` package for
+`TestClient`, and warn (`StarletteDeprecationWarning`, a `UserWarning`) when
+they find only `httpx`. Installing `httpx2` as well removes the warning at its
+source; keep `httpx`, which the async tests below import and which Starlette
+before 1.2 uses. On a Starlette that does not warn, the line matches nothing.
+With `filterwarnings = error`, put `error` before this line, since a later line
+takes precedence; `-W error` on the command line overrides every line of
+`pytest.ini`, this one included:
 
 ```ini
 [pytest]
@@ -412,3 +418,10 @@ and does not change). Other ways out: write one request per test with
 `@pytest.mark.queryguard_ignore` (see [Ignoring findings](ignoring.md)). A
 `with max_queries(4):` around each request does not help: it checks its own
 block, and the repeated-statement rule still looks at the whole test.
+
+If the override hands every request the test's own `Session` (to keep the
+test's transaction), `queryguard_scope = session` does not help, because all
+requests are then one `Session`.
+[A session per request in a test transaction](recipes-test-transaction.md)
+shows an override that gives each request its own `Session` in the same
+transaction.

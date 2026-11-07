@@ -633,3 +633,87 @@ def test_every_ignorable_kind_has_a_sarif_rule() -> None:
     assert sarif.rule_id("unused-eager-load") in {
         sarif.rule_id(kind) for kind in sarif.KINDS
     }
+
+
+INHERITANCE_HEAD = """
+from sqlalchemy import ForeignKey, create_engine, select
+from sqlalchemy.orm import (
+    DeclarativeBase, Mapped, Session, mapped_column, relationship, selectinload,
+    with_polymorphic,
+)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Employee(Base):
+    __tablename__ = "employee"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    type: Mapped[str]
+    name: Mapped[str]
+    manager_id: Mapped[int | None] = mapped_column(ForeignKey("manager.id"))
+    __mapper_args__ = {"polymorphic_on": "type", "polymorphic_identity": "employee"}
+
+
+class Manager(Employee):
+    __tablename__ = "manager"
+    id: Mapped[int] = mapped_column(ForeignKey("employee.id"), primary_key=True)
+    reports: Mapped[list[Employee]] = relationship(
+        foreign_keys=[Employee.manager_id],
+        primaryjoin="Employee.manager_id == Manager.id",
+    )
+    __mapper_args__ = {
+        "polymorphic_identity": "manager",
+        "inherit_condition": id == Employee.id,
+    }
+
+
+def staff_session(managers):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = Session(engine)
+    session.add_all(Employee(name=f"e{i}") for i in range(4))
+    session.add_all(Manager(name=f"m{i}") for i in range(managers))
+    session.commit()
+    return session
+
+
+def org_chart(session, read_reports):
+    staff = with_polymorphic(Employee, [Manager])
+    stmt = select(staff).options(selectinload(staff.Manager.reports))
+    chart = {}
+    for e in session.scalars(stmt):
+        reports = e.reports if read_reports and isinstance(e, Manager) else []
+        chart[e.name] = [r.name for r in reports]
+    return chart
+"""
+
+
+def test_a_subclass_relationship_without_subclass_rows_is_no_finding(
+    pytester: pytest.Pytester,
+) -> None:
+    # The base class's rows were read, but no instance had Manager.reports
+    # to read: like a query that returns no rows (nplusone #36).
+    body = """
+def test_it():
+    assert len(org_chart(staff_session(managers=0), read_reports=True)) == 4
+"""
+    run(pytester, body, *ON, head=INHERITANCE_HEAD).assert_outcomes(passed=1)
+
+
+def test_a_subclass_relationship_read_by_no_subclass_row_is_reported(
+    pytester: pytest.Pytester,
+) -> None:
+    body = """
+def test_it():
+    assert len(org_chart(staff_session(managers=2), read_reports=False)) == 6
+"""
+    result = run(pytester, body, *ON, head=INHERITANCE_HEAD)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "*Manager.reports was loaded with selectinload and never read*",
+            "*first at test_app.py:*in org_chart*",
+        ]
+    )

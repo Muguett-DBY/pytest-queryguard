@@ -67,6 +67,7 @@ write a pattern with a wildcard.
 | `Order.customer was lazy-loaded 50 times` | `relationship-load` | `Order.customer` | `joinedload` (many-to-one) or `selectinload` (collection) on the query that loaded the parents |
 | `the same statement ran 7 times` | `repeated-statement` | the normalized SQL, on the `kind:` line | one query with `WHERE id IN (...)`, or a join, instead of a loop |
 | `Customer had its columns reloaded 50 times for 50 instances, after commit(), ...` | `column-load` | `Customer (expired)` | `expire_on_commit=False`, or load the objects again with one query |
+| `Engineer loaded its subclass columns on its own 50 times ...` | `column-load` | `Engineer (polymorphic)` | `selectin_polymorphic(Employee, [Engineer])` or `with_polymorphic` on the query, or `polymorphic_load` on the mapping |
 | `Customer.name was loaded on its own 50 times for 50 instances (deferred column)` | `column-load` | `Customer.name` | `undefer(Customer.name)`, or drop `defer()` / `load_only()` |
 | `the same INSERT ran 6 times, one row at a time` (opt-in) | `write-loop` | the normalized `INSERT`, `UPDATE` or `DELETE` | `session.add_all()` and one flush, or `session.execute(insert(Model), rows)` |
 | `Customer.notes and Customer.orders were joined into one query side by side, once` (warns by default) | `cartesian-load` | `Customer.notes + Customer.orders` | `selectinload` for all collections but one, see [How detection works](how-detection-works.md#cartesian-load) |
@@ -166,6 +167,17 @@ It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
   findings.
 - Code that catches `AssertionError` around the loop does not hide the N+1:
   the report at the end still fails the test.
+- A library that catches the exception and raises its own (Pydantic's
+  `from_attributes` validation, FastAPI's `response_model`) fails the test
+  with that error, the strict message usually inside it. The same goes for
+  code that swallows the exception when the test then fails on its own. The
+  analysis at the end still runs for such a test: SARIF,
+  `--queryguard-json` and the summary include the N+1. When the error does
+  not already carry the strict message, the report is shown in a
+  "Captured queryguard call" section under the failure. The test's outcome
+  stays that of its own error.
+- `--no-queryguard-strict` turns strict mode off for one run, for example to
+  see every N+1 of a test in the report instead of the first one.
 - It raises before the lazy load's `SELECT` is prepared: nothing is
   flushed, no connection is used, and engine listeners such as
   `handle_error` never see the exception. For that, strict mode adds a
@@ -248,7 +260,11 @@ git apply queryguard.patch      # from the rootdir
 
 The option goes on the `select(Order)` or `session.query(Order)` call of the
 line in `parents loaded at`: as `.options(...)` right after the call, or as
-one more argument of the `.options(...)` already in its chain. The loader is
+one more argument of the `.options(...)` already in its chain. When that line
+runs a statement built earlier in the function (`statement = select(Order)`
+and then `session.scalars(statement)`), the option goes on the line that
+builds it. A class named through its module (`select(models.Order)`) is
+named the same way in the option: `joinedload(models.Order.customer)`. The loader is
 `joinedload` or `selectinload`, the same as in the `fix:` hint, chained
 through the relationships that reached the parents. A loader the module does
 not import yet is added to its `from sqlalchemy.orm import` line, or on a new
@@ -260,17 +276,54 @@ certain, and otherwise only the `fix:` hint:
 - every parent was loaded by one query line, and the plugin knows the class it
   selected;
 - that line is one statement with exactly one `select(...)` call, or
-  `.query(...)` on something named like a session, with that class as its
-  only argument, and the statement runs nothing else. A query built on
-  another line (`statement = select(Order)` and then
-  `session.scalars(statement)`), a `session.get()`, a subquery, or a choice
-  between queries (`a if c else b`, `or`, a comprehension) gets no patch;
-- `select` is imported from SQLAlchemy or SQLModel, the classes are imported
-  (or defined) in the module under their own names, the function does not
-  rebind them, and an `.options(...)` already in the chain lists only loader
-  calls, none of them for the relationship (not `*options` or a variable);
-- the file is inside the rootdir, UTF-8 with `\n` line ends, and was not
-  modified after the session started, so it is the code that ran.
+  `.query(...)` on a session (see below), with that class as its
+  only argument (`Order`, or `models.Order` for a module imported with
+  `import` or `from ... import`), and the statement runs nothing else. A
+  `session.get()`, a subquery, or a choice between queries (`a if c else b`,
+  `or`, a comprehension) gets no patch;
+- that call is the statement the line runs, as it is: a `select(...)`, with
+  only methods that keep its entities chained to it, is the first argument of
+  `execute`, `scalars`, `scalar`, `stream` or SQLModel's `exec` on a
+  session; a `session.query(...)` with such methods is run by `.all()`,
+  `.first()`, `.one()` or `.one_or_none()`, or iterated (`for`, `list(...)`).
+  A select inside a `union_all(...)`, an `exists(...)`, a subquery, a CTE, an
+  `insert().from_select()` or another statement, one passed to a helper
+  (`session.scalars(paginate(select(Order)))`), turned into other columns
+  (`with_only_columns`, `with_entities`, `add_columns`), a union or a textual
+  statement (`from_statement`), or run by something else than a session
+  (`repository.scalars(select(Order))`) gets no patch. A session is what is
+  named so (`session`, `self.session`, `db_session`), `db` (`db`, `self.db`),
+  or a parameter of the function annotated with a session type that the
+  function does not rebind: `conn: Session`, `s: orm.Session`,
+  `conn: "AsyncSession"`, `db: Annotated[Session, Depends(get_db)]`;
+- or that line runs a variable on a session
+  (`session.execute(statement)`, `session.scalars(statement)`) that the
+  function assigns once, on an earlier line, to such a `select(...)` with
+  only methods that keep its entities chained to it (`where`, `join`,
+  `order_by`, `limit`, `options` and the like), and reads nowhere else. A
+  variable that is reassigned or changed (`statement = statement.where(...)`),
+  read again (passed to a count, for example), a parameter, a module-level
+  name, assigned in a tuple or with `:=`, wrapped in a call
+  (`paginate(select(Order))`), turned into a union or subquery, run by a
+  helper (`repository.scalars(statement)`), or a `session.query()` kept in a
+  variable gets no patch;
+- `select` is imported from SQLAlchemy or SQLModel, the classes (and the
+  module in `models.Order`) are imported (or defined) in the module under
+  their own names, the function does not rebind them, and an `.options(...)`
+  already in the chain lists only SQLAlchemy loader calls that name each
+  relationship as `Class.attribute`, none of them the relationship (not
+  `*options`, an option a helper returns, or a relationship in a variable, a
+  constant or a string: `noload(REL)`, `noload("customer")`, which may be the
+  one the patch loads, and two loaders of one relationship conflict). A chain
+  through another class names that class on its own
+  (`.joinedload(Customer.country)`), so the module must import it;
+- a `joinedload` (a many-to-one) does not go on a statement with
+  `with_for_update()`, `group_by()`, `having()`, `distinct()` or a prefix or
+  suffix: its outer join would put `FOR UPDATE` on the nullable side of the
+  join, or the joined columns outside the `GROUP BY`. A `selectinload` does;
+- the file is inside the rootdir, UTF-8 with `\n` or `\r\n` line ends
+  (which the patch keeps), and was not modified after the session started,
+  so it is the code that ran.
 
 The diff paths are relative to the rootdir (`a/app/orders.py`). When the
 rootdir is a subdirectory of the git repository, apply it with

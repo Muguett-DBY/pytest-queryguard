@@ -105,6 +105,42 @@ loads and write loops. See [Tests with several sessions or
 requests](several-sessions.md) for how the scope is chosen and where it stops
 being exact.
 
+## Can a tool get a callback for every finding?
+
+Not during the test run: pytest-queryguard has no pytest hook or callback that
+is called per finding. A tool that wants the findings (to send them to a
+dashboard, to count them over time, to annotate a pull request) reads the file
+that `--queryguard-json=PATH` writes at the end of the run. That file is the
+integration point for tooling: its format is versioned (`"format": 1`), the
+keys it promises are listed in [Stability](stability.md), and they are
+described in [Query counts as JSON](ci.md#query-counts-as-json). Each test
+lists its findings with `kind`, `label`, `count`, `file`, `line`, `function`,
+`stack` and `baselined`:
+
+```python
+import json
+from pathlib import Path
+
+report = json.loads(Path("queryguard.json").read_text(encoding="utf-8"))
+if report["format"] != 1:
+    raise SystemExit(f"unsupported queryguard JSON format {report['format']}")
+for test_id, test in report["tests"].items():
+    for finding in test["findings"]:
+        if finding["baselined"]:
+            continue
+        print(test_id, finding["kind"], finding["label"], finding["count"],
+              f"{finding['file']}:{finding['line']}")
+if not report["complete"]:
+    print("the run stopped early; tests are missing")
+```
+
+Do not parse the terminal report or the `message` field: their wording is not
+stable. For code scanning, the [SARIF file](sarif.md) is the other stable
+output. In a running application (not in tests), the
+[in-application mode](in-app.md#settings) calls a `report` callable for every
+request with findings or over its budget, with a `RequestReport` that lists
+them.
+
 ## Does it work with pytest-xdist?
 
 Yes for detection, budgets, the baseline and SARIF: each worker measures its

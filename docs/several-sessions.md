@@ -80,7 +80,10 @@ recorded block; like the thresholds it does not read the ini option.
 - One `Session` is one scope. If a test passes the same `Session` to every
   request (a dependency override that returns the fixture's session), the
   requests are one scope and the repeats add up again. Give each request its
-  own `Session` in the override, or keep `test`.
+  own `Session` in the override, or keep `test`. To keep the test's
+  rolled-back transaction, bind each request's `Session` to the test's
+  connection with `join_transaction_mode="create_savepoint"`; see
+  [A session per request in a test transaction](recipes-test-transaction.md).
 - Two `Session`s that use one shared `Connection` at the same time are not told
   apart; the later transaction's `Session` wins until the next one starts.
 - A loop that opens a new `Session` per round (`for x in xs: with Session()

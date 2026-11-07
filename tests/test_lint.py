@@ -209,6 +209,15 @@ def test_comprehensions(models: lint.Models, comprehension: str) -> None:
     ]
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 15), reason="dict unpacking in comprehensions is 3.15+"
+)
+def test_a_dict_comprehension_that_unpacks(models: lint.Models) -> None:
+    # PEP 798: {**d for d in ...} is a DictComp without a value
+    code = "def f(session):\n    return {**o.customer.extra for o in session.scalars(select(Order))}\n"
+    assert found(models, code) == ["Order.customer"]
+
+
 def test_async_sessions(models: lint.Models) -> None:
     code = """
     async def f(session):
@@ -896,3 +905,40 @@ def test_flask_sqlalchemy_db_select(models: lint.Models) -> None:
     )
     found_ = lint.lint_source(source, "app.py", models)
     assert [f.relationship for f in found_] == ["Order.customer"]
+
+
+LOOP = "\ndef f(session):\n    for o in session.scalars(select(Order)):\n        o.customer\n"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"\xef\xbb\xbf" + (HEADER + LOOP).encode(),  # a byte order mark
+        f"# -*- coding: latin-1 -*-\n{HEADER}x = 'caf\xe9'\n{LOOP}".encode("latin-1"),
+    ],
+    ids=["bom", "coding-cookie"],
+)
+def test_a_file_python_reads_is_read(
+    project: Path, capsys: pytest.CaptureFixture[str], data: bytes
+) -> None:
+    # Python honours the BOM and the PEP 263 declaration; both were skipped
+    (project / "other.py").write_bytes(data)
+    assert lint.main(["--models", MODULE, "other.py"]) == 1
+    out, err = capsys.readouterr()
+    assert "Order.customer is lazy-loaded" in out
+    assert err == ""
+
+
+def test_a_file_given_twice_is_checked_once(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # "app" and "app/orders.py": one finding, not the same one twice
+    assert lint.main(["--models", MODULE, "app", "app/orders.py", "./app"]) == 1
+    assert capsys.readouterr().out.endswith("1 finding in 3 files\n")
+
+
+def test_an_output_file_that_cannot_be_written_is_an_error(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert lint.main(["--models", MODULE, "--output", "app", "app/ok.py"]) == 2
+    assert "cannot write app" in capsys.readouterr().err

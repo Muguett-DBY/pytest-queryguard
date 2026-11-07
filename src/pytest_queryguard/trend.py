@@ -16,7 +16,8 @@ blocks; ``--ascii`` uses ASCII characters instead, and so does the console
 output when the console's encoding has no blocks (a Windows console with
 cp1252, the reason ``compare`` prints only ASCII). The exit status is 0
 unless a file cannot be read (2; ``--skip-unreadable`` leaves such a file
-out instead) or the arguments are wrong (2).
+out instead), the ``--output`` file cannot be written (2) or the arguments are
+wrong (2).
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ from pathlib import Path
 from typing import Any
 
 from .compare import CompareError, FindingRow, _code, _findings, _where, compare, load
+
+# The "format" key of the JSON output; it goes up when a key changes meaning.
+FORMAT_VERSION = 1
 
 _TOP = 10
 _ROWS = 25
@@ -313,6 +317,7 @@ def as_json(result: Trend, *, top: int = _TOP) -> str:
         }
 
     doc = {
+        "format": FORMAT_VERSION,
         "runs": [
             {
                 "label": run.label,
@@ -450,7 +455,14 @@ def main(argv: list[str] | None = None) -> int:
         reconfigure(errors="backslashreplace")
     sys.stdout.write(shown)
     if args.output is not None:
-        args.output.write_text(report, encoding="utf-8")
+        try:
+            args.output.write_text(report, encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"pytest-queryguard trend: cannot write {args.output}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
     return 0
 
 

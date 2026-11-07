@@ -76,12 +76,99 @@ release tag or a commit. The `trend` input and the `trend-report` output are
 experimental. What the job summary and the pull-request comment say is not
 public.
 
+### Names, values and units
+
+These conventions hold for every public name above, so a new option or field
+follows them too:
+
+- An ini option `queryguard_<name>` and the command-line flag that overrides
+  it, `--queryguard-<name>`, use the same words. A flag that turns a boolean
+  option on has no value; `--no-queryguard-<name>` turns it off for the run
+  (`--no-queryguard-index-check`, `--no-queryguard-strict`,
+  `--no-queryguard-show-patch`); of the two, the last one on the command line
+  wins. Flags without an ini option (`--queryguard-report`,
+  `--queryguard-json`, `--queryguard-sarif`, `--queryguard-write-patch`, the
+  two `--queryguard-update-*` flags) are about one run, not about the project.
+- Options with a fixed set of values ignore case and surrounding spaces.
+  How strongly a check reports is always spelled `off`, `warn` or `fail`
+  (`queryguard_mode`, `queryguard_cartesian_load`,
+  `queryguard_unused_eager_load`, `queryguard_unused_columns`);
+  `queryguard_hypopg` takes `auto`, `on` or `off`.
+- Finding kinds are lowercase words joined by hyphens (`relationship-load`).
+  They are part of a finding's identity (baseline, SARIF fingerprint,
+  ignore patterns) and never change.
+- Every time is in seconds, as a float: the `max_db_time` marker and context
+  manager, `Query.duration`, `QueryLog.db_time`, `db_time` in the
+  `--queryguard-json` file, and in the experimental in-application mode
+  `Settings.min_db_time`, `RequestReport.duration` and
+  `RequestReport.db_time` (`RequestReport.started` is a Unix time). The MCP
+  server's `timeout` is in seconds too.
+- A threshold that can be turned off is `0` in an ini option
+  (`queryguard_small_repeat_threshold` and `queryguard_write_loop_threshold`
+  are off by default; `queryguard_max_events = 0` means no limit) and `None`
+  in Python (`QueryLog.assert_no_nplusone()`, `app.Settings`). A budget is
+  different, because `0` is a valid budget (no query at all):
+  `queryguard_max_queries` is off when it is empty.
+- Each file has a key with the number of its format at the top level:
+  `format` in the `--queryguard-json` file, the budget file and the JSON
+  output of the static check and the trend, and `version` in the baseline
+  file (the oldest of them; renaming it would make every baseline unreadable
+  by older releases, so it stays). The experimental in-app panel's
+  `requests.json` has no format number: its `version` key is the package
+  version.
+
+The plugin and the in-application mode share the detection thresholds and
+their defaults. Two defaults differ on purpose: `Settings.max_events` is
+1000 statements per request (the plugin keeps 10000 per test), because a
+server keeps the reports of many requests; and the scope is `"request"`
+instead of `"test"`.
+
+### Deprecated names
+
+Each of these works and emits `QueryGuardDeprecationWarning`, which names the
+replacement and the release that removes it:
+
+| Deprecated | Use instead | Since | Removed in |
+|---|---|---|---|
+| ini option `queryguard_repeat_scope` | `queryguard_scope` | 0.8.0 | 2.0 |
+| `repeat_scope=` of `QueryLog.assert_no_nplusone()` and `app.Settings` | `scope=` | 0.8.0 | 2.0 |
+| `max_queries(n=...)` and `queryguard_max_queries(n=...)` markers | a positional limit or `limit=` | 0.8.0 | 2.0 |
+
+`allow_nplusone` is not deprecated: it is a permanent alias of the
+`queryguard_ignore` marker.
+
+### Exit status
+
+The plugin does not add exit codes of its own. A test it fails is a failed
+test (pytest exits with 1), and an invalid option value is a usage error
+(pytest exits with 4). The compare tool exits with 0, or 2 when a file
+cannot be read or the arguments are wrong. The experimental trend exits the
+same way (with `--skip-unreadable` it leaves out a file it cannot read and
+exits with 2 only when none could be read). The experimental static check
+exits with 2 when the `--models` modules cannot be imported (or define no
+mapped class), a path does not exist or the arguments are wrong, 1 when it reports a finding and 0 otherwise; a source file it
+cannot parse is skipped with a message.
+
 ## What is not public
 
 - Everything in a module whose name starts with an underscore, and any name
   not exported from `pytest_queryguard`. The submodules (`collector`,
   `listeners`, `detectors`, `indexes`, `messages`, `plugin`, ...) are
-  implementation details even though they can be imported.
+  implementation details even though they can be imported. That includes
+  their exception classes (`BaselineError`, `BudgetFileError`,
+  `CompareError`, ...), which reach users only as pytest usage errors or as
+  the message of a command-line tool, and the Python functions behind the
+  command-line tools (`compare.main()`, `trend.as_json()`, ...): the command
+  line is the interface.
+- The type of the object `ignore()` returns: use it only in a `with`
+  statement. Attributes that start with an underscore on public objects (for
+  example on a `NPlusOneDetected` raised by strict mode) are internal too.
+- Environment variables. The plugin reads none of its own; it reads
+  `GITHUB_WORKSPACE` (to make SARIF paths relative to the repository) and
+  `PYTEST_ADDOPTS` (to tell a partial run from a full one), as set by GitHub
+  Actions and pytest. `PYTEST_QUERYGUARD_MCP_ROOTDIR` is set by the MCP server
+  for the pytest it starts, and `-p pytest_queryguard.mcp` is how that pytest
+  loads its hook; both are internal.
 - The wording and layout of failure messages, warnings, summaries and
   reports. They are written for people and improve between releases; do not
   parse them. Use `QueryLog`, the SARIF file, the baseline file or the
@@ -229,15 +316,20 @@ checks the outcome of every test of a small suite.
   entry point. A failing snapshot means: the change is breaking, or it is an
   addition that must be added to the snapshot on purpose. Update the snapshot
   in the same commit as the change, so reviewers see it.
-- The snapshot does not yet cover the files, the compare tool and the action
-  listed under [Files, tools and the action](#files-tools-and-the-action).
-  Their own tests (`tests/test_baseline.py`, `test_budget_file.py`,
-  `test_testjson.py`, `test_sarif.py`, `test_compare.py`,
-  `test_action_args.py`) check how they behave; a change to them is reviewed
-  against that section.
-- CI runs the suite on Python 3.10 to 3.14 and the 3.15 pre-release,
+- The same snapshot covers the outside of what is listed under
+  [Files, tools and the action](#files-tools-and-the-action): the keys and
+  format numbers of the baseline file, the budget file and the
+  `--queryguard-json` file, the SARIF rule ids, fingerprint key and result
+  properties, the compare tool's arguments and marker, the action's inputs
+  and outputs, and the deprecated names with their removal release. For the
+  experimental parts it snapshots the arguments of the trend and static-check
+  tools, the trend's JSON keys, the MCP tool names and arguments, and the
+  defaults of `app.Settings`. Their own tests (`tests/test_baseline.py`,
+  `test_budget_file.py`, `test_testjson.py`, `test_sarif.py`,
+  `test_compare.py`, `test_action_args.py`) check how they behave.
+- CI runs the suite on Python 3.10 to 3.15,
   SQLAlchemy 2.0 and the latest release, the oldest and the latest pytest,
   PostgreSQL 14 to 18, Windows and macOS, and under pytest-xdist. A nightly
   job tries the SQLAlchemy development branch, pytest pre-releases and Python
-  3.15; it is allowed to fail and tells maintainers about upcoming
+  3.16; it is allowed to fail and tells maintainers about upcoming
   incompatibilities early.

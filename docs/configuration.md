@@ -103,12 +103,16 @@ Command-line options:
 | `--queryguard-json=PATH` | Writes each test's statement counts (total and by verb), database time and findings to `PATH` as JSON, to compare runs. See [CI](ci.md#query-counts-as-json). |
 | `--queryguard-update-baseline` | Writes the findings of this run to the baseline file instead of reporting them. |
 | `--queryguard-strict` | Turns `queryguard_strict` on for this run. |
+| `--no-queryguard-strict` | Turns strict mode off for this run, whatever `queryguard_strict` says. |
 | `--queryguard-show-patch` | Since 0.8.0, experimental. Turns `queryguard_show_patch` on for this run. |
+| `--no-queryguard-show-patch` | Turns `queryguard_show_patch` off for this run. |
 | `--queryguard-write-patch=PATH` | Since 0.8.0, experimental. Writes the patches of this run's findings to `PATH` as one file for `git apply`, from the rootdir; an empty file when there is none. See [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query). |
 | `--queryguard-budgets=PATH` | Budget file for this run; overrides `queryguard_budgets`. |
 | `--queryguard-update-budgets` | Writes each test's query count of this run to the budget file. |
 | `--queryguard-index-check` | Turns the missing-index check on for this run. |
 | `--no-queryguard-index-check` | Turns the missing-index check off for this run, whatever `queryguard_index_check` says. |
+
+Of a flag and its `--no-` form, the last one on the command line wins.
 
 
 ## Markers

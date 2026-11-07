@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -819,3 +820,20 @@ def test_no_sarif_is_written_after_an_interrupted_run(
     assert result.ret == pytest.ExitCode.INTERRUPTED
     assert path.read_text() == "previous"
     result.stdout.fnmatch_lines(["*queryguard SARIF not written: the run was*"])
+
+
+def test_a_path_that_is_not_utf8_does_not_stop_the_file(tmp_path: Path) -> None:
+    # a file name that is not valid UTF-8 reaches the finding as a lone
+    # surrogate (surrogateescape), as the baseline already handles
+    document = _doc(_finding(file="caf\udce9/orders.py"))
+    path = tmp_path / "qg.sarif"
+    sarif.write(path, document)
+    text = path.read_bytes().decode("utf-8")  # strict: no lone surrogates
+    assert "\\ud" not in text
+    (result,) = json.loads(text)["runs"][0]["results"]
+    uri = result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+    # the file name's bytes, percent-encoded: the byte itself on POSIX; on
+    # Windows os.fsencode writes the surrogate as its three UTF-8 bytes
+    expected = "caf%ED%B3%A9" if sys.platform == "win32" else "caf%E9"
+    assert uri == f"{expected}/orders.py"
+    assert len(result["partialFingerprints"][sarif.FINGERPRINT_KEY]) == 64

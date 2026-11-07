@@ -31,5 +31,7 @@ $ pytest tests/test_orders_fixed.py
 1 passed
 ```
 
-The `filterwarnings` entry in `pytest.ini` hides a Starlette warning about its
-test client and `httpx`; it is not about pytest-queryguard.
+The `filterwarnings` entry in `pytest.ini` hides the warning of Starlette 1.2
+and later about its test client finding `httpx` without `httpx2`; it is not
+about pytest-queryguard. Installing `httpx2` as well removes the warning; see
+the [FastAPI recipe](https://maciejziel.github.io/pytest-queryguard/recipes-fastapi.html).

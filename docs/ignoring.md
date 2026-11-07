@@ -88,7 +88,8 @@ Every finding in the report has a line such as
 the label as the pattern. The kinds are `relationship-load` (the label is the relationship, as in
 `Order.customer`), `repeated-statement` (the normalized statement),
 `column-load` (the class and its deferred columns, as in `Book.summary`, or
-the class and the cause for expired attributes, as in `Book (expired)`),
+the class and the cause otherwise, as in `Book (expired)`, `Book (refresh)` or
+`Engineer (polymorphic)`),
 `write-loop` (the normalized `INSERT`, `UPDATE` or `DELETE`),
 `unused-eager-load` (the relationship, as in `Order.customer`),
 `unused-columns` (the class, as in `Account`),
@@ -147,9 +148,10 @@ The limits are those of the report:
   name is not among the `called from` lines; with `0`, `stack` matches the
   `first at` line only. A pattern that matches nothing is listed as stale.
 - The frames are the lines of your code: SQLAlchemy, pytest, the standard
-  library and installed packages (`site-packages`) are never in the stack, so
-  `stack` can exclude code vendored into the repository but not an installed
-  library.
+  library and installed packages (any file under a `site-packages` or
+  `dist-packages` directory) are never in the stack, so `stack` can exclude
+  code vendored into the repository but cannot name an installed library. See
+  [An N+1 inside an installed library](#an-n1-inside-an-installed-library).
 - The stack is recorded the first time a line runs in a test. When one test
   reaches the helper from two places, the finding has the stack of the first,
   and only that one is matched: a test that runs the export and then the view
@@ -157,6 +159,76 @@ The limits are those of the report:
 
 The stack is not part of a finding's identity, so a [baseline](baseline.md)
 entry still matches by kind, label, file and function.
+
+### An N+1 inside an installed library
+
+A library can make the N+1 itself: a serializer, an admin or export package
+that reads a relationship of every object it is given. Its frames are never a
+call site, so the finding is reported at the first line of your own code on
+the way out, the line that called the library:
+
+```python
+# app/export.py
+import tablib_export  # installed in site-packages
+from sqlalchemy import select
+
+from app.models import Order
+
+
+def export_orders(session):
+    orders = session.scalars(select(Order)).all()
+    return tablib_export.to_csv(orders, columns=["id", "customer.name"])
+```
+
+The report then starts with:
+
+```
+  Order.customer was lazy-loaded 5 times
+  first at app/export.py:10 in export_orders
+```
+
+What follows from that, checked by `tests/test_ignore.py`:
+
+- A pattern that names the library matches nothing: `file=*site-packages*`,
+  `stack=*site-packages*` and `stack=*tablib_export*` never match, because no
+  frame of the report is in the library. Such a pattern is listed under
+  "stale ignores".
+- Name the line that calls it instead, with `file`, `function` or `stack`:
+
+  ```toml
+  [tool.pytest.ini_options]
+  queryguard_ignore = [
+      "relationship-load Order.customer function=export_orders",
+  ]
+  ```
+
+  `stack=app/export.py:export_orders` works too, and also matches when the
+  call to the library is further up, in a caller of the `first at` line
+  (within `queryguard_stack_depth`).
+- Or wrap the call in an [`ignore()` block](#the-ignore-block), which
+  covers everything the library does inside it, whatever its findings are
+  labelled:
+
+  ```python
+  from pytest_queryguard import ignore
+
+
+  def export_orders(session):
+      orders = session.scalars(select(Order)).all()
+      with ignore("relationship-load", reason="tablib_export reads row by row"):
+          return tablib_export.to_csv(orders, columns=["id", "customer.name"])
+  ```
+
+There is no pattern for "anything that happens inside library X, wherever it
+is called from". The closest is a label pattern, which matches the
+relationship or statement wherever it runs, or one line per calling function.
+Better still, often, is to fix the input: load what the library reads with the
+query you hand it (`selectinload(Order.customer)`), and the library finds the
+relationship already loaded.
+
+A library installed in editable mode (`pip install -e`) or vendored into the
+repository is not under `site-packages`: its frames are call sites like your
+own, and `file`, `function` and `stack` match its lines.
 
 ## The `ignore()` block
 

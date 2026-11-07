@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -471,3 +472,234 @@ def test_a_block_of_a_stopped_test_is_not_listed_as_stale(
     result.stdout.fnmatch_lines(["*kind: relationship-load  label: Order.customer"])
     result.stdout.no_fnmatch_line("*queryguard: stale ignores*")
     result.stdout.no_fnmatch_line("*ignore('repeated-statement')*")
+
+
+BAD_MARKER = """
+import pytest
+from pytest_queryguard import collector
+from qgmodels import Order, make_sync_session
+
+
+@pytest.mark.allow_nplusone(1)
+def test_a_bad_marker():
+    pass
+
+
+@pytest.mark.allow_nplusone
+def test_b_allowed():
+    assert len(collector.active()) == 1  # this test's own collector only
+    session = make_sync_session()
+    for order in session.query(Order).all():
+        _ = order.customer.name
+"""
+
+
+def test_a_bad_ignore_marker_leaves_no_strict_collector_behind(
+    pytester: pytest.Pytester,
+) -> None:
+    # the bad marker fails its test before it runs; the collector of its
+    # measurement must not stay on the stack for the rest of the session
+    pytester.makepyfile(qgmodels=MODELS, test_bad_marker=BAD_MARKER)
+    result = _run(pytester, "--queryguard-strict")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["*allow_nplusone on *test_a_bad_marker takes*"])
+
+
+WRAPPED = """
+import pytest
+from pytest_queryguard import NPlusOneDetected
+from qgmodels import Order, make_sync_session
+
+
+class ValidationError(ValueError):
+    pass
+
+
+def _validate(order):
+    # what Pydantic's from_attributes does: the error at the access becomes
+    # the library's own, with the strict message inside
+    try:
+        return order.customer.name
+    except Exception as exc:
+        raise ValidationError(f"1 validation error: {exc}") from None
+
+
+def test_wrapped_a():
+    session = make_sync_session()
+    [_validate(order) for order in session.query(Order).all()]
+
+
+def test_wrapped_b():
+    session = make_sync_session()
+    [_validate(order) for order in session.query(Order).all()]
+
+
+@pytest.mark.xfail(raises=ValidationError, strict=True)
+def test_wrapped_xfail():
+    session = make_sync_session()
+    [_validate(order) for order in session.query(Order).all()]
+
+
+def test_swallowed_then_failed():
+    session = make_sync_session()
+    try:
+        for order in session.query(Order).all():
+            _ = order.customer.name
+    except Exception:
+        pass
+    assert False, "the test's own failure"
+
+
+def test_unrelated_failure():
+    session = make_sync_session()
+    session.query(Order).first().customer
+    assert False, "no N+1 here"
+"""
+
+
+@pytest.fixture
+def wrapped(pytester: pytest.Pytester) -> pytest.Pytester:
+    pytester.makepyfile(qgmodels=MODELS, test_wrapped=WRAPPED)
+    return pytester
+
+
+def _sarif_and_json(project: pytest.Pytester) -> tuple[list[Any], dict[str, Any]]:
+    import json
+
+    sarif = json.loads((project.path / "out.sarif").read_text())
+    tests = json.loads((project.path / "q.json").read_text())["tests"]
+    return sarif["runs"][0]["results"], tests
+
+
+def test_a_strict_error_wrapped_by_a_library_is_still_reported(
+    wrapped: pytest.Pytester,
+) -> None:
+    # Pydantic (from_attributes) and FastAPI (response_model) catch the
+    # strict NPlusOneDetected and raise their own error: the test fails with
+    # that error, and the finding still reaches SARIF, the JSON and the summary
+    result = _run(
+        wrapped,
+        "--queryguard-strict",
+        "-k",
+        "wrapped_a or wrapped_b",
+        "--queryguard-sarif=out.sarif",
+        "--queryguard-json=q.json",
+    )
+    result.assert_outcomes(failed=2)
+    result.stdout.fnmatch_lines(
+        [
+            "E*ValidationError: 1 validation error: queryguard strict:*",
+            "*the same finding in several tests*",
+            "*2 tests  relationship-load  Order.customer*",
+        ]
+    )
+    # the library's error stays the failure and already carries the strict
+    # message: the report is not printed a second time
+    result.stdout.no_fnmatch_line("*Captured queryguard call*")
+    assert result.stdout.str().count("Order.customer was lazy-loaded 2 times") == 2
+    results, tests = _sarif_and_json(wrapped)
+    assert [r["ruleId"] for r in results] == ["queryguard/relationship-load"]
+    for name in ("test_wrapped_a", "test_wrapped_b"):
+        (finding,) = tests[f"test_wrapped.py::{name}"]["findings"]
+        assert finding["label"] == "Order.customer"
+
+
+def test_the_outcome_of_a_test_with_a_wrapped_strict_error_is_kept(
+    wrapped: pytest.Pytester,
+) -> None:
+    result = _run(
+        wrapped,
+        "--queryguard-strict",
+        "-k",
+        "wrapped_xfail",
+        "--queryguard-sarif=out.sarif",
+        "--queryguard-json=q.json",
+    )
+    result.assert_outcomes(xfailed=1)
+    results, tests = _sarif_and_json(wrapped)
+    assert len(results) == 1
+    (finding,) = tests["test_wrapped.py::test_wrapped_xfail"]["findings"]
+    assert finding["kind"] == "relationship-load"
+
+
+def test_a_swallowed_strict_error_then_another_failure_is_reported(
+    wrapped: pytest.Pytester,
+) -> None:
+    result = _run(
+        wrapped,
+        "--queryguard-strict",
+        "-k",
+        "swallowed",
+        "--queryguard-sarif=out.sarif",
+        "--queryguard-json=q.json",
+    )
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(
+        [
+            "E*AssertionError: the test's own failure*",
+            # the failure does not name the N+1: the report goes beside it
+            "*Captured queryguard call*",
+            "queryguard: N+1 detected",
+        ]
+    )
+    results, tests = _sarif_and_json(wrapped)
+    assert len(results) == 1
+    (finding,) = tests["test_wrapped.py::test_swallowed_then_failed"]["findings"]
+    assert finding["label"] == "Order.customer"
+
+
+def test_a_test_failing_on_its_own_without_a_strict_error_is_not_analysed(
+    wrapped: pytest.Pytester,
+) -> None:
+    result = _run(
+        wrapped,
+        "--queryguard-strict",
+        "-k",
+        "unrelated or swallowed",
+        "--queryguard-sarif=out.sarif",
+        "--queryguard-json=q.json",
+    )
+    result.assert_outcomes(failed=2)
+    results, tests = _sarif_and_json(wrapped)
+    # only the test strict mode raised in is analysed; a test failing on its
+    # own is not, with or without an N+1
+    assert len(results) == 1
+    assert tests["test_wrapped.py::test_unrelated_failure"]["findings"] == []
+
+
+def test_the_strict_error_itself_is_reported_once(project: pytest.Pytester) -> None:
+    result = _run(
+        project,
+        "--queryguard-strict",
+        "-k",
+        "test_loop",
+        "--queryguard-sarif=out.sarif",
+        "--queryguard-json=q.json",
+    )
+    result.assert_outcomes(failed=1)
+    result.stdout.no_fnmatch_line("*Captured queryguard call*")
+    assert result.stdout.str().count("Order.customer was lazy-loaded 2 times") == 1
+    results, _ = _sarif_and_json(project)
+    assert len(results) == 1
+
+
+def test_no_flag_turns_strict_off_for_one_run(project: pytest.Pytester) -> None:
+    project.makeini("[pytest]\nqueryguard_strict = true\n")
+    result = _run(project, "--no-queryguard-strict", "-k", "test_loop")
+    result.assert_outcomes(failed=1)
+    assert "queryguard strict" not in result.stdout.str()
+    result.stdout.fnmatch_lines(["*queryguard: N+1 detected*"])
+
+
+def test_last_strict_flag_wins(project: pytest.Pytester) -> None:
+    result = _run(
+        project, "--no-queryguard-strict", "--queryguard-strict", "-k", "test_loop"
+    )
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*queryguard strict*"])
+    result = _run(
+        project, "--queryguard-strict", "--no-queryguard-strict", "-k", "test_loop"
+    )
+    result.assert_outcomes(failed=1)
+    assert "queryguard strict" not in result.stdout.str()
+    result.stdout.fnmatch_lines(["*queryguard: N+1 detected*"])

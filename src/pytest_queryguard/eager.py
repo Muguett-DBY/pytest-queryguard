@@ -286,8 +286,12 @@ def unused(tracker: Tracker, sieve: blocks.Sieve | None = None) -> list[EagerLoa
         load = group[0]
         if _was_read(tracker, load.owner, load.key):
             continue
-        if not any(_related(t, load.owner) for t in touched):
-            continue  # nothing ever looked at these instances: cannot tell
+        if not any(issubclass(t, load.owner) for t in touched):
+            # nothing ever looked at an instance that has the relationship:
+            # cannot tell. Only the owner and its subclasses have it, so reads
+            # of a base class's rows (with_polymorphic over a subclass with
+            # no rows) do not count.
+            continue
         if _deleted_with_cascade(tracker, load):
             continue
         if load.parent is not None and not _was_read(tracker, *load.parent):

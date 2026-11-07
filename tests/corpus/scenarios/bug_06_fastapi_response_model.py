@@ -17,11 +17,7 @@ from ..kit import BUG, REL, Ctx
 
 VERDICT = BUG
 KINDS = frozenset({REL})
-KNOWN = {
-    "strict": "Pydantic catches the strict NPlusOneDetected and raises its own "
-    "validation error holding its message; the test fails with that error, so "
-    "the report at the end, which records the finding, does not run",
-}
+PATCH = True
 setup = shop.setup
 
 

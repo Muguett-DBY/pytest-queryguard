@@ -106,6 +106,13 @@ class QueryCollector:
     strict_by_scope: bool = False
     # (relationship, query site of the parents, Session or None) -> group
     strict_groups: dict[tuple[object, ...], StrictGroup] = field(default_factory=dict)
+    # Set by the strict listener when it raises this collector's error: the
+    # test may then fail with another exception (a library that wrapped the
+    # strict one, or a failure after code that swallowed it).
+    strict_raised: bool = False
+    # The generation push() gave it: the origins of instances (where their
+    # query ran, see listeners._ORIGIN_ATTR) noted from then on are its own.
+    since: int = 0
     # Guards the counters and the length checks on a free-threaded build.
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -349,6 +356,7 @@ def _rebuild() -> None:
 def push(collector: QueryCollector) -> None:
     global _generation
     _generation += 1
+    collector.since = _generation
     callsite.new_measurement()
     _stack.append(collector)
     _rebuild()

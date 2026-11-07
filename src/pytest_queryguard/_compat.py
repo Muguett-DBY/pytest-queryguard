@@ -54,6 +54,15 @@ ORM_PLUGIN = "orm"
 # The ORM statement's compile options (ORMCompileState.default_compile_options
 # subclass). 2.0.13+.
 COMPILE_OPTIONS = "_compile_options"
+# ... their flag that Query.enable_eagerloads(False) clears; absent from the
+# compile options of a plain select(). 2.0.13+.
+ENABLE_EAGERLOADS = "_enable_eagerloads"
+# Select._raw_columns: what the select() names, an entity as its annotated
+# table or alias, whose _annotations hold the "parententity" (the Mapper or
+# AliasedInsp). 2.0.13+.
+RAW_COLUMNS = "_raw_columns"
+ANNOTATIONS = "_annotations"
+PARENT_ENTITY = "parententity"
 # ... their fields: the path of a relationship loader's statement (a
 # PathRegistry; ``is_root`` for a top-level query, ``[-1]`` the
 # relationship), whether the statement reloads one instance (a refresh, an
@@ -105,6 +114,10 @@ LOAD_CONTEXT = "context"
 ELEMENT_PATH = "path"
 ELEMENT_LOCAL_OPTS = "local_opts"
 ELEMENT_STRATEGY = "strategy"
+# A wildcard option's path ends in a token, a string: "relationship:*" for
+# ``Load(A).lazyload("*")``, "relationship:_sa_default" for an unbound
+# ``lazyload("*")`` (whose option has a ``path`` and no ``context``). 2.0.13+.
+RELATIONSHIP_TOKEN = "relationship:"
 # ``contains_eager()``'s marker in ``local_opts``. 2.0.13+.
 EAGER_FROM_ALIAS = "eager_from_alias"
 
@@ -116,6 +129,8 @@ EAGER_FROM_ALIAS = "eager_from_alias"
 TOP_LEVEL_CONTEXT = "top_level_context"
 QUERY_LOAD_OPTIONS = "load_options"
 QUERY_STATEMENT = "query"
+# Select._where_criteria: the WHERE clauses of a select(), ANDed. 2.0.13+.
+WHERE_CRITERIA = "_where_criteria"
 RUNID = "runid"
 QUERY_REFRESH_STATE = "refresh_state"
 STATE_LOAD_PATH = "load_path"
