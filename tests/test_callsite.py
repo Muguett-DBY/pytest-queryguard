@@ -45,8 +45,8 @@ def test_callsite_found_through_parent_greenlet(
     found: list[object] = []
     original = callsite._first_external
 
-    def spy(frame: object, sites: object) -> object:
-        site = original(frame, sites)  # type: ignore[arg-type]
+    def spy(frame: object, sites: object, *args: object) -> object:
+        site = original(frame, sites, *args)  # type: ignore[arg-type]
         found.append(site)
         return site
 
@@ -179,3 +179,60 @@ def test_a_comprehension_is_named_after_the_function_it_is_in(
             "*called from test_comp.py:* in test_names",
         ]
     )
+
+
+class _AppSession:
+    """Stands in for a Session subclass in the application's own code."""
+
+    site: object = None
+
+    def execute(self) -> object:
+        self.site = find_callsite()
+        return self.site
+
+    def exec(self) -> object:
+        return self.execute()
+
+
+def _session_class() -> type:
+    from sqlalchemy.orm import Session
+
+    return type("AppSession", (_AppSession, Session), {})
+
+
+def test_a_session_subclass_method_is_not_the_call_site() -> None:
+    # SQLModel's Session (and many applications') overrides execute() in code
+    # outside site-packages; the call site is the code that called the session,
+    # so two queries at two lines are not taken for one query line.
+    session = _session_class()()
+    site = session.exec()
+    expected = inspect.currentframe().f_lineno - 1  # type: ignore[union-attr]
+    assert site is not None
+    assert site.function == "test_a_session_subclass_method_is_not_the_call_site"
+    assert site.lineno == expected
+    # nor one of its callers
+    assert all(caller.function not in ("exec", "execute") for caller in site.callers)
+
+
+class _Repository:
+    def execute(self) -> object:
+        return find_callsite()
+
+
+def test_a_method_of_another_class_is_still_the_call_site() -> None:
+    site = _Repository().execute()
+    assert site is not None
+    assert site.function == "execute"  # type: ignore[attr-defined]
+
+
+def test_a_session_method_is_the_call_site_when_nothing_else_is() -> None:
+    # In a thread whose target is the session method, every frame above it is
+    # the standard library's: the method is kept rather than no call site.
+    import threading
+
+    session = _session_class()()
+    thread = threading.Thread(target=session.execute)
+    thread.start()
+    thread.join()
+    assert session.site is not None
+    assert session.site.function == "execute"  # type: ignore[attr-defined]
