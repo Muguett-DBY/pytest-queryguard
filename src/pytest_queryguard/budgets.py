@@ -95,7 +95,8 @@ def describe(before: Mapping[str, int], after: Mapping[str, int]) -> str:
     raised = sum(1 for k in common if after[k] > before[k])
     lowered = sum(1 for k in common if after[k] < before[k])
     return (
-        f"{len(after)} entries ({added} added, {removed} removed, "
+        f"{len(after)} {'entry' if len(after) == 1 else 'entries'} "
+        f"({added} added, {removed} removed, "
         f"{raised} raised, {lowered} lowered)"
     )
 

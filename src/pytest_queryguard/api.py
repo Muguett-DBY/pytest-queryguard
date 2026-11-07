@@ -390,7 +390,7 @@ class QueryLog:
             raise NPlusOneDetected(format_findings(findings, cwd=root))
 
     def __repr__(self) -> str:
-        return f"<QueryLog {self.count} queries>"
+        return f"<QueryLog {self.count} {'query' if self.count == 1 else 'queries'}>"
 
 
 @contextmanager
@@ -529,4 +529,4 @@ class QueryGuardFixture:
 
     def __repr__(self) -> str:
         count = "-" if self._state in ("new", "unused") else self._log.count
-        return f"<QueryGuardFixture {count} queries>"
+        return f"<QueryGuardFixture {count} {'query' if count == 1 else 'queries'}>"

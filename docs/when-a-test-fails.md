@@ -124,7 +124,7 @@ attribute, the frames of SQLAlchemy and the plugin left out:
         for order in _helper_query(session):
 >           name = order.customer.name
                    ^^^^^^^^^^^^^^
-E           pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents loaded at one line; this access is the N+1
+E           pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents loaded at the same line; this access is the N+1
 E
 E             Order.customer was lazy-loaded 2 times
 E             first at app/orders.py:13 in list_orders
@@ -135,8 +135,9 @@ E             docs: https://maciejziel.github.io/pytest-queryguard/how-detection
 E             fix: load it with the parent query, e.g.
 E                  select(Order).options(joinedload(Order.customer))
 E
-E             (queryguard_strict raises at the lazy load; a queryguard_ignore marker
-E             or pattern, or an ignore() block lets it pass, as for the report)
+E             (queryguard_strict raises at the lazy load instead of at the end of the
+E             test; a queryguard_ignore marker or pattern, an ignore() block or a
+E             baseline entry lets it pass, as for the report)
 ```
 
 It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's

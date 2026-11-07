@@ -115,7 +115,7 @@ $ pytest -q --deselect tests/test_orders.py::test_rename_customers \
 ..                                                                       [100%]
 ========================= queryguard: baseline updated =========================
 queryguard-baseline.json: 2 entries (2 added, 0 removed)
-this run did not cover the whole suite: 0 entries kept because their tests did not run
+this run did not cover the whole suite: entries of tests that did not run are kept (none here)
 2 passed, 1 deselected in 0.05s
 ```
 

@@ -406,7 +406,7 @@ def test_the_time_counts_statements_beyond_the_event_cap(
     result.assert_outcomes(failed=1)
     # the slow statement is the second one, which is not stored
     result.stdout.fnmatch_lines(["*exceeded the budget of 10.0 ms (2 statements)*"])
-    result.stdout.fnmatch_lines(["*1 more statements were not stored*"])
+    result.stdout.fnmatch_lines(["*1 more statement was not stored*"])
 
 
 def test_marker_is_registered(project: pytest.Pytester) -> None:

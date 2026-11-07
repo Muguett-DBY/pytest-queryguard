@@ -31,7 +31,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .compare import CompareError, FindingRow, _code, _findings, _where, compare, load
+from .compare import (
+    CompareError,
+    FindingRow,
+    _code,
+    _count,
+    _findings,
+    _noun,
+    _where,
+    compare,
+    load,
+)
 
 # The "format" key of the JSON output; it goes up when a key changes meaning.
 FORMAT_VERSION = 1
@@ -196,12 +206,15 @@ def _incomplete(result: Trend) -> list[str]:
 def _summary(result: Trend, ascii: bool) -> str:
     first, last = result.runs[0], result.runs[-1]
     line = sparkline(tuple(run.statements for run in result.runs), ascii=ascii)
+    changed = len(result.changed)
     return (
         f"{_runs(result)}, statements {first.statements} -> "
         f"{last.statements} ({_signed(last.statements - first.statements)}) "
-        f"`{line}`. {len(result.changed)} tests changed their count, "
+        f"`{line}`. {_count(changed, 'test')} changed "
+        f"{'its' if changed == 1 else 'their'} count, "
         f"{result.added_tests} new, {result.gone_tests} not in the latest run; "
-        f"{len(result.new)} new findings, {len(result.gone)} gone."
+        f"{len(result.new)} new {_noun(len(result.new), 'finding')}, "
+        f"{len(result.gone)} gone."
     )
 
 
@@ -418,7 +431,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, help="write the report here too")
     args = parser.parse_args(argv)
     if args.label and len(args.label) != len(args.runs):
-        parser.error(f"{len(args.label)} --label for {len(args.runs)} files")
+        parser.error(
+            f"{len(args.label)} --label for {_count(len(args.runs), 'file')}: "
+            "give one --label per file, or none"
+        )
     if args.top < 1:
         parser.error("--top must be at least 1")
     labels = args.label or default_labels(args.runs)

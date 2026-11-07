@@ -166,7 +166,7 @@ def test_markdown_report() -> None:
     )
     assert (
         "3 runs, statements 66 -> 68 (+2) `▁██`. 2 tests changed their count, "
-        "1 new, 1 not in the latest run; 1 new findings, 1 gone."
+        "1 new, 1 not in the latest run; 1 new finding, 1 gone."
     ) in text
     assert "| `r1` | 4 | 66 |  |" in text
     assert "| `t.py::grows` | `▁▁█` | 3 | 53 | +50 |" in text

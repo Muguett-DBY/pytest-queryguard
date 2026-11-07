@@ -76,7 +76,7 @@ def test_the_second_parent_raises_at_the_access(project: pytest.Pytester) -> Non
             ">*name = order.customer.name  # the access",
             (
                 "E*pytest_queryguard.NPlusOneDetected: queryguard strict: "
-                "Order.customer was lazy-loaded for 2 parents loaded at one line*"
+                "Order.customer was lazy-loaded for 2 parents loaded at the same line*"
             ),
             "E*parents loaded at test_strict_suite.py:* in _helper_query",
             "E*select(Order).options(joinedload(Order.customer))",

@@ -386,8 +386,9 @@ query each and no repeated rows:
   first at app/customers.py:12 in list_customers
   kind: cartesian-load  label: Customer.notes + Customer.orders
   each row repeats per pair of their items: the rows grow as their product
-  fix: load all but one of them with selectinload (one more query each, no repeated rows), e.g.
+  fix: load all but one of them with selectinload, e.g.
        select(Customer).options(joinedload(Customer.notes), selectinload(Customer.orders))
+       (one more query for each, and no repeated rows)
 ```
 
 - A strategy of the mapping counts as SQLAlchemy uses it: where no option of
