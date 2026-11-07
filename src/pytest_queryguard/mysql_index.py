@@ -26,6 +26,7 @@ from typing import Any
 
 from . import advisor, blocks
 from . import sqlite_index as reader
+from ._compat import ADAPTED_CURSOR, PYMYSQL_RESULT
 from .callsite import find_callsite
 from .collector import QueryCollector, note_index_first_run, note_index_reruns
 from .detectors import collapse_lists
@@ -473,8 +474,8 @@ def _unbuffered(cursor: Any) -> bool:
     Running another statement on the connection would discard them, so the
     check leaves such a statement (SSCursor) alone.
     """
-    inner = getattr(cursor, "_cursor", cursor)
-    result = getattr(inner, "_result", None)
+    inner = getattr(cursor, ADAPTED_CURSOR, cursor)
+    result = getattr(inner, PYMYSQL_RESULT, None)
     return bool(getattr(result, "unbuffered_active", False))
 
 

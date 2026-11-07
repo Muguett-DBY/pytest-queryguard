@@ -1,8 +1,10 @@
 name: Nightly compatibility
 
-# Early warning against upstream changes. Every job here is allowed to fail
-# and never gates a merge: a red run means "look at it", not "the plugin is
-# broken". The required checks live in ci.yml.
+# Early warning against upstream changes. A job here may fail without
+# gating anything: this workflow runs only on a schedule (or by hand), so none
+# of its jobs is a required check; those live in ci.yml. A red run means
+# "look at it", not "the plugin is broken". No continue-on-error: it would
+# mark the whole run green, and a failing job would go unnoticed.
 on:
   schedule:
     - cron: "17 3 * * *"
@@ -15,7 +17,7 @@ jobs:
   upstream-dev:
     name: "allowed to fail: ${{ matrix.name }}"
     runs-on: ubuntu-latest
-    continue-on-error: true
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -28,8 +30,10 @@ jobs:
             python-version: "3.13"
             sqlalchemy: stable
             pytest: pre
-          - name: Python 3.15 (pre-release interpreter)
-            python-version: "3.15"
+          # uv downloads a pre-release interpreter when the version is named
+          # exactly, not as a range.
+          - name: Python 3.16 (pre-release interpreter)
+            python-version: "3.16"
             sqlalchemy: stable
             pytest: stable
     steps:

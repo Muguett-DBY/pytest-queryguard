@@ -4,7 +4,8 @@
 starts pytest on it (any tool whose plugin is installed in ``python``), and the
 test suite runs the same session in-process with ``pytester``. What comes back
 per scenario is ``Result``: whether the test failed and, for pytest-queryguard,
-the ``(kind, label)`` of every finding.
+the ``(kind, label)`` of every finding, apart for the findings that failed the
+test and those that only warned (``cartesian-load`` by default).
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from . import kit, scenarios
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# The kinds the default configuration can report.
-DEFAULT_KINDS = frozenset({kit.REL, kit.REPEAT, kit.COLUMN})
+# The kinds the default configuration can report. cartesian-load only warns
+# by default; a warning is a finding that the user sees, so it is measured.
+DEFAULT_KINDS = frozenset({kit.REL, kit.REPEAT, kit.COLUMN, kit.CARTESIAN})
 
 # name -> (ini lines, the kinds that configuration adds to the default ones).
 CONFIGS: dict[str, tuple[str, frozenset[str]]] = {
@@ -36,8 +38,14 @@ CONFIGS: dict[str, tuple[str, frozenset[str]]] = {
         "queryguard_unused_eager_load = fail\n",
         frozenset({kit.UNUSED}),
     ),
+    "unused-columns": (
+        "queryguard_unused_columns = fail\n",
+        frozenset({kit.COLUMNS}),
+    ),
     # Counts the repeat, relationship and column-load rules per Session.
-    "session-scope": ("queryguard_repeat_scope = session\n", frozenset()),
+    "session-scope": ("queryguard_scope = session\n", frozenset()),
+    # Raises at the lazy load that makes an N+1, inside the scenario's code.
+    "strict": ("queryguard_strict = true\n", frozenset()),
     # Every opt-in rule at once: what a project that turned them all on sees.
     "all-opt-in": (
         (
@@ -45,8 +53,9 @@ CONFIGS: dict[str, tuple[str, frozenset[str]]] = {
             "queryguard_write_loop_threshold = 2\n"
             "queryguard_column_load_threshold = 2\n"
             "queryguard_unused_eager_load = fail\n"
+            "queryguard_unused_columns = fail\n"
         ),
-        frozenset({kit.WRITE, kit.UNUSED}),
+        frozenset({kit.WRITE, kit.UNUSED, kit.COLUMNS}),
     ),
 }
 
@@ -102,11 +111,13 @@ def load() -> list[Scenario]:
 @dataclass
 class Result:
     failed: bool
+    # the findings that failed the test, and those that only warned
     findings: list[tuple[str, str]] = field(default_factory=list)
+    warnings: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def kinds(self) -> frozenset[str]:
-        return frozenset(kind for kind, _ in self.findings)
+        return frozenset(kind for kind, _ in (*self.findings, *self.warnings))
 
 
 CONFTEST = """
@@ -117,18 +128,28 @@ OUT = {}
 CURRENT = [None]
 _patched = None
 
+# id(finding) -> whether it fails the test, noted by the plugin's _fails()
+FAILS = {}
+
 try:
     if os.environ.get("CORPUS_TOOL", "queryguard") == "queryguard":
         from pytest_queryguard import plugin as _plugin
-        _patched = (_plugin, _plugin.format_findings)
+        _patched = (_plugin, _plugin.format_findings, _plugin._fails)
 except ImportError:
     pass
 
 
+def _fails(settings, finding):
+    verdict = _patched[2](settings, finding)
+    FAILS[id(finding)] = verdict
+    return verdict
+
+
 def _record(findings, **kwargs):
     for f in findings:
-        OUT.setdefault(CURRENT[0], {"failed": False, "findings": []})
-        OUT[CURRENT[0]]["findings"].append([f.kind, f.label])
+        entry = OUT.setdefault(CURRENT[0], {"failed": False, "findings": []})
+        key = "findings" if FAILS.get(id(f), True) else "warnings"
+        entry.setdefault(key, []).append([f.kind, f.label])
     return _patched[1](findings, **kwargs)
 
 
@@ -142,11 +163,13 @@ def pytest_collection_modifyitems(items):
 def pytest_configure(config):
     if _patched is not None:
         _patched[0].format_findings = _record
+        _patched[0]._fails = _fails
 
 
 def pytest_unconfigure(config):
     if _patched is not None:
         _patched[0].format_findings = _patched[1]
+        _patched[0]._fails = _patched[2]
     with open(os.environ["CORPUS_OUT"], "w") as handle:
         json.dump(OUT, handle)
 
@@ -154,6 +177,7 @@ def pytest_unconfigure(config):
 @pytest.fixture(autouse=True)
 def _current(request):
     CURRENT[0] = request.node.nodeid.split("[", 1)[-1].rstrip("]")
+    FAILS.clear()
     OUT.setdefault(CURRENT[0], {"failed": False, "findings": []})
     yield
 
@@ -185,7 +209,11 @@ def session_env(names: list[str], out: Path, tool: str) -> dict[str, str]:
 def read_results(out: Path) -> dict[str, Result]:
     raw = json.loads(out.read_text(encoding="utf-8"))
     return {
-        name: Result(entry["failed"], [(k, v) for k, v in entry["findings"]])
+        name: Result(
+            entry["failed"],
+            [(k, v) for k, v in entry["findings"]],
+            [(k, v) for k, v in entry.get("warnings", [])],
+        )
         for name, entry in raw.items()
         if name != "None"
     }

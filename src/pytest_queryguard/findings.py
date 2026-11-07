@@ -62,6 +62,35 @@ class IndexAdvice:
     verification_error: str | None = None
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class Insertion:
+    """Text to insert into a source file, before the character at a position.
+
+    ``line`` counts from 1; ``column`` counts characters from 0 and
+    ``utf16_column`` the same position in UTF-16 code units, as SARIF counts.
+    """
+
+    line: int
+    column: int
+    utf16_column: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SourceFix:
+    """A change to one source file that fixes a finding (see fixpatch.py).
+
+    ``file`` is relative to pytest's rootdir, with forward slashes; ``diff``
+    is the unified diff of this change alone, which ``git apply`` accepts
+    from the rootdir.
+    """
+
+    file: str
+    insertions: tuple[Insertion, ...]
+    description: str
+    diff: str
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Finding:
     """One problem a detector found, with its report text already rendered.
@@ -107,7 +136,17 @@ class Finding:
     # when unknown or turned off (queryguard_stack_depth = 0). Not part of the
     # identity.
     stack: Stack = field(default=(), compare=False)
+    # For ``relationship-load`` findings whose parent query line is certain:
+    # the change that adds the loader option to it. Made only when a patch or
+    # SARIF is asked for. Not part of the identity.
+    fix: SourceFix | None = field(default=None, compare=False)
 
     @property
     def identity(self) -> tuple[str, str, str | None, str | None]:
         return (self.kind, self.label, self.file, self.function)
+
+
+def message_text(finding: Finding) -> str:
+    """The finding's report text without the indent of the terminal report."""
+    lines = [line.removeprefix("  ") for line in finding.message.splitlines()]
+    return "\n".join(lines).strip() or finding.label

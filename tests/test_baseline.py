@@ -329,7 +329,7 @@ def test_update_prunes_stale_entries_and_keeps_the_file_stable(
     result = project.runpytest(
         "--queryguard-baseline=qg.json", "--queryguard-update-baseline"
     )
-    result.stdout.fnmatch_lines(["*1 entries (0 added, 1 removed)"])
+    result.stdout.fnmatch_lines(["*1 entry (0 added, 1 removed)"])
     first = (project.path / "qg.json").read_text()
     project.runpytest("--queryguard-baseline=qg.json", "--queryguard-update-baseline")
     assert (project.path / "qg.json").read_text() == first
@@ -366,7 +366,15 @@ def test_no_baseline_means_no_changes(project: pytest.Pytester) -> None:
     project.makepyfile(test_a=ONE_LOOP)
     result = project.runpytest()
     result.assert_outcomes(failed=1)
-    result.stdout.no_fnmatch_line("*queryguard*baseline*")
+    # The temp path and the test's own name may contain "baseline": blank
+    # out the test directory and the test name before looking.
+    root = str(project.path)
+    text = [line.replace(root, "<root>") for line in result.outlines]
+    assert not [
+        line
+        for line in text
+        if "baseline" in line.replace("test_no_baseline_means_no_changes", "")
+    ]
 
 
 def test_a_missing_file_is_a_usage_error(project: pytest.Pytester) -> None:
@@ -566,7 +574,7 @@ def test_update_with_a_non_utf8_directory_name_writes_a_matching_baseline(
     update = project.runpytest(*args, "--queryguard-update-baseline")
     update.assert_outcomes(passed=1)
     update.stdout.no_fnmatch_line("*INTERNALERROR*")
-    update.stdout.fnmatch_lines(["*queryguard: baseline updated*", "*1 entries*"])
+    update.stdout.fnmatch_lines(["*queryguard: baseline updated*", "*1 entry (*"])
     # the entry reads back to the same identity, so the next run is clean
     assert baseline.load(project.path / "qg.json")
     project.runpytest(*args).assert_outcomes(passed=1)
@@ -655,3 +663,20 @@ def test_a_failed_write_removes_its_temp_file(
     with pytest.raises(OSError, match="disk full"):
         baseline.write(tmp_path / "qg.json", [LAZY_ID])
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_the_written_file_keeps_the_usual_permissions(tmp_path: Path) -> None:
+    # a file meant for the repository and for CI artifacts: the umask's mode,
+    # not the owner-only mode of a temporary file
+    umask = os.umask(0o022)
+    try:
+        baseline.write(tmp_path / "new.json", [LAZY_ID])
+        assert (tmp_path / "new.json").stat().st_mode & 0o777 == 0o644
+        existing = tmp_path / "existing.json"
+        existing.write_text("{}", encoding="utf-8")
+        existing.chmod(0o664)
+        baseline.write(existing, [LAZY_ID])
+        assert existing.stat().st_mode & 0o777 == 0o664
+    finally:
+        os.umask(umask)

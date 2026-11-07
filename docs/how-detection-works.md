@@ -20,13 +20,17 @@ it saw.
 3. Each statement is stored with its call site: the first stack frame outside
    SQLAlchemy, pytest, the standard library, `site-packages` and the plugin
    itself. For async sessions the search continues in the parent greenlets,
-   where the awaiting code runs.
+   where the awaiting code runs. The methods of a `Session` or `AsyncSession`
+   subclass (SQLModel's `exec()`, an application's override of `execute()`)
+   are passed over too: they are part of the session, and the line that
+   called the session is the call site. Only when no other frame of the
+   application is on the stack is the session method the call site.
 4. After the test, the stored events are checked against the budget and the
    rules below. A test stores at most `queryguard_max_events` statements;
    past that they are only counted, and the report says so.
 
-The findings are then filtered by `queryguard_ignore`, the
-`allow_nplusone` marker and the [baseline](baseline.md), and reported as a
+The findings are then filtered by the `queryguard_ignore` option, the
+`queryguard_ignore` marker and the [baseline](baseline.md), and reported as a
 failure, a `QueryGuardWarning` or a line in the [SARIF file](sarif.md),
 depending on `queryguard_mode` and `queryguard_fail_on`.
 
@@ -34,14 +38,55 @@ depending on `queryguard_mode` and `queryguard_fail_on`.
 
 Every rule produces a finding with a kind, a label, a call site and a hint.
 
+In short, the kinds and what they do by default:
+
+| Kind | Reports | Default |
+|---|---|---|
+| [`relationship-load`](#relationship-load) | one relationship lazy-loaded for 2 or more parents | fails |
+| [`repeated-statement`](#repeated-statement) | one SELECT shape run 5 or more times | fails |
+| [`column-load`](#column-load) | 5 or more objects of one class reloading columns (deferred, expired, subclass) | fails |
+| [`cartesian-load`](#cartesian-load) | one SELECT that joins two collections side by side | warns (`queryguard_cartesian_load`) |
+| [`write-loop`](#write-loop) | one INSERT, UPDATE or DELETE per row | off (`queryguard_write_loop_threshold`) |
+| [`missing-index`](#missing-index) | a SELECT no index can serve | off (`--queryguard-index-check`) |
+| [`unused-eager-load`](#unused-eager-load-experimental) | an eager-loaded relationship the test never reads | off, experimental |
+| [`unused-columns`](#unused-columns-experimental) | wide rows of which the test reads few columns | off, experimental |
+
+"Fails" is in the default `queryguard_mode = fail`; in `warn` mode every kind
+only warns, and [budgets](budgets.md) fail either way.
+
 ### relationship-load
 
 One relationship (for example `Order.customer`) is lazy-loaded for at least
-`queryguard_relationship_threshold` (default 2) different parent objects.
+`queryguard_relationship_threshold` (default 2) different parent objects
+that one query line loaded (see "Where the parents were loaded" below).
 The label is the relationship. The hint is `joinedload` for a many-to-one or
 one-to-one relationship and `selectinload` for a collection. The rule counts
 distinct parent objects, not statements, so it is independent of how
 SQLAlchemy batches the loads.
+
+The parents are grouped by the line of the query that loaded them, as strict
+mode groups them: a loop over the rows of one query is an N+1, two
+single-object lookups that each read the relationship
+(`session.get(Order, 1).customer`, then `session.get(Order, 2).customer`) are
+not. Lookups made one by one at the same line (`for id in ids:
+get_order(id).customer`) count together. The finding counts the lazy loads of
+the groups that reach the threshold; when several do, it names the first
+query line and how many others. When the query of a parent is unknown
+(objects the test created that a query or `session.get()` handed back without
+reading their row, objects loaded before the test body, objects that two
+queries read), the plugin cannot tell which query it belongs to: such parents
+are grouped by the line that read the relationship instead. A loop reads it at
+one line; code that creates three objects and reads each one's relationship on
+a line of its own (SQLModel's tutorials) is no N+1. A parent of unknown origin
+also counts for every query line's group whose parents were read at the same
+line, so an unknown origin never hides a loop. A query line
+whose lazy loads all ran inside an `ignore("relationship-load")` block is
+left out of the finding, the other lines are still reported.
+
+The grouping has a cost: a loop over the rows of several queries that return
+one row each (`for order in [*open_orders, *closed_orders]` with one order of
+each) has a single parent per query line and is not reported; give the test
+two rows for one of the queries, as for any N+1 test.
 
 #### Refreshing an object with an eager relationship
 
@@ -84,8 +129,9 @@ object's load path (`Order -> Order.customer -> Customer`) on the object's
 state. The call site is looked up once per query, not per row. Objects of a
 `selectinload` or `subqueryload` query and of a lazy load inherit the site of
 the query they were loaded for. A lazy load later reads them from its parent,
-and the finding uses them only when all its loads agree: a single site (or the
-first one and how many others), and a single load path that can be written as
+and the finding uses them only when all its loads agree: a single site (or,
+when the parents of several query lines each reach the threshold, the first
+one and how many others), and a single load path that can be written as
 `select(Root).options(loader(A.b).loader(B.c))` (no aliased class or
 `of_type()`). Otherwise the line is left out and the hint names the
 relationship's own class, as without the information. An object whose row
@@ -93,7 +139,9 @@ two queries from different places read gets no origin; one that a query
 returns from the identity map without reading its row fires no event, so it
 keeps the query that loaded it. Origins are kept per measurement: an object
 loaded before the test body (or before a `record_queries()` block) has none
-there. The in-app mode does not record origins and prints the earlier hint.
+there. A block that starts or ends, in the test or in another thread, does
+not take the test's origins away. The in-app mode does not record origins
+and prints the earlier hint.
 
 #### How a lazy load's statement is attributed
 
@@ -217,13 +265,22 @@ before.
 
 At least `queryguard_column_load_threshold` (default 5) instances of one class
 each go back to the database for columns they already have a row for. There
-are two causes, and the report tells them apart: a deferred column
+are three causes, and the report tells them apart: a deferred column
 (`deferred()`, `defer()`, `load_only()`), where the hint is
-`undefer(Model.column)`; and attributes expired by `commit()`, `expire()` or
+`undefer(Model.column)`; attributes expired by `commit()`, `expire()` or
 `expire_all()`, where the hint is `expire_on_commit=False` (a `refresh()` in a
-loop gets its own hint). The label is the class and its deferred columns
+loop gets its own hint); and the columns of a subclass that a query of its base
+class left out (joined- or single-table inheritance: `select(Employee)` does
+not select `Engineer.language`), where the hint is `selectin_polymorphic` or
+`polymorphic_load="selectin"` for a table of their own, and `with_polymorphic`
+or `polymorphic_load="inline"` for single-table inheritance. SQLAlchemy marks
+those subclass columns as expired, so the plugin tells them from an `expire()`
+by the class each instance was loaded as: a base class of it that maps none of
+the columns. The hint names that class. A `session.expire(obj, [...])` of
+subclass columns of an object loaded through a base-class query gets the
+subclass hint too. The label is the class and its deferred columns
 (`Book.summary`) or the class and the cause (`Book (expired)`,
-`Book (refresh)`). `session.refresh(obj, ["name"])` is a refresh too, although
+`Book (refresh)`, `Engineer (polymorphic)`). `session.refresh(obj, ["name"])` is a refresh too, although
 it expires the names before loading them.
 
 #### Refresh after a write
@@ -269,7 +326,7 @@ detection is updated.
 ### What the count rules count together
 
 The relationship, repeated-statement, column-load and write-loop rules count
-over a scope. By default (`queryguard_repeat_scope = test`) the scope is the
+over a scope. By default (`queryguard_scope = test`) the scope is the
 whole test. With `session`, each SQLAlchemy `Session`, or each connection
 checkout for statements no `Session` ran, is counted on its own, and a finding
 needs one scope to reach the threshold. See [Tests with several sessions or
@@ -297,8 +354,11 @@ rows for one customer, and the ORM folds them back into 20 + 20 objects. The
 rows grow as the product of the collections, which is slow and memory-heavy
 long before a test notices.
 
-The rule reads the loader options of each top-level ORM SELECT. It reports a
-statement in which two collections are loaded with `joinedload` side by side:
+The rule reads the loader options of each top-level ORM SELECT, and the
+loader strategies of the mapping (`relationship(lazy="joined")`, or the old
+`lazy=False`) of each
+entity it loads. It reports a statement in which two collections are joined
+side by side:
 
 - **side by side**: neither is on the path of the other.
   `joinedload(Customer.orders).joinedload(Order.items)` is a chain whose rows
@@ -333,14 +393,35 @@ query each and no repeated rows:
   first at app/customers.py:12 in list_customers
   kind: cartesian-load  label: Customer.notes + Customer.orders
   each row repeats per pair of their items: the rows grow as their product
-  fix: load all but one of them with selectinload (one more query each, no repeated rows), e.g.
+  fix: load all but one of them with selectinload, e.g.
        select(Customer).options(joinedload(Customer.notes), selectinload(Customer.orders))
+       (one more query for each, and no repeated rows)
 ```
 
+- A strategy of the mapping counts as SQLAlchemy uses it: where no option of
+  the query names the relationship and no wildcard (`lazyload("*")`,
+  `Load(A).raiseload("*")`) covers it, and below an eager step only. Two
+  collections with `lazy="joined"` are reported on every `select()` of the
+  class, `session.get()` included; a collection with `lazy="joined"` next to
+  a `joinedload()` option is reported too. A relationship that loads lazily
+  is not followed (its children are joined only if it is read), and a
+  self-referential relationship is followed only as deep as its `join_depth`.
+  A `select()` of columns (`select(A.id)`), `from_statement()` and a
+  `Query` with `enable_eagerloads(False)` load no instances and are left out.
+
 It warns by default (`queryguard_cartesian_load = warn`); `fail` fails the
-test in `fail` mode, `off` turns the check off. Loader strategies set on the
-mapping (`relationship(lazy="joined")`) are not options of the query and are
-not seen.
+test in `fail` mode, `off` turns the check off.
+
+The rule does not count rows: it cannot know that two collections stay small,
+such as a user's two roles and two e-mail addresses joined into one login
+query, and reports them like two that grow. A test database rarely holds as
+many rows as production, so a rule that counted them would miss the products
+that matter. When a product stays small by design, keep the joins and silence
+that one finding: `queryguard_ignore = cartesian-load User.emails + User.roles`
+in the configuration, or `with ignore("cartesian-load"):` around the query (see
+[Ignoring findings](ignoring.md)). A product on the mapping is fixed on the
+query (`selectinload()` of all but one of the collections) or on the mapping
+(`lazy="selectin"`).
 
 ### missing-index
 

@@ -9,24 +9,10 @@ pip install pytest-queryguard
 It needs Python 3.10 or newer, pytest 8 or newer and SQLAlchemy 2.0.13 or
 newer; pip installs pytest and SQLAlchemy with it. The plugin registers itself
 with pytest: there is nothing to import or configure. `pytest -VV` lists it
-(`pytest-queryguard-0.7.0`).
+(`pytest-queryguard-0.8.0`).
 
-!!! note "Free-threaded Python"
-    The free-threaded builds (CPython 3.13t and 3.14t, no GIL) are not in the
-    package classifiers, so they are not a supported configuration. CI runs
-    only the in-app mode's tests (`tests/inapp`) on 3.14t, not the whole
-    suite. The whole suite was run once on CPython 3.14.4t with SQLAlchemy
-    2.1.1 and passed; 3.13t was not tried. On those builds the
-    counters of a measurement (statements, loads and database time) are
-    updated under a lock, so statements from several threads are all counted
-    and budgets hold; on a build with the GIL no lock is taken. The stored
-    events are list appends and the call-site caches are dictionaries, which
-    CPython keeps consistent without the GIL; the sequence numbers that order
-    Sessions and executions (`itertools.count`) stayed unique from 8 threads
-    on 3.14.4t. The missing-index check and the unused-eager-load tracker
-    check and then update shared sets, so with several threads they may do
-    one step twice; those were not examined further. Every listener fails
-    open, so a race there costs accuracy, not the test run.
+The free-threaded builds of CPython (3.13t, 3.14t) are not a supported
+configuration; see the [FAQ](faq.md#does-it-work-on-free-threaded-python).
 
 ## A first test
 
@@ -163,8 +149,9 @@ def test_rename_customers(session):
 ```
 
 All three tests pass without the plugin. With it installed,
-`pytest --queryguard-report` gives the output below (Python 3.13, SQLAlchemy
-2.1). Older versions print slightly different SQL, for example column aliases
+`pytest tests/test_orders.py --queryguard-report` gives the output below
+(Python 3.13, SQLAlchemy 2.1; a plain `pytest` also runs the fixed tests of
+the next section, if you have created them). Older versions print slightly different SQL, for example column aliases
 (`customer.id AS customer_id`) on SQLAlchemy 2.0, and the timing numbers differ
 from run to run.
 

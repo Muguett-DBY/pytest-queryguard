@@ -31,6 +31,13 @@ was started from.
 - The location is the file and the line of the first occurrence; the function
   is a logical location. See "Paths and the repository root" below for what
   the path is relative to.
+- Since 0.8.0: a `relationship-load` result whose parent query line is
+  certain has a `fixes` entry: the loader option and its import as insertions (an empty
+  `deletedRegion` with `insertedContent`), the same change as
+  `--queryguard-write-patch`, see
+  [A patch for the parent query](when-a-test-fails.md#a-patch-for-the-parent-query).
+  Every SARIF file has them, no option is needed. GitHub code scanning ignores
+  fixes; viewers such as the SARIF Viewer for VS Code offer to apply them.
 - `level` is `error` for a kind that fails tests and `warning` otherwise (see
   `queryguard_mode` and `queryguard_fail_on`).
 - `partialFingerprints` are derived from the finding identity only, not from
@@ -90,7 +97,7 @@ and the location has not been verified here.
 
 ## What is left out
 
-- Findings ignored with `queryguard_ignore` or `allow_nplusone`.
+- Findings ignored with the `queryguard_ignore` option or marker.
 - Findings accepted by the [baseline](baseline.md). They are left out instead
   of being marked with SARIF `suppressions`: GitHub's SARIF documentation does
   not say what it does with suppressed results, and leaving them out cannot
@@ -124,6 +131,7 @@ After an interrupted run (a collection error, Ctrl-C, a usage error or an
 internal pytest error) the file is not written and an existing one is left as
 it was: a report from the tests that did run would close the alerts of the
 tests that did not. The summary says so.
+`--collect-only` runs no test, so it does not write the file either.
 
 A collection error counts as an interrupted run also when the run goes on,
 with `--continue-on-collection-errors` or under pytest-xdist, so such a run

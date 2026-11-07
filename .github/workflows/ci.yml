@@ -18,9 +18,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# timeout-minutes: about twice the longest passing run (the test jobs take up
+# to 20 minutes on Windows), so a hung job fails instead of running for
+# GitHub's default of six hours. A hung test fails sooner, with the stacks of
+# its threads: pyproject.toml sets a per-test pytest-timeout.
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -36,6 +41,7 @@ jobs:
   # published from here.
   docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -44,10 +50,14 @@ jobs:
       - run: uv sync --only-group docs
       - run: uv run --no-sync python scripts/build_docs.py --strict
 
-  # Python 3.15 is a pre-release; setup-uv installs it like the others (uv
-  # downloads pre-release interpreters when the version is named explicitly).
+  # The Python versions here and in the other jobs are the package's Python
+  # classifiers: scripts/release_gate.py contents checks that they agree. A
+  # pre-release interpreter added here (uv downloads one when the version is
+  # named exactly, not as a range) goes in PRE_RELEASE_PYTHONS there until its
+  # final release.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -65,6 +75,13 @@ jobs:
           - python-version: "3.12"
             sqlalchemy: "2.0.49"
             pytest: "latest"
+          # "latest" above means the version in uv.lock, which exclude-newer
+          # holds back; this row installs what PyPI has today, so a new
+          # pytest or SQLAlchemy release that breaks the plugin shows up here
+          # first (pytest 9.2 made getini() raise UsageError, see #336)
+          - python-version: "3.14"
+            sqlalchemy: "newest"
+            pytest: "newest"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -79,6 +96,9 @@ jobs:
       - name: Pin SQLAlchemy to 2.0.49
         if: matrix.sqlalchemy == '2.0.49'
         run: uv pip install "sqlalchemy==2.0.49" sqlmodel
+      - name: Install the newest pytest and SQLAlchemy from PyPI
+        if: matrix.pytest == 'newest'
+        run: uv pip install --upgrade --exclude-newer "$(date -u +%Y-%m-%dT%H:%M:%SZ)" pytest sqlalchemy
       - name: Pin pytest to the oldest supported series
         if: matrix.pytest == '8.0'
         run: uv pip install "pytest==8.0.*"
@@ -91,6 +111,7 @@ jobs:
   # attributes statements from threads. tests/inapp checks both behaviors.
   free-threaded:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -105,6 +126,7 @@ jobs:
   # with the plugin measuring its own tests across workers.
   xdist:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -129,6 +151,7 @@ jobs:
   # which the other jobs skip, is run in CI.
   plugins:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -146,6 +169,7 @@ jobs:
   # and one Python version only: timing on several runners is just noise.
   bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -158,6 +182,7 @@ jobs:
   # newline handling, file locking). PostgreSQL tests skip without a server.
   os:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -196,6 +221,7 @@ jobs:
     # the matrix, so required checks that name them still match.
     name: postgres (${{ matrix.postgres }}, ${{ matrix.sqlalchemy }}${{ matrix.driver != 'pg8000' && format(', {0}', matrix.driver) || '' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -263,6 +289,7 @@ jobs:
   mysql:
     name: mysql (${{ matrix.image }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -312,16 +339,19 @@ jobs:
           tests/test_mysql_index_parameters.py
 
   # The GitHub Action in action/ on a tiny sample project (examples/action-sample)
-  # with one N+1 query: one run that reports it and does not fail, one that
-  # fails, one with the finding in a baseline.
+  # with one N+1 query: one run that reports it and does not fail (and shows
+  # the query-count trend of the last runs on main), one that fails, one with
+  # the finding in a baseline.
   # The upload step is skipped by the action on pull requests from forks and
   # for Dependabot. No step here uploads: a sample upload with no results
   # makes every pull request say "1 configuration not found" in its checks.
   action:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
-      # the first run compares its query counts with main and comments them
+      # the first run compares its query counts with main and comments them,
+      # with the trend of the last runs on main
       actions: read
       pull-requests: write
     steps:
@@ -336,11 +366,21 @@ jobs:
           sarif-file: report.sarif
           fail: "false"
           upload: "false"
+          trend: "5"
       - name: Check the SARIF file and the outputs
         env:
           EXIT_CODE: ${{ steps.report.outputs.exit-code }}
           JSON_FILE: ${{ steps.report.outputs.json-file }}
+          TREND_REPORT: ${{ steps.report.outputs.trend-report }}
+          # the trend runs on pull requests and on pushes to main, and then
+          # always writes a report (with this run alone if nothing else)
+          TREND_EXPECTED: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: |
+          if [ "$TREND_EXPECTED" = "true" ]; then
+            test -n "$TREND_REPORT"
+            grep -q "query counts over the last" "$TREND_REPORT"
+            grep -q "(this run)" "$TREND_REPORT"
+          fi
           python - <<'PY'
           import json, os
 

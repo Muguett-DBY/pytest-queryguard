@@ -29,11 +29,19 @@ _FREE_THREADED = not getattr(sys, "_is_gil_enabled", lambda: True)()
 
 @dataclass(slots=True, eq=False)
 class StrictGroup:
-    """The lazy loads of one relationship for the parents of one query line."""
+    """The lazy loads of one relationship for the parents of one query line.
 
-    first: CallSite | None
+    ``parents`` and ``first`` are those of the loads whose SELECT ran
+    (``add_relationship_load``): a load that a ``do_orm_execute`` listener
+    answers without one (a result cache), or that fails before it, is no
+    lazy load for the report, so it does not count here either.
+    """
+
+    first: CallSite | None = None
     parents: set[object] = field(default_factory=set)
     suppressed: bool = False  # its finding is ignored or baselined
+    # (the report's location, parents from other lines), once at the threshold
+    report: tuple[CallSite | None, bool] | None = None
 
 
 @dataclass(slots=True, eq=False)
@@ -51,6 +59,9 @@ class QueryCollector:
     # The ignore() blocks entered in the measured test's context, for the
     # stale-block report (see blocks.record_entered).
     blocks_entered: dict[tuple[str, int], IgnoreBlock] = field(default_factory=dict)
+    # The blocks that left out a finding in a check run in that context, such
+    # as QueryLog.assert_no_nplusone (an ordered set).
+    blocks_used: dict[IgnoreBlock, None] | None = None
     explained: set[object] = field(default_factory=set)
     # A statement is explained at its first run only. For one first explained
     # inside an ignore() block: explain key -> the blocks of every run of it
@@ -58,6 +69,12 @@ class QueryCollector:
     index_runs: dict[object, dict[tuple[IgnoreBlock, ...], None]] = field(
         default_factory=dict
     )
+    # The runs of the scans recorded before a catalog change, which makes the
+    # statements be explained again (see freeze_index_runs): id(scan) -> its
+    # runs, None for a statement not followed (its own run is all). None until
+    # the first change: most tests run no DDL.
+    frozen_runs: dict[int, dict[tuple[IgnoreBlock, ...], None] | None] | None = None
+    frozen_scans: int = 0  # how many of scans have their runs in frozen_runs
     scans: list[ScanEvent] = field(default_factory=list)
     index_notices: dict[str, None] = field(default_factory=dict)  # ordered set
     explain_errors: list[tuple[str, str]] = field(default_factory=list)
@@ -85,14 +102,23 @@ class QueryCollector:
     # relationship has been lazy-loaded for ``strict_threshold`` parents that
     # one query line loaded; returns the exception to raise, or None.
     strict: (
-        Callable[[RelationshipLoadEvent, CallSite | None, int], BaseException | None]
+        Callable[
+            [RelationshipLoadEvent, CallSite | None, int, bool], BaseException | None
+        ]
         | None
     ) = None
     strict_threshold: int = 2
-    # count each Session on its own, as queryguard_repeat_scope = session does
+    # count each Session on its own, as queryguard_scope = session does
     strict_by_scope: bool = False
     # (relationship, query site of the parents, Session or None) -> group
     strict_groups: dict[tuple[object, ...], StrictGroup] = field(default_factory=dict)
+    # Set by the strict listener when it raises this collector's error: the
+    # test may then fail with another exception (a library that wrapped the
+    # strict one, or a failure after code that swallowed it).
+    strict_raised: bool = False
+    # The generation push() gave it: the origins of instances (where their
+    # query ran, see listeners._ORIGIN_ATTR) noted from then on are its own.
+    since: int = 0
     # Guards the counters and the length checks on a free-threaded build.
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -124,6 +150,8 @@ class QueryCollector:
     def add_relationship_load(self, event: RelationshipLoadEvent) -> None:
         if _FREE_THREADED:
             with self._lock:
+                if self.strict is not None:
+                    self._strict_ran(event)
                 self.relationship_load_count += 1
                 if (
                     self.max_events is None
@@ -131,6 +159,8 @@ class QueryCollector:
                 ):
                     self.relationship_loads.append(event)
             return
+        if self.strict is not None:
+            self._strict_ran(event)
         self.relationship_load_count += 1
         if self.max_events is None or len(self.relationship_loads) < self.max_events:
             self.relationship_loads.append(event)
@@ -168,39 +198,155 @@ class QueryCollector:
         here. A group whose finding is ignored or baselined is decided once.
         A load inside an ``ignore("relationship-load")`` block never raises.
         """
-        parent = load.parent
-        if self.strict is None or parent is None or parent.callsite is None:
+        strict = self.strict
+        key = self._strict_key(load)
+        if strict is None or key is None:
             return None
-        scope = load.scope if self.strict_by_scope else None
-        key = (load.relationship, parent.callsite, scope)
+        scope = key[2]
         if _FREE_THREADED:
             with self._lock:
                 group = self._strict_group(key, load)
+                if group is not None and group.report is None:
+                    group.report = self._report_site(load, scope)
         else:
             group = self._strict_group(key, load)
+            if group is not None and group.report is None:
+                group.report = self._report_site(load, scope)
         if group is None:
             return None
         if load.ignores and covers(load.ignores, KIND_RELATIONSHIP):
             # inside an ignore() block: the load counts for the group (a
             # later load outside the block raises), this one never raises
             return None
-        error = self.strict(load, group.first, len(group.parents))
+        assert group.report is not None
+        first, other_lines = group.report
+        count = self._strict_count(group, load)
+        error = strict(load, first or group.first or load.callsite, count, other_lines)
         if error is None:
             group.suppressed = True
         return error
 
+    def _report_site(
+        self, load: RelationshipLoadEvent, scope: object | None
+    ) -> tuple[CallSite | None, bool]:
+        """(where the report puts this N+1, whether other lines loaded parents).
+
+        The report makes one finding per relationship (per scope with
+        ``queryguard_repeat_scope = session``) from the query lines whose
+        parents make an N+1, located at its first lazy load; ignore patterns
+        and the baseline must match that line, not the first load of this
+        group's line. Loads of parents whose query is unknown join it when
+        read where its parents were read (or where no line is known), or when
+        those read at their line are an N+1 of their own, as in the report.
+        When parents of other lines are in it, the
+        report's finding has no patch, so neither has the strict error.
+        Computed once per group, when it reaches the threshold.
+        """
+        here = load.parent.callsite if load.parent is not None else None
+        first: CallSite | None = None
+        other_lines = False
+        loads = [
+            earlier
+            for earlier in self.relationship_loads
+            if earlier.relationship == load.relationship
+            and earlier.parent_key is not None
+            and (scope is None or earlier.scope == scope)
+        ]
+        # the lines that read this group's relationship: a parent of unknown
+        # origin joins the group when read at one of them (or at no known line)
+        reads = {
+            earlier.callsite
+            for earlier in loads
+            if earlier.parent is not None and earlier.parent.callsite == here
+        }
+        reads.add(load.callsite)
+        # the parents of unknown origin per reading line, as the report groups
+        # them; one read at no known line counts for every line
+        unknown: dict[CallSite | None, set[object]] = {}
+        for earlier in loads:
+            if earlier.parent is None or earlier.parent.callsite is None:
+                unknown.setdefault(earlier.callsite, set()).add(earlier.parent_key)
+        anywhere = unknown.get(None, set())
+        for earlier in loads:
+            parent = earlier.parent
+            line = None if parent is None else parent.callsite
+            if line is None and earlier.callsite is not None:
+                if earlier.callsite not in reads and (
+                    len(unknown[earlier.callsite] | anywhere) < self.strict_threshold
+                ):
+                    continue  # read elsewhere, too few to be an N+1 of its own
+            elif line is not None and line != here:
+                group = self.strict_groups.get((load.relationship, line, scope))
+                if group is None or len(group.parents) < self.strict_threshold:
+                    continue  # a line with too few parents is no N+1
+            if first is None and earlier.callsite is not None:
+                first = earlier.callsite
+            if line != here:
+                other_lines = True
+        return first, other_lines
+
+    def _strict_key(self, load: RelationshipLoadEvent) -> tuple[object, ...] | None:
+        """(relationship, query site of the parents, scope), or None when the
+        parent's query line is unknown (such loads never count here)."""
+        parent = load.parent
+        if parent is None or parent.callsite is None:
+            return None
+        scope = load.scope if self.strict_by_scope else None
+        return (load.relationship, parent.callsite, scope)
+
     def _strict_group(
         self, key: tuple[object, ...], load: RelationshipLoadEvent
     ) -> StrictGroup | None:
-        """The group of this load once it has reached the threshold, else None."""
+        """The group of this load once it, with the parents whose lazy load
+        ran before it, reaches the threshold; else None. The load itself
+        counts once its SELECT runs (``_strict_ran``)."""
         group = self.strict_groups.get(key)
         if group is None:
-            group = self.strict_groups[key] = StrictGroup(first=load.callsite)
+            group = self.strict_groups[key] = StrictGroup()
         if group.suppressed:
             return None
-        if len(group.parents) < self.strict_threshold:  # no more is needed
-            group.parents.add(load.parent_key)
-        return group if len(group.parents) >= self.strict_threshold else None
+        return (
+            group if self._strict_count(group, load) >= self.strict_threshold else None
+        )
+
+    def _strict_count(self, group: StrictGroup, load: RelationshipLoadEvent) -> int:
+        """The parents of the group with this load's, at most the threshold."""
+        parents = group.parents
+        count = len(parents) + (load.parent_key not in parents)
+        return min(count, self.strict_threshold)
+
+    def _strict_ran(self, load: RelationshipLoadEvent) -> None:
+        """A lazy load ran its SELECT (or raised in strict mode): its parent
+        now counts for the group ``strict_check`` made for it."""
+        key = self._strict_key(load)
+        group = None if key is None else self.strict_groups.get(key)
+        if group is not None and len(group.parents) < self.strict_threshold:
+            group.parents.add(load.parent_key)  # no more is needed
+            if group.first is None:
+                group.first = load.callsite
+
+    def freeze_index_runs(self) -> None:
+        """Keep the runs of the scans so far; the statements start afresh.
+
+        After a catalog change a statement is explained again: its later runs
+        belong to that explain, and do not count for the scans before it.
+        """
+        scans = self.scans[self.frozen_scans :]
+        if scans:
+            if self.frozen_runs is None:
+                self.frozen_runs = {}
+            for scan in scans:
+                self.frozen_runs[id(scan)] = self.index_runs.get(scan.key)
+            self.frozen_scans += len(scans)
+        if self.index_runs:
+            self.index_runs = {}
+
+    def runs_of(self, scan: ScanEvent) -> dict[tuple[IgnoreBlock, ...], None] | None:
+        """The blocks of every run of ``scan``'s statement, or None if not followed."""
+        frozen = self.frozen_runs
+        if frozen is not None and id(scan) in frozen:
+            return frozen[id(scan)]
+        return self.index_runs.get(scan.key)
 
     def note_index_run(self, key: object, tags: tuple[IgnoreBlock, ...]) -> None:
         """Another run of an explained statement (see ``index_runs``)."""
@@ -271,6 +417,7 @@ def _rebuild() -> None:
 def push(collector: QueryCollector) -> None:
     global _generation
     _generation += 1
+    collector.since = _generation
     callsite.new_measurement()
     _stack.append(collector)
     _rebuild()

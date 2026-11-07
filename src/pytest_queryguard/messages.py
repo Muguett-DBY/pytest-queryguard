@@ -11,6 +11,7 @@ from .detectors import (
 )
 from .events import (
     CAUSE_DEFERRED,
+    CAUSE_POLYMORPHIC,
     CAUSE_REFRESH,
     Advice,
     CallSite,
@@ -30,6 +31,7 @@ from .findings import (
     KIND_WRITE_LOOP,
     Finding,
     IndexAdvice,
+    SourceFix,
     Stack,
     docs_url,
 )
@@ -37,13 +39,13 @@ from .indexes import table_label
 from .listeners import Failure
 
 _SQL_LIMIT = 200
-_REPEAT_FIX = (
-    "fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop"
-)
-_BATCHED_FIX = (
-    "fix: this query already fetches several rows with IN (...), so it is the "
-    "calls that repeat: call it once with all the ids, or combine the calls"
-)
+_REPEAT_FIX = [
+    "  fix: fetch all rows in one query (WHERE id IN (...)) instead of in a loop"
+]
+_BATCHED_FIX = [
+    "  fix: this query already fetches several rows with IN (...), so it is the",
+    "       calls that repeat: call it once with all the ids, or combine the calls",
+]
 _IN_LIST = "IN (...)"
 
 
@@ -63,8 +65,8 @@ def _scope_hint(finding: Detection) -> list[str]:
         return []
     return [
         "  note: if each belongs to a separate request or unit of work, this is not a",
-        "  loop; set queryguard_repeat_scope = session to count each Session on its",
-        "  own (QueryLog.assert_no_nplusone: repeat_scope='session')",
+        "  loop; set queryguard_scope = session to count each Session on its",
+        "  own (QueryLog.assert_no_nplusone: scope='session')",
     ]
 
 
@@ -155,17 +157,43 @@ def _loader(scalar: bool) -> str:
     return "joinedload" if scalar else "selectinload"
 
 
+def loader_query(root: str, path: Sequence[tuple[str, bool]]) -> str:
+    """``select(root).options(...)`` loading each ``(label, scalar)`` step.
+
+    ``joinedload`` for a many-to-one or one-to-one step, ``selectinload`` for
+    a collection; the fix line of a ``relationship-load`` finding, also used
+    by the static check (``pytest_queryguard.lint``).
+    """
+    steps = ".".join(f"{_loader(scalar)}({label})" for label, scalar in path)
+    return f"select({root}).options({steps})"
+
+
+def loader_steps(finding: RelationshipFinding) -> list[tuple[str, str]]:
+    """The loader option as (loader, relationship) steps from the parent query.
+
+    Through the chain that loaded the parents when it is known, else the
+    relationship alone.
+    """
+    steps = [(_loader(scalar), label) for label, scalar in finding.parent_path]
+    if finding.parent_root is None:
+        steps = []
+    return [*steps, (_loader(finding.scalar), finding.relationship)]
+
+
+def loader_option(finding: RelationshipFinding) -> str:
+    """``joinedload(Order.customer).joinedload(Customer.country)`` for a finding."""
+    return ".".join(f"{loader}({label})" for loader, label in loader_steps(finding))
+
+
 def _parent_query(finding: RelationshipFinding) -> str:
     """The parent query with the loader, through the chain that loaded the parents.
 
     Without a known chain, the query of the relationship's own class.
     """
-    loader = f"{_loader(finding.scalar)}({finding.relationship})"
-    if finding.parent_root is None:
-        parent = finding.relationship.split(".", 1)[0]
-        return f"select({parent}).options({loader})"
-    steps = [f"{_loader(scalar)}({label})" for label, scalar in finding.parent_path]
-    return f"select({finding.parent_root}).options({'.'.join([*steps, loader])})"
+    root = finding.parent_root
+    if root is None:
+        root = finding.relationship.split(".", 1)[0]
+    return f"select({root}).options({loader_option(finding)})"
 
 
 def _relationship_block(
@@ -213,7 +241,7 @@ def _block(finding: Detection, stack: Stack, cwd: Path | None) -> list[str]:
         _statement_line(finding),
         docs_line(KIND_REPEAT),
         *_scope_hint(finding),
-        f"  {_BATCHED_FIX if _IN_LIST in finding.sql else _REPEAT_FIX}",
+        *(_BATCHED_FIX if _IN_LIST in finding.sql else _REPEAT_FIX),
     ]
 
 
@@ -270,6 +298,26 @@ def _column_block(
                 "usually needed"
             ),
         ]
+    elif finding.cause == CAUSE_POLYMORPHIC:
+        base = finding.base or owner
+        head = (
+            f"  {owner} loaded its subclass columns on its own {count} "
+            f"(a query of the base class {base} leaves them out)"
+        )
+        if finding.single_table:
+            # the columns are in the base's table: select them with it
+            fix = [
+                "  fix: select the subclass columns with the query, e.g.",
+                f"       select(with_polymorphic({base}, [{owner}]))",
+                f'       or set polymorphic_load="inline" in the __mapper_args__ of {owner}',
+            ]
+        else:
+            fix = [
+                "  fix: load the subclass columns with the query, e.g.",
+                f"       select({base}).options(selectin_polymorphic({base}, [{owner}]))",
+                "       or select(with_polymorphic(...)), or set",
+                f'       polymorphic_load="selectin" in the __mapper_args__ of {owner}',
+            ]
     elif finding.cause == CAUSE_REFRESH:
         head = f"  {owner} was reloaded with session.refresh() {count}"
         fix = [
@@ -325,19 +373,24 @@ def make_findings(
     return [make_finding(d, cwd=cwd) for d in detections]
 
 
-def format_strict(finding: Finding, parents: int) -> str:
-    """The text of the exception queryguard_strict raises at the access."""
+def format_strict(finding: Finding, parents: int, *, patch: bool = False) -> str:
+    """The text of the exception queryguard_strict raises at the access.
+
+    With ``patch`` (queryguard_show_patch), the finding's fix follows it.
+    """
     return "\n".join(
         [
             (
                 f"queryguard strict: {finding.label} was lazy-loaded for {parents} "
-                "parents loaded at one line; this access is the N+1"
+                "parents loaded at the same line; this access is the N+1"
             ),
             "",
             finding.message,
+            *(patch_lines(finding.fix) if patch and finding.fix is not None else ()),
             "",
-            "  (queryguard_strict raises at the lazy load; allow_nplusone,",
-            "  queryguard_ignore or an ignore() block lets it pass, as for the report)",
+            "  (queryguard_strict raises at the lazy load instead of at the end of the",
+            "  test; a queryguard_ignore marker or pattern, an ignore() block or a",
+            "  baseline entry lets it pass, as for the report)",
         ]
     )
 
@@ -346,9 +399,15 @@ _UNUSED_KINDS = (KIND_UNUSED_EAGER_LOAD, KIND_UNUSED_COLUMNS)
 
 
 def format_findings(
-    findings: Sequence[Finding | Detection], *, cwd: Path | None = None
+    findings: Sequence[Finding | Detection],
+    *,
+    cwd: Path | None = None,
+    patches: bool = False,
 ) -> str:
-    """The N+1 report; detector results are turned into findings first."""
+    """The N+1 report; detector results are turned into findings first.
+
+    With ``patches``, each finding that has a fix is followed by its diff.
+    """
     made = [f if isinstance(f, Finding) else make_finding(f, cwd=cwd) for f in findings]
     if made and all(f.kind == KIND_UNUSED_EAGER_LOAD for f in made):
         lines = ["queryguard: unused eager load detected (experimental)"]
@@ -363,7 +422,20 @@ def format_findings(
     for finding in made:
         lines.append("")
         lines.append(finding.message)
+        if patches and finding.fix is not None:
+            lines.extend(patch_lines(finding.fix))
     return "\n".join(lines)
+
+
+def patch_lines(fix: SourceFix) -> list[str]:
+    """The patch of a finding for the report, indented under it."""
+    return [
+        (
+            "  patch (git apply from the rootdir; --queryguard-write-patch=PATH "
+            "writes them all):"
+        ),
+        *(f"    {line}" for line in fix.diff.splitlines()),
+    ]
 
 
 def _truncate(sql: str) -> str:
@@ -476,8 +548,9 @@ def format_time_budget(
     ]
     lines.extend(_timing_lines(statements, spent, cwd, top=5))
     if total is not None and total > len(statements):
+        missing = total - len(statements)
         lines.append(
-            f"  ... {total - len(statements)} more statements were not stored "
+            f"  ... {missing} more {'statement was' if missing == 1 else 'statements were'} not stored "
             "(queryguard_max_events), so the slowest list may be incomplete"
         )
     return "\n".join(lines)
@@ -644,20 +717,24 @@ def format_failure(failure: Failure) -> list[str]:
 
 def format_stale_ignores(
     patterns: Sequence[object],
-    markers: Sequence[tuple[str, object]],
+    markers: Sequence[tuple[str, object, str]],
     blocks: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
     """The session summary lines for ignores that matched no finding.
 
-    ``blocks`` are ignore() blocks as ("file:line", "ignore('kind')").
+    ``markers`` are (test, rule, marker name): queryguard_ignore or its alias
+    allow_nplusone, as the test spells it. ``blocks`` are ignore() blocks as
+    ("file:line", "ignore('kind')").
     """
     lines: list[str] = []
     if patterns:
         lines.append("queryguard_ignore patterns that matched no finding in this run:")
         lines.extend(f"  {pattern}" for pattern in patterns)
-    if markers:
-        lines.append("allow_nplusone patterns that matched no finding in their test:")
-        lines.extend(f"  {nodeid}: {rule}" for nodeid, rule in markers)
+    for marker in dict.fromkeys(name for _, _, name in markers):
+        lines.append(f"{marker} marker patterns that matched no finding in their test:")
+        lines.extend(
+            f"  {nodeid}: {rule}" for nodeid, rule, name in markers if name == marker
+        )
     if blocks:
         lines.append("ignore() blocks that left out no finding in this run:")
         lines.extend(f"  {where}: {text}" for where, text in blocks)
@@ -670,7 +747,7 @@ _STALE_BASELINE_SHOWN = 20
 
 
 def format_stale_baseline(
-    stale: Sequence[tuple[str, str, str | None, str | None]], path: Path
+    stale: Sequence[tuple[str, str, str | None, str | None]], path: str
 ) -> list[str]:
     """The session summary lines for baseline entries no finding matched."""
     if not stale:

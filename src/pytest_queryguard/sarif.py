@@ -11,10 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, NamedTuple
 
+from . import fixpatch
 from .fileio import atomic_write_text
 from .findings import (
     KIND_CARTESIAN_LOAD,
@@ -26,7 +29,9 @@ from .findings import (
     KIND_UNUSED_EAGER_LOAD,
     KIND_WRITE_LOOP,
     Finding,
+    SourceFix,
     docs_url,
+    message_text,
 )
 
 SARIF_VERSION = "2.1.0"
@@ -40,15 +45,15 @@ Identity = tuple[str, str, str | None, str | None]
 Collected = dict[Identity, tuple[Finding, str]]
 
 
-class _Rule(NamedTuple):
+class Rule(NamedTuple):
     name: str
     short: str
     full: str
     fix: str
 
 
-_RULES: dict[str, _Rule] = {
-    KIND_RELATIONSHIP: _Rule(
+_RULES: dict[str, Rule] = {
+    KIND_RELATIONSHIP: Rule(
         "RelationshipLoad",
         "A relationship is lazy-loaded once per row (N+1)",
         "A relationship was lazy-loaded for many parent rows, one query each. "
@@ -56,7 +61,7 @@ _RULES: dict[str, _Rule] = {
         "Load the relationship with the parent query: joinedload() for a "
         "many-to-one or one-to-one relationship, selectinload() for a collection.",
     ),
-    KIND_REPEAT: _Rule(
+    KIND_REPEAT: Rule(
         "RepeatedStatement",
         "The same statement runs many times with different parameters",
         "One statement ran many times from one source line, usually in a loop "
@@ -64,16 +69,18 @@ _RULES: dict[str, _Rule] = {
         "Fetch all rows in one query, for example WHERE id IN (...), instead of "
         "querying in a loop.",
     ),
-    KIND_COLUMN_LOAD: _Rule(
+    KIND_COLUMN_LOAD: Rule(
         "ColumnLoad",
         "Deferred or expired columns are loaded instance by instance",
-        "Instances loaded their deferred columns, or columns expired by "
-        "commit(), expire() or refresh(), one query each.",
+        "Instances loaded their deferred columns, columns expired by "
+        "commit(), expire() or refresh(), or the columns of their subclass "
+        "that a query of the base class left out, one query each.",
         "Use undefer(Model.column) in the query (or drop defer(), load_only() "
         "or deferred()); for expired attributes create the Session with "
-        "expire_on_commit=False or reload the instances with one query.",
+        "expire_on_commit=False or reload the instances with one query; for "
+        "subclass columns use with_polymorphic() or selectin_polymorphic().",
     ),
-    KIND_WRITE_LOOP: _Rule(
+    KIND_WRITE_LOOP: Rule(
         "WriteLoop",
         "Rows are written one statement at a time",
         "The same INSERT, UPDATE or DELETE ran row by row from one source line "
@@ -82,7 +89,7 @@ _RULES: dict[str, _Rule] = {
         "insert() or update() with a list of parameter sets, or one "
         "DELETE ... WHERE id IN (...).",
     ),
-    KIND_UNUSED_EAGER_LOAD: _Rule(
+    KIND_UNUSED_EAGER_LOAD: Rule(
         "UnusedEagerLoad",
         "A relationship is eager-loaded and never read (experimental)",
         "A query loaded a relationship with selectinload(), joinedload(), "
@@ -90,7 +97,7 @@ _RULES: dict[str, _Rule] = {
         "Remove the eager option from the query, or load the relationship "
         "only in the queries whose result uses it.",
     ),
-    KIND_UNUSED_COLUMNS: _Rule(
+    KIND_UNUSED_COLUMNS: Rule(
         "UnusedColumns",
         "A wide row is loaded and few of its columns are read (experimental)",
         "Queries of one function loaded many columns of a class and the test "
@@ -98,7 +105,7 @@ _RULES: dict[str, _Rule] = {
         "Load only the columns that are used with .options(load_only(...)), or "
         "defer() the large columns that are never read.",
     ),
-    KIND_CARTESIAN_LOAD: _Rule(
+    KIND_CARTESIAN_LOAD: Rule(
         "CartesianLoad",
         "One query joins two collections side by side",
         "A SELECT loads two collections with joinedload() where neither is on "
@@ -107,7 +114,7 @@ _RULES: dict[str, _Rule] = {
         "Load all but one of the collections with selectinload(): one more "
         "query each, and no repeated rows.",
     ),
-    KIND_MISSING_INDEX: _Rule(
+    KIND_MISSING_INDEX: Rule(
         "MissingIndex",
         "A query reads a table in full where an index could be used",
         "EXPLAIN shows a sequential scan that filters or joins on columns "
@@ -117,6 +124,11 @@ _RULES: dict[str, _Rule] = {
     ),
 }
 KINDS = tuple(_RULES)
+
+
+def rule(kind: str) -> Rule | None:
+    """The description and fix hint of a finding kind, None for an unknown one."""
+    return _RULES.get(kind)
 
 
 def rule_id(kind: str) -> str:
@@ -156,6 +168,8 @@ def add(store: Collected, finding: Finding, level: str) -> None:
         tests=old.tests + finding.tests,
         peak=max(_peak(old), _peak(finding)),
         stack=best.stack,
+        # a test whose parent query was certain gives the result its fix
+        fix=best.fix or old.fix or finding.fix,
     )
     store[key] = (merged, LEVEL_ERROR if LEVEL_ERROR in (level, old_level) else level)
 
@@ -175,6 +189,7 @@ def to_wire(store: Collected) -> list[dict[str, Any]]:
             "tests": f.tests,
             "peak": f.peak,
             "stack": [list(frame) for frame in f.stack],
+            "fix": fixpatch.to_wire(f.fix),
             "level": level,
         }
         for f, level in store.values()
@@ -198,6 +213,7 @@ def merge_wire(store: Collected, wire: Iterable[Mapping[str, Any]]) -> None:
                 (str(file), int(line), str(function))
                 for file, line, function in entry.get("stack", ())
             ),
+            fix=fixpatch.from_wire(entry.get("fix")),
         )
         add(store, finding, entry["level"])
 
@@ -209,7 +225,9 @@ def fingerprint(identity: Identity) -> str:
     """A stable hash of the identity: same finding, same value, on every run."""
     kind, label, file, function = identity
     text = "\x1f".join((kind, label, file or "", function or ""))
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    # surrogatepass: a path that is not valid UTF-8 holds lone surrogates
+    # (surrogateescape); valid text hashes as plain UTF-8
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def repo_path(file: str | None) -> str | None:
@@ -222,7 +240,16 @@ def repo_path(file: str | None) -> str | None:
         return None
     if PurePosixPath(file).is_absolute() or PureWindowsPath(file).is_absolute():
         return None
-    return PurePosixPath(file.replace("\\", "/")).as_posix()
+    path = PurePosixPath(file.replace("\\", "/")).as_posix()
+    if _SURROGATE.search(path):
+        # a file name that is not valid UTF-8 (surrogateescape): its bytes,
+        # percent-encoded, which a URI can carry
+        return urllib.parse.quote(os.fsencode(path), safe="/")
+    return path
+
+
+# A lone surrogate: a path that is not valid UTF-8 (surrogateescape).
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def workspace_prefix(rootdir: Path | None, workspace: str | None) -> str:
@@ -260,8 +287,7 @@ def _rule(kind: str) -> dict[str, Any]:
 
 
 def _message(finding: Finding) -> str:
-    lines = [line.removeprefix("  ") for line in finding.message.splitlines()]
-    text = "\n".join(lines).strip() or finding.label
+    text = message_text(finding)
     if finding.tests <= 1:
         return text
     # The result merges the finding from several tests: say how the counts
@@ -343,7 +369,44 @@ def _result(finding: Finding, level: str, prefix: str = "") -> dict[str, Any] | 
     flows = _code_flows(finding, location, prefix)
     if flows:
         result["codeFlows"] = flows
+    fixes = _fixes(finding.fix, prefix)
+    if fixes:
+        result["fixes"] = fixes
     return result
+
+
+def _fixes(fix: SourceFix | None, prefix: str) -> list[dict[str, Any]]:
+    """The finding's patch as a SARIF fix: insertions as empty deleted regions.
+
+    GitHub code scanning ignores fixes; other viewers offer to apply them.
+    """
+    if fix is None:
+        return []
+    path = repo_path(fix.file)
+    if path is None:
+        return []
+    if prefix:
+        path = f"{prefix}/{path}"
+    replacements = [
+        {
+            "deletedRegion": {
+                "startLine": edit.line,
+                "startColumn": edit.utf16_column + 1,
+                "endLine": edit.line,
+                "endColumn": edit.utf16_column + 1,
+            },
+            "insertedContent": {"text": edit.text},
+        }
+        for edit in sorted(fix.insertions, key=lambda e: (e.line, e.column, e.text))
+    ]
+    return [
+        {
+            "description": {"text": fix.description},
+            "artifactChanges": [
+                {"artifactLocation": {"uri": path}, "replacements": replacements}
+            ],
+        }
+    ]
 
 
 def build(
@@ -394,7 +457,11 @@ def _sort_key(identity: Identity) -> tuple[str, str, str, str, bool, bool]:
 
 
 def dumps(document: Mapping[str, Any]) -> str:
-    return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    # A lone surrogate left in a message (a path that is not valid UTF-8, its
+    # location already percent-encoded) becomes U+FFFD: the file stays valid
+    # UTF-8 JSON for every consumer.
+    return _SURROGATE.sub("\ufffd", text)
 
 
 def write(path: Path, document: Mapping[str, Any]) -> None:

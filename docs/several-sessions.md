@@ -18,7 +18,7 @@ The statement runs five times in the test and once in each request.
 
 ```toml
 [tool.pytest.ini_options]
-queryguard_repeat_scope = "session"
+queryguard_scope = "session"
 ```
 
 | Value | What is counted together |
@@ -31,6 +31,11 @@ It applies to four kinds: `repeated-statement` (also the small-repeat rule),
 `unused-eager-load` do not count occurrences and are not affected. The default
 stays `test`, so an upgrade changes nothing until you set the option.
 
+Before 0.8.0 the option was called `queryguard_repeat_scope` (and the argument
+below `repeat_scope=`), although it scopes more than the repeat rule. The old
+names still work until 2.0 and emit a `QueryGuardDeprecationWarning`; setting
+both names to different values is a usage error.
+
 With `test`, a finding whose occurrences come from more than one scope says so:
 
 ```
@@ -39,15 +44,15 @@ With `test`, a finding whose occurrences come from more than one scope says so:
   kind: repeated-statement  label: SELECT users.id FROM users WHERE users.token = ?
   docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#repeated-statement
   note: if each belongs to a separate request or unit of work, this is not a
-  loop; set queryguard_repeat_scope = session to count each Session on its
-  own (QueryLog.assert_no_nplusone: repeat_scope='session')
+  loop; set queryguard_scope = session to count each Session on its
+  own (QueryLog.assert_no_nplusone: scope='session')
 ```
 
 With `session`, the message says `ran 6 times in one Session or connection
 checkout`, and the count is the largest one scope has. The identity of a finding
 (kind, label, file and function) and the baseline format do not change.
 
-`QueryLog.assert_no_nplusone(repeat_scope="session")` does the same for a
+`QueryLog.assert_no_nplusone(scope="session")` does the same for a
 recorded block; like the thresholds it does not read the ini option.
 
 ## How the scope is decided
@@ -75,7 +80,10 @@ recorded block; like the thresholds it does not read the ini option.
 - One `Session` is one scope. If a test passes the same `Session` to every
   request (a dependency override that returns the fixture's session), the
   requests are one scope and the repeats add up again. Give each request its
-  own `Session` in the override, or keep `test`.
+  own `Session` in the override, or keep `test`. To keep the test's
+  rolled-back transaction, bind each request's `Session` to the test's
+  connection with `join_transaction_mode="create_savepoint"`; see
+  [A session per request in a test transaction](recipes-test-transaction.md).
 - Two `Session`s that use one shared `Connection` at the same time are not told
   apart; the later transaction's `Session` wins until the next one starts.
 - A loop that opens a new `Session` per round (`for x in xs: with Session()

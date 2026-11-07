@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import gc
 import logging
 import subprocess
@@ -17,7 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.horizontal_shard import ShardedSession
 from sqlalchemy.orm import Session, joinedload
 
-from pytest_queryguard import QueryGuardWarning, record_queries
+from pytest_queryguard import (
+    QueryGuardDeprecationWarning,
+    QueryGuardWarning,
+    record_queries,
+)
 from pytest_queryguard import app as queryguard
 from pytest_queryguard import listeners as pytest_listeners
 from pytest_queryguard.app import RequestReport, Settings, _listeners
@@ -39,11 +44,11 @@ def test_importing_registers_nothing_and_needs_no_pytest() -> None:
         "import pytest_queryguard.app as qg\n"
         "from pytest_queryguard.app import _listeners as L\n"
         "assert 'pytest' not in sys.modules, 'pytest was imported'\n"
-        "assert not event.contains(Session, 'after_begin', L._on_after_begin)\n"
+        "assert not event.contains(Session, 'after_flush', L._on_after_flush)\n"
         "assert not L._watched\n"
         "qg.QueryGuardASGI(lambda *a: None)\n"
         "qg.QueryGuardWSGI(lambda *a: [])\n"
-        "assert not event.contains(Session, 'after_begin', L._on_after_begin)\n"
+        "assert not event.contains(Session, 'after_flush', L._on_after_flush)\n"
         "print('ok')\n"
     )
     result = subprocess.run(
@@ -59,7 +64,6 @@ def test_watch_and_unwatch_are_idempotent(engine: Engine) -> None:
     assert event.contains(
         engine, "before_cursor_execute", _listeners._on_before_cursor_execute
     )
-    assert event.contains(Session, "after_begin", _listeners._on_after_begin)
     assert event.contains(Session, "after_flush", _listeners._on_after_flush)
     queryguard.unwatch(engine)
     queryguard.unwatch(engine)
@@ -68,8 +72,23 @@ def test_watch_and_unwatch_are_idempotent(engine: Engine) -> None:
         engine, "before_cursor_execute", _listeners._on_before_cursor_execute
     )
     # The Session listeners go with the last watched engine.
-    assert not event.contains(Session, "after_begin", _listeners._on_after_begin)
     assert not event.contains(Session, "after_flush", _listeners._on_after_flush)
+
+
+def test_watch_adds_no_do_orm_execute_listener(watched: Engine) -> None:
+    """The cursor listener reads the ORM's options, as the plugin's does.
+
+    A ``do_orm_execute`` listener would make SQLAlchemy prepare each ORM
+    statement twice, and leak load options on some releases (see
+    tests/test_yield_per_leak.py).
+    """
+    with Session(watched) as session:
+        found = [
+            fn
+            for fn in session.dispatch.do_orm_execute
+            if getattr(fn, "__module__", "").startswith("pytest_queryguard.app")
+        ]
+    assert found == []
 
 
 def test_the_session_listeners_after_the_last_watched_engine_is_collected(
@@ -82,14 +101,14 @@ def test_the_session_listeners_after_the_last_watched_engine_is_collected(
     gc.collect()
     assert not _listeners._watched
     # Still registered, but they do nothing until a watch() or unwatch() call.
-    assert event.contains(Session, "after_begin", _listeners._on_after_begin)
-    calls: list[object] = []
-    monkeypatch.setattr(_listeners, "find_callsite", lambda: calls.append(1))
+    assert event.contains(Session, "after_flush", _listeners._on_after_flush)
     other = create_engine("sqlite://")
     seed(other)
-    with queryguard.track(report=[]):
+    with queryguard.track(report=[]), Session(other) as session:
         _lazy_loop(other)
-    assert calls == []
+        session.add(Customer(name="new"))
+        session.flush()  # the after_flush and after_begin listeners run
+        assert _listeners._WRITTEN_ATTR not in session.__dict__
     queryguard.unwatch(other)
     assert not event.contains(Session, "after_begin", _listeners._on_after_begin)
     assert not event.contains(Session, "after_flush", _listeners._on_after_flush)
@@ -182,7 +201,7 @@ def test_max_events_caps_what_is_stored(watched: Engine) -> None:
     assert report.truncated
 
 
-def test_repeat_scope_session_counts_each_session_alone(watched: Engine) -> None:
+def test_scope_session_counts_each_session_alone(watched: Engine) -> None:
     def work() -> None:
         for _ in range(2):
             with Session(watched) as session:
@@ -191,10 +210,39 @@ def test_repeat_scope_session_counts_each_session_alone(watched: Engine) -> None
 
     with queryguard.track(report=[]) as per_request:
         work()
-    with queryguard.track(repeat_scope="session", report=[]) as per_session:
+    with queryguard.track(scope="session", report=[]) as per_session:
         work()
     assert [f.kind for f in per_request.findings] == ["repeated-statement"]
     assert per_session.findings == ()
+    # the deprecated name still works, and warns at the caller's line
+    with pytest.warns(QueryGuardDeprecationWarning, match="use scope= instead") as rec:
+        old = queryguard.track(repeat_scope="session", report=[])
+    assert rec[0].filename == __file__
+    with old as per_session:
+        work()
+    assert per_session.findings == ()
+
+
+def test_settings_repeat_scope_is_a_deprecated_alias() -> None:
+    with pytest.warns(QueryGuardDeprecationWarning) as record:
+        settings = Settings(repeat_scope="session")
+    assert str(record[0].message) == (
+        "repeat_scope= is deprecated and will be removed in pytest-queryguard "
+        "2.0; use scope= instead"
+    )
+    assert record[0].filename == __file__
+    assert (settings.scope, settings.repeat_scope) == ("session", None)
+    assert Settings().scope == "request"
+    assert type(Settings().scope) is str
+    # a copy does not warn again or see a conflict
+    assert dataclasses.replace(settings, scope="request").scope == "request"
+    with pytest.warns(QueryGuardDeprecationWarning):
+        assert Settings(scope="session", repeat_scope="session").scope == "session"
+    with (
+        pytest.warns(QueryGuardDeprecationWarning),
+        pytest.raises(ValueError, match="disagree"),
+    ):
+        Settings(scope="request", repeat_scope="session")
 
 
 def test_the_report_targets(watched: Engine, caplog: pytest.LogCaptureFixture) -> None:
@@ -227,8 +275,8 @@ def test_settings_are_validated() -> None:
         Settings(repeat_threshold=1)
     with pytest.raises(ValueError, match="small_repeat_threshold"):
         Settings(small_repeat_threshold=5)
-    with pytest.raises(ValueError, match="repeat_scope"):
-        Settings(repeat_scope="test")
+    with pytest.raises(ValueError, match="scope must be one of"):
+        Settings(scope="test")
     with pytest.raises(ValueError, match="budget"):
         Settings(budgets={"/x": -1})
     with pytest.raises(ValueError, match="report"):

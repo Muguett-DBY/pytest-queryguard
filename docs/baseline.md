@@ -10,7 +10,7 @@ fix at once. A baseline file records them, so that:
 
 The baseline applies to the pytest plugin and to every finding kind
 (`relationship-load`, `repeated-statement`, `column-load`, `write-loop`,
-`unused-eager-load`, `unused-columns` and `missing-index`). `QueryLog.assert_no_nplusone()` does not read it.
+`unused-eager-load`, `unused-columns`, `cartesian-load` and `missing-index`). `QueryLog.assert_no_nplusone()` does not read it.
 
 ## Create it
 
@@ -58,11 +58,12 @@ queryguard-baseline.json: 3 entries (0 added, 0 removed)
 this run did not cover the whole suite: 2 entries kept because their tests did not run
 ```
 
-A test is identified by the file and function of the entry, so the rule
-applies to an entry whose call site is inside a test function that ran. An
-entry for code outside a test (a helper or application module, or an entry
-with no file) is kept on a partial run unless a finding of the same identity
-shows up again; a full run prunes it. The same holds for a deleted or renamed
+An entry's `file` and `function` are the call site of its finding, usually
+in application code (`app/orders.py`, `list_orders`). The rule above applies
+only to an entry whose call site is inside a test function, which ties it to
+that test. An entry for code outside a test (a helper or application module,
+or an entry with no file) is kept on a partial run unless a finding of the
+same identity shows up again; a full run prunes it. The same holds for a deleted or renamed
 test: a partial run cannot tell it from one that did not run, so its entry is
 removed on the next full run. Tests skipped before their call phase count as
 not run. If the summary of your usual full run says it did not cover the whole
@@ -119,7 +120,7 @@ An entry is the identity of a finding: kind, label, file and function.
   table's name until the baseline is updated. Run once with
   `--queryguard-update-baseline`, or replace the partitions' entries in the
   file by one entry with the partitioned table's name in the label.
-- Findings that `queryguard_ignore` or `allow_nplusone` leave out are not
+- Findings that the `queryguard_ignore` option or marker leaves out are not
   written to the baseline.
 - Two parts of an entry depend on the environment. The label of a
   `repeated-statement` finding is the normalized SQL as SQLAlchemy renders it,
@@ -138,16 +139,18 @@ An entry is the identity of a finding: kind, label, file and function.
 
 ```
 =========== queryguard: stale baseline entries ===========
-1 baseline entry in /repo/queryguard-baseline.json matched no finding in this run:
+1 baseline entry in queryguard-baseline.json matched no finding in this run:
   relationship-load Order.items (app/orders.py, list_orders)
 They are fixed, or this run did not cover them. After a full run, prune them
 with --queryguard-update-baseline.
 ```
 
 This is a notice and does not fail the run. After a partial run (`pytest
-tests/one_file.py`, `-k`) many entries look stale because their tests did not
-run; prune only after a full run. The list is not shown when measurement is
-off, or after an internal error or a crashed worker.
+tests/one_file.py`, `-k`, `--lf`, `-x`, Ctrl-C, a collection error or
+`--collect-only`) the list holds only entries of tests that ran, as a partial
+update would replace them; an entry of a function outside the tests that ran
+is not listed. The list is not shown when measurement is off, or after an
+internal error or a crashed worker.
 
 ## Errors
 

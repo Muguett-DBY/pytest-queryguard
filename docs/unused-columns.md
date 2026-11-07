@@ -31,6 +31,10 @@ queryguard: unused columns detected (experimental)
   never read: email, phone, street, city, country, notes, bio, avatar, settings
   fix: load only what is used, .options(load_only(Account.name, Account.owner_id)),
   or defer() the large columns that are never read
+  (experimental: if they are read later, or by code the plugin cannot see,
+  leave them out with @pytest.mark.queryguard_ignore(
+      "Account", kind="unused-columns")
+  or the queryguard_ignore pattern unused-columns Account)
 ```
 
 The suggested `load_only()` lists the columns that were read and the columns
@@ -44,10 +48,10 @@ primary key is always loaded. For a query that is used by other code too,
 The kind works with the usual mechanisms:
 
 ```python
-@pytest.mark.allow_nplusone(kind="unused-columns")
+@pytest.mark.queryguard_ignore(kind="unused-columns")
 def test_export(session): ...
 
-@pytest.mark.allow_nplusone("Account")  # one class
+@pytest.mark.queryguard_ignore("Account")  # one class
 def test_report(session): ...
 ```
 
@@ -78,7 +82,14 @@ A group is reported when all of these hold:
   key, foreign keys and other columns of relationships, the discriminator,
   the version counter and the columns of a `composite()` count as read;
 - some attribute of some of its instances was read, so the code does look at
-  these instances through attribute access.
+  these instances through attribute access;
+- some query of the group can return more than one row. A query whose
+  `WHERE` pins every primary key column of the class with `=` (a detail page's
+  `select(Article).where(Article.id == id)`, `session.get()`, `filter_by(id=...)`)
+  returns at most one row, so `load_only()` would save one row's width. A
+  lookup per item is reported by the repeated-statement rule instead, and the
+  batched query that fixes it is checked here. A condition on an aliased copy
+  of the table, an `OR` or a range does not count as pinning.
 
 The thresholds are constants, not options, while the check is experimental.
 

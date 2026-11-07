@@ -15,6 +15,14 @@ It ships from 0.5.0 on. It is experimental (see
 names in `pytest_queryguard.app`, their settings and the panel's JSON may still
 change in a minor release, without a deprecation period.
 
+**In short:** call `queryguard.watch(engine)` at startup and add
+`QueryGuardASGI` (FastAPI, Starlette, any ASGI app) or `QueryGuardWSGI`
+(Flask, any WSGI app). Each request with a finding or over its budget logs a
+WARNING on the `pytest_queryguard.app` logger. Optional: a
+[panel](#the-panel) at `/_queryguard/`, [findings in the page](#findings-in-the-page),
+[OpenTelemetry and Sentry](#reporting-to-opentelemetry-and-sentry), and
+`track()` for jobs and tasks [outside HTTP](#outside-http).
+
 ## FastAPI and Starlette
 
 Watch the engine, add the middleware. A shortened version of `app/main.py` in
@@ -257,13 +265,14 @@ arguments, or one `queryguard.Settings(...)` object as `settings=`.
 | `column_load_threshold` | 5 | Instances loading deferred or expired columns on their own |
 | `small_repeat_threshold` | None | Optional; as in the plugin |
 | `write_loop_threshold` | None | Optional; as in the plugin |
-| `repeat_scope` | `"request"` | `"request"`: everything in a request counts together; `"session"`: each Session on its own |
+| `scope` | `"request"` | `"request"`: everything in a request counts together; `"session"`: each Session on its own. Before 0.8.0 `repeat_scope`, which still works with a `QueryGuardDeprecationWarning` until 2.0 |
 | `budgets` | `{}` | `"METHOD path"` or `"path"` to the most statements a request may run |
 | `default_budget` | None | The budget of a request no key matches |
 | `report` | `"log"` | `"log"`, `"warn"`, a callable, or a list of them |
 | `max_events` | 1000 | Statements stored per request; more are counted, not stored |
 | `sample_rate` | 1.0 | Fraction of requests measured, from 0 to 1 |
 | `min_db_time` | 0.0 | Seconds of database time below which a request's N+1 rules do not run |
+| `page_report` | `"off"` | Since 0.8.0. `"footer"` or `"console"`: add a request's findings to its own HTML page (see [Findings in the page](#findings-in-the-page)) |
 
 The rules are the plugin's; see [How detection works](how-detection-works.md).
 The missing-index check does not run in the application.
@@ -311,6 +320,10 @@ middleware_options = {"report": ["log", to_my_tracker]}
 ```
 
 An exception in a callable is logged and does not reach the request.
+Callables are called synchronously when the request ends, in the request's
+thread or on the event loop, so keep them fast: hand the report to a queue
+or schedule a task. A coroutine function (`async def`) is refused with a
+`ValueError` when the settings are made, since it would never be awaited.
 
 **Sampling and fast requests.** `sample_rate=0.1` measures one request in
 ten, chosen at random; the others run as if the middleware were not there
@@ -386,6 +399,67 @@ a `track()` unit) by method alone, with the path in the title and context.
 
 Both report only what the `report` targets get: requests with findings or
 over their budget.
+
+## Findings in the page
+
+Since 0.8.0.
+
+Like Bullet in Rails, the middleware can put a request's findings into the
+HTML page it answers with, so they show up where you are already looking:
+
+```python
+app.add_middleware(queryguard.QueryGuardASGI, page_report="footer")
+app.wsgi_app = queryguard.QueryGuardWSGI(app.wsgi_app, page_report="console")
+```
+
+- `"footer"` adds an `<aside id="queryguard-page-report">` with a one-line
+  summary (`queryguard: 1 problem in GET /orders: 6 statements`) and, in a
+  `<details>` element, the same text the `log` report writes.
+- `"console"` adds a `<script>` that calls `console.warn()` with that text
+  and an object with the request, the statement count, the budget and each
+  finding's kind, label, file, line, function and count.
+
+The report goes before the page's last `</body>` (in any letter case), or at
+the end of a page without one, and `Content-Length` is set to the new
+length. Only requests that were measured (see `sample_rate`) and have
+findings or are over their budget get one; it reflects the statements run
+until the body was complete, and statements of a later background task
+count only for the usual report.
+
+Only a response the middleware can change safely gets a report. It must be
+`text/html` (any charset in which `</body>` is ASCII, so not UTF-16, nor a
+body that starts with a UTF-16 or UTF-32 byte order mark), a 2xx
+status other than 204, 205 and 206, an answer to a method other than `HEAD`,
+with a `Content-Length` of at most 4 MiB and without `Content-Encoding`
+(`gzip`, `br`: wrap a compressing middleware around queryguard's, in
+Starlette by adding `GZipMiddleware` after it, so queryguard sees the page
+before it is compressed) or `Content-Range`. A streamed response
+without `Content-Length` (`StreamingResponse`, a Flask generator) and a file
+sent with `wsgi.file_wrapper` pass through as they are. Every other response
+passes through untouched, and an HTML response the rules allow is held back
+only until its body is complete: ASGI holds its start message and body
+parts, WSGI calls `start_response` once the body iterable has been read (an
+application that uses the legacy `write()` callable is passed through; a
+later `start_response` call with `exc_info` replaces the held page, whose
+body is then not sent). A changed page loses its `ETag` and digest headers
+(`Content-MD5`, `Digest`, `Content-Digest`, `Repr-Digest`), which described
+the original bytes. For such a page the detectors run twice: once when its
+body is complete and once when the request ends.
+
+Every value is escaped: the footer's text with `html.escape()` and character
+references for non-ASCII characters, the script's data as JSON in which `<`,
+`>` and `&` are `\u` escapes, so SQL text, labels and paths cannot end the
+element or add markup. An inline script is blocked by a
+Content-Security-Policy without `'unsafe-inline'`, and queryguard does not
+edit the application's policy. When the response has a
+`Content-Security-Policy` or `Content-Security-Policy-Report-Only` header,
+or the page a `<meta http-equiv="Content-Security-Policy">` element,
+`"console"` falls back to the footer, and the footer has no `style`
+attributes, so nothing triggers a violation report.
+
+Like the panel, the page report is for development only: it shows SQL text,
+file names and line numbers to whoever loads the page, with no loopback
+check or token. Never enable it in production or on a server others reach.
 
 ## The panel
 
@@ -544,26 +618,29 @@ from the pytest plugin's own error state, so neither switches the other off.
 
 Importing `pytest_queryguard.app` or creating the middleware registers
 nothing; only `watch()` adds listeners: to that engine, and, while any engine
-is watched, to `Session` for `after_begin` and `after_flush`. Load labels come
-from each cursor execution's ORM options, without a `do_orm_execute` listener
-or a shared `Engine` listener. This also avoids the `yield_per`/`autoflush`
-option leak that such a listener causes on SQLAlchemy 2.0.20 to 2.0.49.
-Outside a request the shared listeners return after one `ContextVar.get()`.
-`unwatch()` of the last watched engine removes them.
+is watched, `after_begin` and `after_flush` to `Session`. Outside a request
+those shared listeners return after one `ContextVar.get()`. `unwatch()` of
+the last watched engine removes them. As the pytest plugin does, the
+engine's `before_cursor_execute` listener reads which relationship or column
+load an ORM `SELECT` runs for from that statement's own options; there is no
+`do_orm_execute` listener, so SQLAlchemy prepares each ORM statement once,
+and the `yield_per` issue of SQLAlchemy 2.0.20 to 2.0.49 (see
+[Limitations](limitations.md)) does not apply.
 `python scripts/bench_overhead.py --app` times a statement with the engine not
 watched, watched but outside a request, and inside one. On an in-memory SQLite
-database, on a 16-core laptop that was otherwise idle (load average 1.3 to
-1.6, balanced power profile, Python 3.14, SQLAlchemy 2.1; minimum of 21 runs,
+database, on a 16-core laptop with the benchmark pinned to two cores
+(`taskset -c 6-7`, Python 3.13, SQLAlchemy 2.1; median of 9 runs,
 microseconds per statement):
 
 | Statement | Not watched | Watched, outside a request | Inside a request |
 |---|---|---|---|
-| Core `SELECT` | 71.7 | 85.0 (+13.3) | 94.5 (+22.7) |
-| ORM `select()` | 144.3 | 167.6 (+23.3) | 191.7 (+47.3) |
+| Core `SELECT` | 40.9 | 46.8 (+5.9) | 54.2 (+13.3) |
+| ORM `select()` | 77.2 | 83.5 (+6.3) | 98.4 (+21.2) |
 
 Run to run, these numbers move by a few microseconds; the shared `Session`
-and `Engine` listeners cost well under one microsecond of that when timed on
-their own.
+listeners cost well under one microsecond of that when timed on their own.
+Before the `do_orm_execute` listener was dropped, the same run measured
++11.0 (outside a request) and +31.6 (inside one) for the ORM `select()`.
 
 Treat these as an order of magnitude and measure your own application; see
 [Performance](performance.md) for the method.

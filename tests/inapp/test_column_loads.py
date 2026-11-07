@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
-from sqlalchemy import ForeignKey, create_engine, select
+from sqlalchemy import ForeignKey, create_engine, inspect, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
@@ -319,6 +320,42 @@ def test_a_joined_inheritance_subclass_column_is_a_column_load(
             _ = employee.budget
     assert [f.kind for f in report.findings] == ["column-load"]
     assert _column_loads(report)[0].count == ROWS
+
+
+def test_a_column_load_is_read_from_the_options_of_its_select(db: Engine) -> None:
+    """The refresh state and the compile options are all the listener needs.
+
+    The column load of a joined-inheritance subclass runs through
+    ``from_statement()``, which ``ORMExecuteState`` does not report as a
+    column load before SQLAlchemy 2.0.30 (issue #161); the SELECT carries the
+    same options either way.
+    """
+    with Session(db) as session:
+        session.add(Team(name="t"))
+        session.commit()
+        team = session.scalars(select(Team)).one()
+        context = SimpleNamespace(
+            execution_options={
+                "_sa_orm_load_options": SimpleNamespace(_refresh_state=inspect(team))
+            },
+            invoked_statement=SimpleNamespace(
+                _propagate_attrs={"compile_state_plugin": "orm"},
+                _compile_options=SimpleNamespace(
+                    _for_refresh_state=True, _only_load_props=frozenset({"name"})
+                ),
+            ),
+        )
+        with queryguard.track(report=[]):
+            _listeners._on_before_cursor_execute(
+                None, None, "SELECT team.name", (), context, False
+            )
+            active = _core.live()
+            assert active is not None
+            loads = list(active.collector.column_loads)
+            statements = list(active.collector.statements)
+    assert _core.internal_error() is None
+    assert [load.owner for load in loads] == ["Team"]
+    assert [s.column_load for s in statements] == [True]
 
 
 def test_the_eager_loader_a_refresh_runs_is_not_a_lazy_load(db: Engine) -> None:

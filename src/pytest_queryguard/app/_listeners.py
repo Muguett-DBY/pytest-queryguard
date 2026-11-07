@@ -17,19 +17,14 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .. import blocks
-from ..blocks import IgnoreBlock
+from .._compat import option_engine_parent
 from ..callsite import find_callsite, find_flush
-from ..events import RelationshipLoadEvent, StatementEvent
+from ..events import StatementEvent
 from ..listeners import (
     _NO_LABELS,
-    OrmSelect,
-    _is_refresh_eager_load,
     _is_write,
-    _Labels,
-    _loader_session,
+    _orm_load,
     _Written,
-    column_load_counts,
-    column_load_of,
     flush_record,
     orm_select,
     scope_of_connection,
@@ -45,66 +40,17 @@ _SCOPE_ATTR = "_queryguard_scope"  # the attribute listeners.py tags with
 _WRITTEN_ATTR = "_queryguard_app_written"
 
 
-def _written(session: Any, active: _core.Active) -> _Written | None:
-    """The record of the Session's latest flush, if it ran in this unit."""
+def _written(session: Any) -> _Written | None:
+    """The record of the Session's latest flush, if it ran in the current unit.
+
+    Called by ``_orm_load`` for a refresh only, from the cursor listener of
+    the unit's own statement.
+    """
     entry = getattr(session, "__dict__", {}).get(_WRITTEN_ATTR)
-    if entry is None or entry[0] != active.tracker.report.id:
+    active = _core.live()
+    if entry is None or active is None or entry[0] != active.tracker.report.id:
         return None
     return entry[1]  # type: ignore[no-any-return]
-
-
-def _orm_load(
-    conn: Any,
-    orm: OrmSelect,
-    active: _core.Active,
-    ignores: tuple[IgnoreBlock, ...],
-) -> _Labels:
-    """Record a load from its SELECT, using this unit's flush record and sites."""
-    options = orm.compile_options
-    load_options = orm.load_options
-    if getattr(options, "_for_refresh_state", False):
-        instance = getattr(load_options, "_refresh_state", None)
-        session = getattr(instance, "session", None)
-        found = column_load_of(load_options, options, session, ignores)
-        if found is None:
-            return _NO_LABELS
-        instance, column = found
-        column.callsite = find_callsite(active.tracker.sites)
-        if column_load_counts(column, instance, _written(session, active)):
-            active.collector.add_column_load(column)
-        return _Labels(None, column, False, column.callsite)
-
-    path = getattr(options, "_current_path", None)
-    if path is None or path.is_root:
-        return _NO_LABELS
-    prop = path[-1]
-    parent = getattr(load_options, "_lazy_loaded_from", None)
-    counted = parent is None or not _is_refresh_eager_load(orm.execution_options)
-    key: object = None
-    if parent is not None:
-        key = parent.identity_key
-        if key is None:
-            key = id(parent)
-        session = parent.session
-    else:
-        session = _loader_session(orm.execution_options)
-    scope = scope_of_connection(conn) if session is None else scope_of_session(session)
-    relationship = RelationshipLoadEvent(
-        str(prop),
-        key,
-        find_callsite(active.tracker.sites),
-        getattr(prop, "uselist", None) is False,
-        scope,
-        ignores=ignores,
-    )
-    if counted:
-        active.collector.add_relationship_load(relationship)
-    return _Labels(
-        relationship.relationship,
-        None,
-        parent is not None and counted,
-        relationship.callsite,
-    )
 
 
 def _on_after_flush(session: Session, flush_context: Any) -> None:
@@ -125,7 +71,7 @@ def _on_after_flush(session: Session, flush_context: Any) -> None:
 
 
 def _on_after_begin(session: Session, transaction: Any, connection: Any) -> None:
-    """Tag the connection with its Session, for repeat_scope="session"."""
+    """Tag the connection with its Session, for scope="session"."""
     if _core.live() is None or _core._error is not None or not _watched:
         return
     try:
@@ -149,20 +95,32 @@ def _on_before_cursor_execute(
         return
     try:
         collector = active.collector
+        sites = active.tracker.sites
         write = _is_write(statement)
         ignores = blocks.current()
+        # The relationship or column load this SELECT runs for, from the ORM's
+        # options of this execution, as in listeners.py (no do_orm_execute
+        # listener): the same labels as the plugin's, with the unit's own
+        # call sites and record of the latest flush.
         orm = None if write else orm_select(context)
-        labels = _NO_LABELS if orm is None else _orm_load(conn, orm, active, ignores)
-        column = labels.column_load
-        if column is not None:
-            column.sql = statement
+        labels = (
+            None
+            if orm is None
+            else _orm_load(
+                conn, orm, (collector,), ignores, sites, _written, parents=False
+            )
+        )
+        if labels is None:
+            labels = _NO_LABELS
+        column_load = labels.column_load
+        if column_load is not None:
+            column_load.sql = statement
+        site = labels.site
         stmt = StatementEvent(
             statement,
-            labels.site
-            if labels.site is not None
-            else find_callsite(active.tracker.sites),
+            site if site is not None else find_callsite(sites),
             labels.relationship,
-            column_load=column is not None,
+            column_load=column_load is not None,
             lazy_load=labels.lazy,
             parameters=None if executemany else parameters,
             executemany=bool(executemany),
@@ -216,7 +174,7 @@ def _in_chain(engine: Any, ancestor: Engine) -> bool:
     while engine is not None:
         if engine is ancestor:
             return True
-        engine = getattr(engine, "_proxied", None)
+        engine = option_engine_parent(engine)
     return False
 
 
@@ -225,7 +183,7 @@ def _in_watched(engine: Any) -> bool:
     while engine is not None:
         if engine in _watched:
             return True
-        engine = getattr(engine, "_proxied", None)
+        engine = option_engine_parent(engine)
     return False
 
 
@@ -292,7 +250,7 @@ def _add_session_listeners() -> None:
 
 
 def _drop_session_listeners_if_unused() -> None:
-    """Remove the shared Session and Engine listeners once no engine is watched.
+    """Remove the shared Session listeners once no engine is watched.
 
     Also after the last watched engine was garbage collected without
     ``unwatch()``; not from a finalizer, which could run in the middle of a

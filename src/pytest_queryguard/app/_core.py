@@ -7,6 +7,7 @@ Nothing here registers a listener or imports pytest. The listeners are in
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import functools
 import inspect
 import itertools
@@ -21,6 +22,7 @@ import time
 import traceback
 import warnings
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -33,7 +35,7 @@ from ..collector import QueryCollector
 from ..detectors import SCOPE_SESSION, SCOPE_TEST, detect
 from ..findings import Finding
 from ..messages import display_root, format_budget, format_findings, make_findings
-from ..warnings import QueryGuardWarning
+from ..warnings import QueryGuardWarning, default, renamed
 
 logger = logging.getLogger("pytest_queryguard.app")
 
@@ -43,6 +45,8 @@ REPEAT_SCOPES = (SCOPE_REQUEST, SCOPE_SESSION)
 Reporter = Callable[["RequestReport"], object]
 ReportTarget = str | Reporter
 _TARGETS = ("log", "warn")
+PAGE_REPORTS = ("off", "footer", "console")
+_BAD_REPORT = "report must be 'log', 'warn', a callable or a sequence of them, got {!r}"
 _METHOD = re.compile(r"[A-Za-z][A-Za-z-]*")  # GET, M-SEARCH, VERSION-CONTROL
 
 
@@ -76,9 +80,11 @@ class Settings:
     """What the in-app mode checks for each request and how it reports.
 
     The thresholds and their defaults are the pytest plugin's (see
-    docs/how-detection-works.md). ``repeat_scope`` is ``"request"`` (all
+    docs/how-detection-works.md). ``scope`` is ``"request"`` (all
     statements of a request count together) or ``"session"`` (each
-    SQLAlchemy Session counts on its own).
+    SQLAlchemy Session counts on its own). ``repeat_scope`` is its deprecated
+    name (removed in 2.0): passing it warns and sets ``scope``, and the field
+    itself then reads None.
 
     ``budgets`` maps ``"METHOD path"`` or ``"path"`` to the most statements a
     request may run; the path is an ``fnmatch`` pattern matched against the
@@ -98,6 +104,11 @@ class Settings:
     out count for the enclosing unit). ``min_db_time`` (seconds) skips the
     N+1 rules for a request whose database time (``RequestReport.db_time``)
     is below it; budgets still apply.
+
+    ``page_report`` (``"off"``, ``"footer"`` or ``"console"``) makes the
+    middleware add a request's findings to its HTML response: as a footer
+    element, or as a ``console.warn`` script (a footer when the response has
+    a Content-Security-Policy). ``track()`` ignores it.
     """
 
     relationship_threshold: int = 2
@@ -105,15 +116,20 @@ class Settings:
     column_load_threshold: int = 5
     small_repeat_threshold: int | None = None
     write_loop_threshold: int | None = None
-    repeat_scope: str = SCOPE_REQUEST
+    scope: str = default(SCOPE_REQUEST)
     budgets: Mapping[str, int] = field(default_factory=dict)
     default_budget: int | None = None
     report: ReportTarget | Sequence[ReportTarget] = "log"
     max_events: int | None = 1000
     sample_rate: float = 1.0
     min_db_time: float = 0.0
+    page_report: str = "off"
+    repeat_scope: str | None = None
 
     def __post_init__(self) -> None:
+        scope = renamed("scope", self.scope, "repeat_scope", self.repeat_scope)
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "repeat_scope", None)
         _check_threshold("relationship_threshold", self.relationship_threshold)
         _check_threshold("repeat_threshold", self.repeat_threshold)
         _check_threshold("column_load_threshold", self.column_load_threshold)
@@ -127,10 +143,9 @@ class Settings:
                 )
         if self.write_loop_threshold is not None:
             _check_threshold("write_loop_threshold", self.write_loop_threshold)
-        if self.repeat_scope not in REPEAT_SCOPES:
+        if self.scope not in REPEAT_SCOPES:
             raise ValueError(
-                f"repeat_scope must be one of {', '.join(REPEAT_SCOPES)}, "
-                f"got {self.repeat_scope!r}"
+                f"scope must be one of {', '.join(REPEAT_SCOPES)}, got {self.scope!r}"
             )
         for key, limit in dict(self.budgets).items():
             if not isinstance(key, str) or not key.strip():
@@ -149,11 +164,33 @@ class Settings:
             raise ValueError(
                 f"min_db_time must be a number of seconds >= 0, got {self.min_db_time!r}"
             )
+        if self.page_report not in PAGE_REPORTS:
+            raise ValueError(
+                f"page_report must be one of {', '.join(PAGE_REPORTS)}, "
+                f"got {self.page_report!r}"
+            )
+        report = self.report
+        if not isinstance(report, str) and not callable(report):
+            # A frozen copy, as for budgets: a list changed later, or an
+            # iterator the check below would use up, must not change targets.
+            # Not a mapping (its keys) or a set (no order).
+            if isinstance(report, Mapping | AbstractSet):
+                raise ValueError(_BAD_REPORT.format(report))  # noqa: TRY004  # as the other settings
+            try:
+                report = tuple(report)
+            except TypeError:
+                raise ValueError(_BAD_REPORT.format(report)) from None
+            object.__setattr__(self, "report", report)
         for target in self.targets:
             if not callable(target) and target not in _TARGETS:
+                raise ValueError(_BAD_REPORT.format(target))
+            if callable(target) and _is_async(target):
+                # Called without await, it would never run: refuse it here,
+                # not with a "never awaited" warning in every request.
                 raise ValueError(
-                    "report must be 'log', 'warn', a callable or a sequence of "
-                    f"them, got {target!r}"
+                    f"report callables are called synchronously; {target!r} is "
+                    "a coroutine function. Use a plain function, which can "
+                    "hand the report to a queue or schedule a task."
                 )
         # A frozen copy, so a dictionary changed later does not change budgets.
         object.__setattr__(self, "budgets", dict(self.budgets))
@@ -163,7 +200,7 @@ class Settings:
         report = self.report
         if isinstance(report, str) or callable(report):
             return (report,)
-        return tuple(report)
+        return report  # type: ignore[return-value]  # a tuple since __post_init__
 
     def budget_for(
         self, method: str | None, route: str | None, path: str | None
@@ -458,58 +495,103 @@ class Tracker:
             fail(exc, "the end of a request")
             report.error = report.error or f"{type(exc).__name__}: {exc}"
             return report
+        finally:
+            self._release()
         self.warning = _emit(report, self.settings)
         return report
 
+    def preview(self, route: str | None = None) -> RequestReport | None:
+        """The report as it stands now, for the page report; None without problems.
+
+        The unit goes on: statements that run later (a background task) count
+        for the report ``finish()`` makes. Nothing is reported from here.
+        """
+        if self._done:
+            return None
+        report = dataclasses.replace(self.report, findings=(), budget=None)
+        if route is not None and report.route is None:
+            report.route = route
+        _check(report, self.settings, self.active.collector, statements=False)
+        return report if report.problems and report.error is None else None
+
+    def _release(self) -> None:
+        """Drop the unit's events (parameters included) once its report is made.
+
+        A context can outlive its unit: a pool worker that inherited it, a
+        task the request started and left running. Through ``current`` it
+        keeps this unit's ``Active``, so the events must not stay in it.
+        """
+        collector = self.active.collector
+        # A listener that passed live() just before the unit ended stores
+        # nothing more; it still counts.
+        collector.max_events = 0
+        collector.statements = []
+        collector.relationship_loads = []
+        collector.column_loads = []
+        collector.cartesian_loads = []
+        self.sites = {}
+
     def _evaluate(self) -> None:
-        report, settings, collector = self.report, self.settings, self.active.collector
+        _check(self.report, self.settings, self.active.collector, statements=True)
+
+
+def _check(
+    report: RequestReport,
+    settings: Settings,
+    collector: QueryCollector,
+    *,
+    statements: bool,
+) -> None:
+    """Fill ``report`` from ``collector``: counts, budget, findings, message."""
+    if statements:
         report.statements = tuple(_to_query(e) for e in list(collector.statements))
-        report.statement_count = collector.statement_count
-        report.db_time = collector.db_time
-        error = internal_error()
-        if error is not None:
-            # The counts may be incomplete: no findings, no budget verdict.
-            report.error = f"{type(error).__name__}: {error}"
-            return
-        report.budget = settings.budget_for(report.method, report.route, report.path)
-        root = display_root()
-        scope = SCOPE_SESSION if settings.repeat_scope == SCOPE_SESSION else SCOPE_TEST
-        if report.db_time >= settings.min_db_time:
-            report.findings = tuple(
-                make_findings(
-                    detect(
-                        collector,
-                        relationship_threshold=settings.relationship_threshold,
-                        repeat_threshold=settings.repeat_threshold,
-                        column_load_threshold=settings.column_load_threshold,
-                        small_repeat_threshold=settings.small_repeat_threshold,
-                        write_loop_threshold=settings.write_loop_threshold,
-                        scope=scope,
-                        sieve=Sieve(),
-                    ),
-                    cwd=root,
-                )
+    report.statement_count = collector.statement_count
+    report.db_time = collector.db_time
+    error = internal_error()
+    if error is not None:
+        # The counts may be incomplete: no findings, no budget verdict.
+        report.error = f"{type(error).__name__}: {error}"
+        return
+    report.budget = settings.budget_for(report.method, report.route, report.path)
+    root = display_root()
+    scope = SCOPE_SESSION if settings.scope == SCOPE_SESSION else SCOPE_TEST
+    if report.db_time >= settings.min_db_time:
+        report.findings = tuple(
+            make_findings(
+                detect(
+                    collector,
+                    relationship_threshold=settings.relationship_threshold,
+                    repeat_threshold=settings.repeat_threshold,
+                    column_load_threshold=settings.column_load_threshold,
+                    small_repeat_threshold=settings.small_repeat_threshold,
+                    write_loop_threshold=settings.write_loop_threshold,
+                    scope=scope,
+                    sieve=Sieve(),
+                ),
+                cwd=root,
             )
-        if not report.problems:
-            return
-        parts = [f"queryguard: {report.name}"]
-        if report.route and report.route != report.path:
-            parts[0] += f" (route {report.route})"
-        parts[0] += f": {report.statement_count} statements"
-        if report.findings:
-            parts.append(format_findings(report.findings, cwd=root))
-        if report.over_budget:
-            assert report.budget is not None
-            parts.append(
-                format_budget(
-                    report.budget,
-                    list(collector.statements),
-                    cwd=root,
-                    total=report.statement_count,
-                    db_time=report.db_time,
-                )
+        )
+    if not report.problems:
+        return
+    parts = [f"queryguard: {report.name}"]
+    if report.route and report.route != report.path:
+        parts[0] += f" (route {report.route})"
+    count = report.statement_count
+    parts[0] += f": {count} {'statement' if count == 1 else 'statements'}"
+    if report.findings:
+        parts.append(format_findings(report.findings, cwd=root))
+    if report.over_budget:
+        assert report.budget is not None
+        parts.append(
+            format_budget(
+                report.budget,
+                list(collector.statements),
+                cwd=root,
+                total=report.statement_count,
+                db_time=report.db_time,
             )
-        report._message = "\n\n".join(parts)
+        )
+    report._message = "\n\n".join(parts)
 
 
 def _emit(report: RequestReport, settings: Settings) -> Warning | None:
@@ -544,7 +626,15 @@ def _emit(report: RequestReport, settings: Settings) -> Warning | None:
             if target == "log":
                 logger.warning("%s", report.message)
             elif callable(target):
-                target(report)
+                result = target(report)
+                if inspect.iscoroutine(result):
+                    result.close()  # never awaited: no RuntimeWarning per request
+                    logger.error(
+                        "queryguard: the report callback %r returned a coroutine, "
+                        "which is never awaited; report callables are called "
+                        "synchronously",
+                        target,
+                    )
         except Exception:  # a reporter must not break the app
             logger.exception("queryguard: the report callback %r raised", target)
     return raised
@@ -702,8 +792,12 @@ def _is_async(function: Callable[..., Any]) -> bool:
     """A coroutine function, or an object whose ``__call__`` is one."""
     if inspect.iscoroutinefunction(function):
         return True
-    method = type(function).__dict__.get("__call__")  # an instance with async __call__
-    return method is not None and inspect.iscoroutinefunction(method)
+    # An instance with an async __call__, its own or a base class's.
+    for klass in type(function).__mro__:
+        method = klass.__dict__.get("__call__")
+        if method is not None:
+            return inspect.iscoroutinefunction(method)
+    return False
 
 
 def _settings(settings: Settings | None, options: Mapping[str, Any]) -> Settings:

@@ -26,7 +26,11 @@ at most ``MAX_READ_SHARE`` of them were read, counting the columns the ORM
 needs (primary key, foreign keys and the other columns of relationships, the
 discriminator, the version counter) and the columns of composites (read
 without the descriptor) as read, and some attribute of some of
-its instances was read at all.
+its instances was read at all. A group whose every query pinned the whole
+primary key of the class with ``=`` (``session.get()``, a detail page's
+``where(A.id == id)``) is not reported: each such query returns one row, so
+``load_only()`` saves one row's width, and a lookup per item is the repeat
+rule's finding.
 """
 
 from __future__ import annotations
@@ -37,9 +41,11 @@ from typing import Any
 
 from sqlalchemy import event
 from sqlalchemy.orm import Mapper
-from sqlalchemy.orm.context import QueryContext
+from sqlalchemy.sql import operators
+from sqlalchemy.sql.elements import BindParameter, ColumnClause
 
 from . import blocks, collector, listeners, readhook
+from ._compat import QUERY_STATEMENT, RUNID, WHERE_CRITERIA, QueryContext
 from .blocks import IgnoreBlock
 from .events import CallSite
 from .findings import KIND_UNUSED_COLUMNS, Finding
@@ -68,6 +74,8 @@ class Group:
     reads: set[str] = field(default_factory=set)
     # some instances were not noted (MAX_INSTANCES): no verdict
     incomplete: bool = False
+    # every query of the group pinned the primary key: one row each
+    lookups: bool = True
     # the ignore() blocks active at each query (see blocks.py), in order
     ignores: dict[tuple[IgnoreBlock, ...], None] = field(default_factory=dict)
 
@@ -95,7 +103,7 @@ class Tracker:
 class _Columns:
     """The column attributes of a mapper, and those the ORM itself needs."""
 
-    __slots__ = ("keys", "needed", "primary")
+    __slots__ = ("keys", "needed", "primary", "primary_columns")
 
     def __init__(self, mapper: Any) -> None:
         related: set[Any] = set()
@@ -111,6 +119,15 @@ class _Columns:
         self.primary = frozenset(
             p.key for p in mapper.column_attrs if any(c in primary for c in p.columns)
         )
+        # (table, name) -> attribute, of every column of a primary key
+        # attribute, for _one_row(): under joined-table inheritance
+        # ``Sub.id`` is both ``sub.id`` and the base table's ``id``
+        self.primary_columns: dict[tuple[Any, str], str] = {
+            (c.table, c.name): p.key
+            for p in mapper.column_attrs
+            if p.key in self.primary
+            for c in p.columns
+        }
         self.needed = frozenset(
             p.key
             for p in mapper.column_attrs
@@ -173,6 +190,35 @@ def _group(tracker: Tracker, state: Any, site: CallSite) -> Group:
     return group
 
 
+def _one_row(statement: Any, mapper: Any) -> bool:
+    """Whether the WHERE clause pins every primary key attribute of ``mapper``.
+
+    Only ``column = <bound value>`` in the top-level AND counts, and only on
+    the mapped table itself: an aliased copy of the table pins the alias,
+    not the rows of the entity.
+    """
+    columns = _columns_of(mapper)
+    pinned: set[str] = set()
+    clauses = list(getattr(statement, WHERE_CRITERIA, ()))
+    while clauses:
+        clause = clauses.pop()
+        op = getattr(clause, "operator", None)
+        if op is operators.and_:
+            clauses.extend(getattr(clause, "clauses", ()))
+            continue
+        if op is not operators.eq:
+            continue
+        for side, other in (
+            (clause.left, clause.right),
+            (clause.right, clause.left),
+        ):
+            if isinstance(side, ColumnClause) and isinstance(other, BindParameter):
+                key = columns.primary_columns.get((side.table, side.name))
+                if key is not None:
+                    pinned.add(key)
+    return pinned == columns.primary
+
+
 def _note_loaded(group: Group, state: Any, attrs: Any) -> None:
     """Add the columns the query populated on ``state`` (``attrs``: all in
     ``__dict__`` when None) to the group."""
@@ -187,7 +233,7 @@ def _note(state: Any, context: Any, attrs: Any, fresh: bool) -> None:
         return
     try:
         # Session.merge() fires it without a query context
-        run = getattr(context, "runid", None)
+        run = getattr(context, RUNID, None)
         if run is None:
             return
         # (call site, load path, generation), noted by the plugin's listener
@@ -208,6 +254,10 @@ def _note(state: Any, context: Any, attrs: Any, fresh: bool) -> None:
         group = tracker.run_groups.get(owner)
         if group is None:
             group = tracker.run_groups[owner] = _group(tracker, state, site)
+            if group.lookups and not _one_row(
+                getattr(context, QUERY_STATEMENT, None), state.mapper
+            ):
+                group.lookups = False
         if fresh:
             if owner not in tracker.run_fresh:
                 # every new instance of the query has the same columns
@@ -319,6 +369,8 @@ def unused(tracker: Tracker, sieve: blocks.Sieve | None = None) -> list[Unused]:
     for group in tracker.groups.values():
         if not group.reads or group.incomplete:
             continue  # nothing ever looked at these instances: cannot tell
+        if group.lookups:
+            continue  # one row per query: nothing worth trimming
         columns = _columns_of(group.mapper)
         loaded = tuple(k for k in columns.keys if k in group.loaded)
         if len(loaded) < MIN_LOADED:
@@ -379,9 +431,10 @@ def findings(
                     f"  never read: {names}",
                     f"  fix: load only what is used, .options({_load_only(item)}),",
                     "  or defer() the large columns that are never read",
-                    "  (experimental: if they are read later, or by code the plugin",
-                    "  cannot see, ignore it with allow_nplusone(kind=KIND) or",
-                    "  queryguard_ignore, KIND being unused-columns)",
+                    "  (experimental: if they are read later, or by code the plugin cannot see,",
+                    "  leave them out with @pytest.mark.queryguard_ignore(",
+                    f'      "{group.label}", kind="unused-columns")',
+                    f"  or the queryguard_ignore pattern unused-columns {group.label})",
                 ]
             )
             result.append(

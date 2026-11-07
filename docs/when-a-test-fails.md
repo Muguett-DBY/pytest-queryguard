@@ -46,8 +46,8 @@ queryguard: N+1 detected
   different places read the same objects, since the plugin cannot tell which
   result the loop uses. An object that a later query returns from the Session
   without reading its row again keeps the query that loaded it.
-- `kind` and `label` name the finding the way ignore patterns, `allow_nplusone`
-  and the baseline do: `relationship-load Order.customer` is the pattern for
+- `kind` and `label` name the finding the way ignore patterns, the `queryguard_ignore`
+  marker and the baseline do: `relationship-load Order.customer` is the pattern for
   this one. For a repeated statement the label is the normalized statement,
   which takes the place of a separate line; a statement longer than 200
   characters is cut and ends with `*`, so the label as printed still matches.
@@ -67,8 +67,12 @@ write a pattern with a wildcard.
 | `Order.customer was lazy-loaded 50 times` | `relationship-load` | `Order.customer` | `joinedload` (many-to-one) or `selectinload` (collection) on the query that loaded the parents |
 | `the same statement ran 7 times` | `repeated-statement` | the normalized SQL, on the `kind:` line | one query with `WHERE id IN (...)`, or a join, instead of a loop |
 | `Customer had its columns reloaded 50 times for 50 instances, after commit(), ...` | `column-load` | `Customer (expired)` | `expire_on_commit=False`, or load the objects again with one query |
+| `Engineer loaded its subclass columns on its own 50 times ...` | `column-load` | `Engineer (polymorphic)` | `selectin_polymorphic(Employee, [Engineer])` or `with_polymorphic` on the query, or `polymorphic_load` on the mapping |
 | `Customer.name was loaded on its own 50 times for 50 instances (deferred column)` | `column-load` | `Customer.name` | `undefer(Customer.name)`, or drop `defer()` / `load_only()` |
 | `the same INSERT ran 6 times, one row at a time` (opt-in) | `write-loop` | the normalized `INSERT`, `UPDATE` or `DELETE` | `session.add_all()` and one flush, or `session.execute(insert(Model), rows)` |
+| `Customer.notes and Customer.orders were joined into one query side by side, once` (warns by default) | `cartesian-load` | `Customer.notes + Customer.orders` | `selectinload` for all collections but one, see [How detection works](how-detection-works.md#cartesian-load) |
+| `Customer.orders was loaded with selectinload and never read` (experimental, off by default) | `unused-eager-load` | `Customer.orders` | drop the loader option, see [Unused eager loads](unused-eager-load.md) |
+| `Account: 12 columns loaded, 9 never read` (experimental, off by default) | `unused-columns` | `Account` | `load_only()` the columns the code reads, or `defer()` the large ones; see [Unused columns](unused-columns.md) |
 | `queryguard: missing index` (opt-in) | `missing-index` | the table | the `CREATE INDEX` on the `fix:` line; see the [index advisor](index-advisor.md) |
 | `queryguard: expected at most 2 queries, got 4` | a budget, not a finding | none | fix the code, or raise the budget; ignore patterns and the baseline do not apply |
 
@@ -76,8 +80,11 @@ To list the kind and label of every finding of a run in one file, write a
 scratch baseline:
 
 ```console
-pytest --queryguard-baseline=/tmp/findings.json --queryguard-update-baseline
+pytest --queryguard-baseline=findings.json --queryguard-update-baseline
 ```
+
+Then read `findings.json` and delete it. A budget test still fails this run,
+since the baseline does not apply to budgets.
 
 The SARIF file (`--queryguard-sarif=PATH`) carries the `kind:` line in each
 message and the kind as the `queryguard/<kind>` rule id.
@@ -112,16 +119,25 @@ lazy load of a relationship for the second parent loaded at the same line
 attribute, the frames of SQLAlchemy and the plugin left out:
 
 ```
-    for order in _helper_query(session):
->       name = order.customer.name
-E       pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents loaded at one line; this access is the N+1
+    def list_orders(session):
+        names = []
+        for order in _helper_query(session):
+>           name = order.customer.name
+                   ^^^^^^^^^^^^^^
+E           pytest_queryguard.NPlusOneDetected: queryguard strict: Order.customer was lazy-loaded for 2 parents loaded at the same line; this access is the N+1
 E
-E         Order.customer was lazy-loaded 2 times
-E         first at app/orders.py:13 in list_orders
-E         parents loaded at app/orders.py:7 in _helper_query
-E         kind: relationship-load  label: Order.customer
-E         fix: load it with the parent query, e.g.
-E              select(Order).options(joinedload(Order.customer))
+E             Order.customer was lazy-loaded 2 times
+E             first at app/orders.py:13 in list_orders
+E               called from tests/test_orders.py:5 in test_list_orders
+E             parents loaded at app/orders.py:7 in _helper_query
+E             kind: relationship-load  label: Order.customer
+E             docs: https://maciejziel.github.io/pytest-queryguard/how-detection-works.html#relationship-load
+E             fix: load it with the parent query, e.g.
+E                  select(Order).options(joinedload(Order.customer))
+E
+E             (queryguard_strict raises at the lazy load instead of at the end of the
+E             test; a queryguard_ignore marker or pattern, an ignore() block or a
+E             baseline entry lets it pass, as for the report)
 ```
 
 It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
@@ -131,24 +147,50 @@ It is Rails' `strict_loading!(mode: :n_plus_one_only)` and Laravel's
   objects whose query is unknown (made by the test, loaded before it). Objects
   loaded one by one at the same line (`for id in ids: get_order(id).customer`)
   count together, as in the report. The report at the end still covers the
-  rest, and with `queryguard_repeat_scope = session` each Session counts on
-  its own here too.
+  rest (there an object whose query is unknown counts with every query line), and with
+  `queryguard_scope = session` each Session counts on its own here
+  too.
 - The finding is the one the report makes, at the first lazy load, so
   ignore patterns with `file=`/`function=` and baseline entries match it.
   The analysis at the end still runs: SARIF, `--queryguard-json` and the
   summary include the N+1, and the exception replaces the report's text.
+- A query or database-time budget the test went over before the access
+  (`max_queries` or `max_db_time` marker, `queryguard_max_queries`, the
+  budget file, a `max_queries()` block) is shown under the N+1 in the
+  exception, with the statements counted until the test stopped. A budget
+  the rest of the test would have gone over is not known.
+- What the test would have run after the access is unknown, as for a test
+  that fails on its own: a `queryguard_ignore` pattern of the test or an
+  `ignore()` block it entered is not listed under "stale ignores" for it.
 - It raises only what would fail the test anyway: in `fail` mode, for an N+1
-  that no `allow_nplusone`, `queryguard_ignore` pattern or baseline entry
+  that no `queryguard_ignore` marker or pattern or baseline entry
   covers. It does not raise while `--queryguard-update-baseline` records the
   findings.
 - Code that catches `AssertionError` around the loop does not hide the N+1:
   the report at the end still fails the test.
+- A library that catches the exception and raises its own (Pydantic's
+  `from_attributes` validation, FastAPI's `response_model`) fails the test
+  with that error, the strict message usually inside it. The same goes for
+  code that swallows the exception when the test then fails on its own. The
+  analysis at the end still runs for such a test: SARIF,
+  `--queryguard-json` and the summary include the N+1. When the error does
+  not already carry the strict message, the report is shown in a
+  "Captured queryguard call" section under the failure. The test's outcome
+  stays that of its own error.
+- `--no-queryguard-strict` turns strict mode off for one run, for example to
+  see every N+1 of a test in the report instead of the first one.
 - It raises before the lazy load's `SELECT` is prepared: nothing is
   flushed, no connection is used, and engine listeners such as
   `handle_error` never see the exception. For that, strict mode adds a
   `do_orm_execute` listener, which makes SQLAlchemy prepare each ORM
   statement twice: a strict run costs more per ORM statement than a
   default one.
+- Only lazy loads that ran their `SELECT` count towards the threshold, as in
+  the report: a load that a `do_orm_execute` listener answers without one (a
+  result cache), or that SQLAlchemy rejects before sending it, never counts
+  and never raises. Lazy loads that several threads or asyncio tasks start at
+  the same time count once their `SELECT`s run, so the one that makes the
+  N+1 may not raise; the report at the end still fails the test.
 
 ## 2. Is it real?
 
@@ -158,7 +200,7 @@ database only hides the cost because it holds few rows. Look closer when:
 - **The test makes several requests**, for example five calls through a test
   client, and the repeated statement is an authentication or settings lookup.
   The report says `across N different Sessions or connection checkouts` in
-  that case. Nothing loops; set `queryguard_repeat_scope = session`, see
+  that case. Nothing loops; set `queryguard_scope = session`, see
   [Several sessions or requests](several-sessions.md).
 - **The loop is pagination or a batched `IN (...)` load** that runs five or
   more pages or chunks. The repeat rule counts each page; see
@@ -173,8 +215,10 @@ call site, if you want to look at them in the test itself.
 
 ## 3. Fix it
 
-Apply the hint at the line the report names and run the test again. Two
-patterns cover most cases:
+Apply the hint at the line the report names and run the test again. The
+`fix:` line shows the loader option, not its import: add `joinedload` or
+`selectinload` to the file's `from sqlalchemy.orm import` line, or the hint
+raises `NameError`. Two patterns cover most cases:
 
 ```python
 from sqlalchemy import select
@@ -190,6 +234,114 @@ customers = select(Customer).options(selectinload(Customer.orders))
 rows = session.scalars(select(Customer).where(Customer.id.in_(ids))).all()
 ```
 
+### A patch for the parent query
+
+Since 0.8.0; experimental (see [Stability](stability.md#experimental)).
+
+For a `relationship-load` finding, pytest-queryguard can write that change for
+you. `--queryguard-show-patch` (or `queryguard_show_patch = true`) prints a
+unified diff under the finding, and `--queryguard-write-patch=PATH` writes the diffs of the
+whole run to one file:
+
+```
+pytest --queryguard-write-patch=queryguard.patch
+git apply queryguard.patch      # from the rootdir
+```
+
+```diff
+--- a/app/orders.py
++++ b/app/orders.py
+@@ -1,9 +1,9 @@
+ from sqlalchemy import select
+-from sqlalchemy.orm import Session
++from sqlalchemy.orm import Session, joinedload
+ 
+ from app.models import Order
+ 
+ 
+ def list_orders(session: Session) -> list[Order]:
+-    orders = session.scalars(select(Order)).all()
++    orders = session.scalars(select(Order).options(joinedload(Order.customer))).all()
+     return [order.customer.name for order in orders]
+```
+
+The option goes on the `select(Order)` or `session.query(Order)` call of the
+line in `parents loaded at`: as `.options(...)` right after the call, or as
+one more argument of the `.options(...)` already in its chain. When that line
+runs a statement built earlier in the function (`statement = select(Order)`
+and then `session.scalars(statement)`), the option goes on the line that
+builds it. A class named through its module (`select(models.Order)`) is
+named the same way in the option: `joinedload(models.Order.customer)`. The loader is
+`joinedload` or `selectinload`, the same as in the `fix:` hint, chained
+through the relationships that reached the parents. A loader the module does
+not import yet is added to its `from sqlalchemy.orm import` line, or on a new
+line after the imports at the top of the file.
+
+A wrong patch is worse than none, so a finding gets one only when the line is
+certain, and otherwise only the `fix:` hint:
+
+- every parent was loaded by one query line, and the plugin knows the class it
+  selected;
+- that line is one statement with exactly one `select(...)` call, or
+  `.query(...)` on a session (see below), with that class as its
+  only argument (`Order`, or `models.Order` for a module imported with
+  `import` or `from ... import`), and the statement runs nothing else. A
+  `session.get()`, a subquery, or a choice between queries (`a if c else b`,
+  `or`, a comprehension) gets no patch;
+- that call is the statement the line runs, as it is: a `select(...)`, with
+  only methods that keep its entities chained to it, is the first argument of
+  `execute`, `scalars`, `scalar`, `stream` or SQLModel's `exec` on a
+  session; a `session.query(...)` with such methods is run by `.all()`,
+  `.first()`, `.one()` or `.one_or_none()`, or iterated (`for`, `list(...)`).
+  A select inside a `union_all(...)`, an `exists(...)`, a subquery, a CTE, an
+  `insert().from_select()` or another statement, one passed to a helper
+  (`session.scalars(paginate(select(Order)))`), turned into other columns
+  (`with_only_columns`, `with_entities`, `add_columns`), a union or a textual
+  statement (`from_statement`), or run by something else than a session
+  (`repository.scalars(select(Order))`) gets no patch. A session is what is
+  named so (`session`, `self.session`, `db_session`), `db` (`db`, `self.db`),
+  or a parameter of the function annotated with a session type that the
+  function does not rebind: `conn: Session`, `s: orm.Session`,
+  `conn: "AsyncSession"`, `db: Annotated[Session, Depends(get_db)]`;
+- or that line runs a variable on a session
+  (`session.execute(statement)`, `session.scalars(statement)`) that the
+  function assigns once, on an earlier line, to such a `select(...)` with
+  only methods that keep its entities chained to it (`where`, `join`,
+  `order_by`, `limit`, `options` and the like), and reads nowhere else. A
+  variable that is reassigned or changed (`statement = statement.where(...)`),
+  read again (passed to a count, for example), a parameter, a module-level
+  name, assigned in a tuple or with `:=`, wrapped in a call
+  (`paginate(select(Order))`), turned into a union or subquery, run by a
+  helper (`repository.scalars(statement)`), or a `session.query()` kept in a
+  variable gets no patch;
+- `select` is imported from SQLAlchemy or SQLModel, the classes (and the
+  module in `models.Order`) are imported (or defined) in the module under
+  their own names, the function does not rebind them, and an `.options(...)`
+  already in the chain lists only SQLAlchemy loader calls that name each
+  relationship as `Class.attribute`, none of them the relationship (not
+  `*options`, an option a helper returns, or a relationship in a variable, a
+  constant or a string: `noload(REL)`, `noload("customer")`, which may be the
+  one the patch loads, and two loaders of one relationship conflict). A chain
+  through another class names that class on its own
+  (`.joinedload(Customer.country)`), so the module must import it;
+- a `joinedload` (a many-to-one) does not go on a statement with
+  `with_for_update()`, `group_by()`, `having()`, `distinct()` or a prefix or
+  suffix: its outer join would put `FOR UPDATE` on the nullable side of the
+  join, or the joined columns outside the `GROUP BY`. A `selectinload` does;
+- the file is inside the rootdir, UTF-8 with `\n` or `\r\n` line ends
+  (which the patch keeps), and was not modified after the session started,
+  so it is the code that ran.
+
+The diff paths are relative to the rootdir (`a/app/orders.py`). When the
+rootdir is a subdirectory of the git repository, apply it with
+`git apply --directory=<subdirectory>`, or with `patch -p1` from the rootdir.
+Fixes of the same file are merged into one diff; two relationships of one
+query become two `.options(...)` calls, which SQLAlchemy accepts. Findings
+left out by an ignore or the baseline get no patch. The patch is made when the
+test's findings are reported, from its source file: no cost per statement.
+Read it before you apply it, as any generated change: `joinedload` of a
+collection or a large row can cost more than the lazy loads it replaces.
+
 To keep the fix from regressing, put a [budget](budgets.md) on the test:
 `@pytest.mark.max_queries(2)` fails it the day the count goes up again.
 
@@ -199,8 +351,9 @@ If the code is right as it is, or you cannot fix it now, leave the finding
 out, from the narrowest scope to the widest:
 
 - one finding in one test:
-  `@pytest.mark.allow_nplusone("Order.customer", function="list_orders")`;
-- one finding in the whole suite: a line in `queryguard_ignore`, such as
+  `@pytest.mark.queryguard_ignore("Order.customer", function="list_orders")`
+  (`allow_nplusone` is the same marker under its old name);
+- one finding in the whole suite: a line in the `queryguard_ignore` option, such as
   `relationship-load Order.customer function=list_orders`;
 - everything that exists today: a [baseline](baseline.md), so that only new
   findings fail;

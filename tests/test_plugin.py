@@ -281,6 +281,7 @@ def test_mode_is_case_insensitive_on_the_command_line(
         ("queryguard_hypopg", "ON", "on"),
         ("queryguard_unused_eager_load", "Warn", "warn"),
         ("queryguard_unused_columns", " FAIL ", "fail"),
+        ("queryguard_scope", "Session", "session"),
         ("queryguard_repeat_scope", "Session", "session"),
     ],
 )
@@ -295,7 +296,8 @@ def test_enum_options_are_case_insensitive(
         "queryguard_hypopg": plugin._hypopg(config),
         "queryguard_unused_eager_load": plugin._unused_eager(config),
         "queryguard_unused_columns": plugin._unused_columns(config),
-        "queryguard_repeat_scope": plugin._repeat_scope(config),
+        "queryguard_scope": plugin._scope(config),
+        "queryguard_repeat_scope": plugin._scope(config),
     }[option]
     assert got == expected
 
@@ -307,6 +309,7 @@ def test_enum_options_are_case_insensitive(
         "queryguard_hypopg",
         "queryguard_unused_eager_load",
         "queryguard_unused_columns",
+        "queryguard_scope",
         "queryguard_repeat_scope",
     ],
 )

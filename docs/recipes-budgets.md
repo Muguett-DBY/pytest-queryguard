@@ -14,8 +14,8 @@ them counts:
 ```python
 @app.get("/orders/{order_id}")
 def order_detail(order_id: int, session: SessionDep) -> dict[str, object]:
-    order = session.get_one(Order, order_id)
-    customer = session.get_one(Customer, order.customer_id)
+    order = session.scalars(select(Order).filter_by(id=order_id)).one()
+    customer = session.scalars(select(Customer).filter_by(id=order.customer_id)).one()
     siblings = session.scalar(
         select(func.count()).select_from(Order).where(Order.customer_id == customer.id)
     )

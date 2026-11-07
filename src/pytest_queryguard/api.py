@@ -9,7 +9,7 @@ from .blocks import Sieve
 from .collector import QueryCollector, pop, pop_local, push, push_local
 from .detectors import SCOPES, detect
 from .events import CallSite, StatementEvent
-from .listeners import install, internal_error
+from .listeners import install, internal_error, record_error
 from .messages import (
     display_root,
     format_budget,
@@ -17,7 +17,7 @@ from .messages import (
     format_time_budget,
     make_findings,
 )
-from .warnings import QueryGuardInternalWarning, warn_internal
+from .warnings import QueryGuardInternalWarning, default, renamed, warn_internal
 
 
 class QueryBudgetExceeded(AssertionError):
@@ -47,11 +47,29 @@ def _measure(
     log = QueryLog(collector)
     earlier = internal_error()  # recording is already off if this is set
     (push_local if local else push)(collector)
+    stopped: BaseException | None = None
     try:
         yield log
+    except NPlusOneDetected as exc:
+        if getattr(exc, "_queryguard_strict", False):
+            stopped = exc
+        raise
     finally:
         (pop_local if local else pop)(collector)
         error = log._finish(earlier)  # however the block ends, the log is fixed
+        if stopped is not None:
+            # queryguard_strict stopped the block at a lazy load: a budget it
+            # already went over is gone over whatever the rest would have run
+            # (too few statements is no verdict then), so it is shown with
+            # the N+1 instead of being lost with the block's end
+            try:
+                text = _budget_failure(
+                    log, collector, limit, time_limit, exact=exact, too_few=False
+                )
+                if text is not None:
+                    add_to_strict_error(stopped, text)
+            except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
+                record_error(exc, "budget of a block stopped by strict mode")
     if local and error is not None:
         warn_internal(
             QueryGuardInternalWarning(
@@ -60,31 +78,53 @@ def _measure(
             ),
             stacklevel=3,
         )
+    # After an internal error statements may be missing: too few is no verdict.
+    text = _budget_failure(
+        log, collector, limit, time_limit, exact=exact, too_few=error is None
+    )
+    if text is not None:
+        raise QueryBudgetExceeded(text)
+
+
+def _budget_failure(
+    log: QueryLog,
+    collector: QueryCollector,
+    limit: int | None,
+    time_limit: float | None,
+    *,
+    exact: bool,
+    too_few: bool,
+) -> str | None:
+    """The failure text of a finished budget block, or None when it kept to it.
+
+    With ``exact`` and ``too_few``, fewer statements than ``limit`` fail it too.
+    """
     # The verdict uses the log's fixed total: a statement still running in
     # another thread may finish after the block and grow the collector's.
     db_time = log.db_time
     count = log.count
-    # After an internal error statements may be missing: too few is no verdict.
-    too_few = exact and count < (limit or 0) and error is None
-    if limit is not None and (count > limit or too_few):
-        raise QueryBudgetExceeded(
-            format_budget(
-                limit,
-                collector.statements[:count],
-                cwd=display_root(),
-                db_time=db_time,
-                exact=exact,
-            )
+    if limit is not None and (count > limit or (exact and too_few and count < limit)):
+        return format_budget(
+            limit,
+            collector.statements[:count],
+            cwd=display_root(),
+            db_time=db_time,
+            exact=exact,
         )
     if time_limit is not None and db_time > time_limit:
-        raise QueryBudgetExceeded(
-            format_time_budget(
-                time_limit,
-                collector.statements,
-                cwd=display_root(),
-                db_time=db_time,
-            )
+        return format_time_budget(
+            time_limit,
+            collector.statements,
+            cwd=display_root(),
+            db_time=db_time,
         )
+    return None
+
+
+def add_to_strict_error(error: BaseException, text: str) -> None:
+    """Add a budget failure under the N+1 of the error queryguard_strict raised."""
+    message = str(error.args[0]) if error.args else ""
+    error.args = (f"{message}\n\n{text}",)
 
 
 def max_queries(limit: int) -> AbstractContextManager[QueryLog]:
@@ -254,13 +294,14 @@ class QueryLog:
         column_load_threshold: int = 5,
         small_repeat_threshold: int | None = None,
         write_loop_threshold: int | None = None,
-        repeat_scope: str = "test",
+        scope: str = default("test"),
+        repeat_scope: str | None = None,
     ) -> None:
         """Raise ``NPlusOneDetected`` when the recorded block has N+1 queries.
 
         The rules, and the defaults of the thresholds, are the plugin's: one
         relationship lazy-loaded for ``relationship_threshold`` different
-        parent objects, or one ``SELECT``, without its literals and
+        parent objects that one query line loaded, or one ``SELECT``, without its literals and
         parameters, run ``repeat_threshold`` times (pagination and chunked
         ``IN`` loads, recognised by their parameters, do not count), or
         ``column_load_threshold``
@@ -272,13 +313,14 @@ class QueryLog:
         2), that many single-row INSERT, UPDATE or DELETE statements of one
         shape from one line count too.
 
-        ``repeat_scope`` is ``"test"`` (the default: everything in the block counts
+        ``scope`` is ``"test"`` (the default: everything in the block counts
         together) or ``"session"``: each SQLAlchemy ``Session`` (or, for a
         connection no Session opened, each connection checkout) counts on its
         own, which is what a block that makes several independent requests needs.
+        ``repeat_scope`` is its deprecated name (removed in 2.0).
 
-        The thresholds and ``repeat_scope`` are these arguments only. The ``queryguard_*`` ini
-        options, ``queryguard_mode`` and the ``allow_nplusone`` marker are not
+        The thresholds and ``scope`` are these arguments only. The ``queryguard_*`` ini
+        options, ``queryguard_mode`` and the ``queryguard_ignore`` marker are not
         read, so a project that changes ``queryguard_repeat_threshold``,
         ``queryguard_relationship_threshold`` or
         ``queryguard_column_load_threshold``,
@@ -320,10 +362,9 @@ class QueryLog:
                 "small_repeat_threshold must be None or an integer >= 2 and "
                 f"below repeat_threshold ({repeat_threshold}), got {small!r}"
             )
-        if repeat_scope not in SCOPES:
-            raise ValueError(
-                f"repeat_scope must be one of {', '.join(SCOPES)}, got {repeat_scope!r}"
-            )
+        scope = renamed("scope", scope, "repeat_scope", repeat_scope)
+        if scope not in SCOPES:
+            raise ValueError(f"scope must be one of {', '.join(SCOPES)}, got {scope!r}")
         loop = write_loop_threshold
         if loop is not None and (
             isinstance(loop, bool) or not isinstance(loop, int) or loop < 2
@@ -340,7 +381,7 @@ class QueryLog:
                 column_load_threshold=column_load_threshold,
                 small_repeat_threshold=small_repeat_threshold,
                 write_loop_threshold=write_loop_threshold,
-                scope=repeat_scope,
+                scope=scope,
                 sieve=Sieve(),
             ),
             cwd=root,
@@ -349,7 +390,7 @@ class QueryLog:
             raise NPlusOneDetected(format_findings(findings, cwd=root))
 
     def __repr__(self) -> str:
-        return f"<QueryLog {self.count} queries>"
+        return f"<QueryLog {self.count} {'query' if self.count == 1 else 'queries'}>"
 
 
 @contextmanager
@@ -488,4 +529,4 @@ class QueryGuardFixture:
 
     def __repr__(self) -> str:
         count = "-" if self._state in ("new", "unused") else self._log.count
-        return f"<QueryGuardFixture {count} queries>"
+        return f"<QueryGuardFixture {count} {'query' if count == 1 else 'queries'}>"

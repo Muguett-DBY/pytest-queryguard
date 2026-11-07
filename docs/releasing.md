@@ -15,14 +15,14 @@ pull request's copy of the gate.
 
 | # | check | where |
 |---|---|---|
-| 1 | The whole CI matrix (`ci.yml`, reused through `workflow_call`): Python 3.10 to 3.14 and the 3.15 pre-release, SQLAlchemy 2.0 and latest, pytest 8.0 and latest, xdist, PostgreSQL, Windows and macOS. Plus the oldest SQLAlchemy series and pytest on Linux, Windows and macOS. | `ci`, `oldest-versions` jobs |
+| 1 | The whole CI matrix (`ci.yml`, reused through `workflow_call`): Python 3.10 to 3.15, SQLAlchemy 2.0 and latest, pytest 8.0 and latest, xdist, PostgreSQL, Windows and macOS. Plus the oldest SQLAlchemy series and pytest on Linux, Windows and macOS. | `ci`, `oldest-versions` jobs |
 | 2 | Accuracy corpus: precision and recall of the default configuration are at least the minimums in `scripts/accuracy_thresholds.json` (see [Accuracy](accuracy.md#release-thresholds)), and no disagreement with a verdict is undocumented. | `release_gate.py accuracy` |
 | 3 | Every Python block in `README.md` and `docs/` parses, and the projects a page spells out file by file (and `README.md`'s quick start, and the examples in `examples/`) run and give the output the page shows. | `tests/test_doc_examples.py`, `test_readme.py`, `test_docs.py`, `test_examples.py` |
-| 4 | The wheel and the sdist install into clean virtual environments on Linux, Windows and macOS; `pip check` passes; the package imports; the `pytest11` entry point is registered; `pytest --co` works on a tiny project and the plugin reports an N+1 there. | `release_gate.py install` |
+| 4 | The wheel and the sdist install into clean virtual environments on Linux, Windows and macOS; `pip check` passes; the package imports; the `pytest11` entry point is registered; `pytest --co` works on a tiny project and the plugin reports an N+1 there; `python -m pytest_queryguard.lint`, `.trend`, `.compare` and `.mcp` answer `--help`. | `release_gate.py install` |
 | 5 | Upgrade: the newest earlier final release from PyPI is installed, the new wheel is installed over it, and the tiny project runs before and after. | `release_gate.py upgrade` |
 | 6 | Overhead: the per-statement overhead of the measurement is at most 125 % of `scripts/bench_baseline.json` (Core and ORM loops), measured as in [How the overhead is measured](#how-the-overhead-is-measured). | `release_gate.py bench` |
-| 7 | The wheel has `py.typed`, `LICENSE`, the entry point and only the package; no tests, docs, scripts, caches or scratch files. The sdist has the license, README, changelog, `pyproject.toml` and sources and no scratch files. | `release_gate.py contents` |
-| 8 | `__version__`, the top entry of `CHANGELOG.md`, its date (a valid date, not in the future, not older than the entry below it) and the link references at the bottom (`[Unreleased]` compares the newest tag with `HEAD`, each entry compares the previous tag with itself) agree. | `release_gate.py consistency` |
+| 7 | The wheel has `py.typed`, `LICENSE`, the entry point and only the package; no tests, docs, scripts, caches or scratch files. The wheel's METADATA has the license expression and file, a Markdown long description, the Homepage, Documentation, Changelog and Issues URLs, `Framework :: Pytest` and `Typing :: Typed`; its Python classifiers are the versions `ci.yml` tests (less a pre-release interpreter listed in `PRE_RELEASE_PYTHONS`) and `Requires-Python` the oldest of them; the lower bounds of `pytest` and `sqlalchemy` are the versions the `oldest-versions` job installs; a final release from 1.0.0 on says `Development Status :: 5 - Production/Stable`, any other release does not. The sdist has the license, README, changelog, `pyproject.toml` and sources and no scratch files. The release workflow runs this check again on the files it publishes. | `release_gate.py contents` |
+| 8 | `__version__`, the top entry of `CHANGELOG.md`, its date (a valid date, not in the future, not older than the entry below it) and the link references at the bottom (`[Unreleased]` compares the newest tag with `HEAD`, each entry compares the previous tag with itself) agree, and so does the version the documentation says it describes (`docs/index.md`, `docs/getting-started.md`, `llms.txt`). The workflow in `docs/ci.md` pins the action to `@v` plus `__version__` (for a pre-release, the newest final release in the changelog). | `release_gate.py consistency` |
 
 ## Running it
 
@@ -49,7 +49,13 @@ projects (only Litestar, pytest-asyncio and SQLModel may be missing).
 ## Steps of a release
 
 1. A pull request bumps `__version__`, dates the changelog entry and fixes the
-   link references. The gate runs on it.
+   link references. It also updates the version the documentation describes
+   (`docs/index.md`, `docs/getting-started.md`, `llms.txt`) and drops the
+   sentence there that says the "since X" parts are not on PyPI yet; for a
+   pre-release (`X.Y.Zrc1`) both may stay as they are, since pip still
+   installs the last final release. For a final release it also bumps the
+   `MaciejZiel/pytest-queryguard/action@vX.Y.Z` pin in `docs/ci.md` to the new
+   version (a pre-release keeps the last final one). The gate runs on it.
 2. After it is merged, run the gate on `main` and wait for it to be green.
 3. Tag that commit `vX.Y.Z` and push the tag; `release.yml` checks that a
    gate run on `main` at that commit succeeded, then builds and publishes.

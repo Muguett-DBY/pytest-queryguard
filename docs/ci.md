@@ -31,14 +31,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[test]"        # your project and its test dependencies
-      - uses: MaciejZiel/pytest-queryguard/action@COMMIT_SHA   # pin a release tag or a commit SHA
+      - uses: MaciejZiel/pytest-queryguard/action@v0.8.0   # a release tag, or a commit SHA
         with:
-          pytest-args: -x tests/
+          pytest-args: tests/   # no -x: see below
           # baseline: queryguard-baseline.json   # add once the file exists, see below
 ```
 
 The `push` trigger is limited to `main` so that a pull request does not run
 the workflow twice, once for the push and once for the pull request.
+
+`pytest-args` has no `-x`. A run that stops at the first failure writes a
+JSON file with `"complete": false`, which the comparison with the base branch
+cannot fully use (see [Query counts as JSON](#query-counts-as-json)), and it
+keeps `--queryguard-update-baseline` and the budget file update from writing
+(see [baseline.md](baseline.md)).
 
 The example has no `baseline` input on purpose. A `baseline` path that does
 not exist makes pytest stop with `baseline file ... does not exist; create it
@@ -54,8 +60,11 @@ action to a release tag or a commit and you get the plugin of that release. A
 fixed default such as `pytest-queryguard` would let pip pick an older release
 (for example 0.3.0, which has no `--queryguard-sarif`), and pytest would stop
 with `unrecognized arguments`. Set
-`package` only to install something else, such as `pytest-queryguard==0.4.0`
-or a path.
+`package` only to install something else, such as `pytest-queryguard==0.7.0`
+or a path. The action needs pytest-queryguard 0.6.0 or newer: it passes
+`--queryguard-sarif` and `--queryguard-json` and runs
+`python -m pytest_queryguard.compare`, which older releases do not have. The
+`trend` input needs 0.8.0 or newer (`python -m pytest_queryguard.trend`).
 
 The action installs `pytest-queryguard` into the active Python, runs
 `pytest --queryguard-sarif=queryguard.sarif`, uploads the file with
@@ -67,32 +76,42 @@ failed. Install your own project first: the action does not know how.
 |---|---|---|
 | `pytest-args` | empty | Arguments for pytest, as a list of shell words: quotes group words (`-k "a or b"`). The value is split by Python's `shlex` and is not evaluated by a shell, so `$(...)`, backticks and `$VAR` are passed to pytest as literal text. |
 | `python-version` | empty | Set up this Python. Empty: use the `python` on PATH. |
-| `package` | empty | What to `pip install`. Empty: the plugin from the action's own checkout, matching the pinned ref. Otherwise a requirement like `pytest-queryguard>=0.4`, or a path. |
+| `package` | empty | What to `pip install`. Empty: the plugin from the action's own checkout, matching the pinned ref. Otherwise a requirement like `pytest-queryguard>=0.6` (the oldest release the action works with; 0.8.0 for `trend`), or a path. |
 | `baseline` | empty | Baseline file, see [baseline.md](baseline.md). Empty: `queryguard_baseline` from your config. |
-| `fail` | `true` | `true`: fail the step when pytest fails. `false`: never fail, only report. |
+| `fail` | `true` | `true`: fail the step when pytest fails. `false`: a failed test run does not fail the step, only report. An invalid input or a failed install still fails it. |
 | `working-directory` | `.` | Where to run pytest. Locations in the SARIF file are still relative to the repository root (see [SARIF output](sarif.md#paths-and-the-repository-root)). |
 | `sarif-file` | `queryguard.sarif` | Output file, relative to `working-directory`. |
 | `upload` | `true` | Upload to code scanning. `false`: only write the file. |
-| `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload. It also names the job's query-count artifact and its pull-request comment. |
+| `category` | `pytest-queryguard` | Code scanning category; use one per job when several jobs upload, including each job of a matrix (see [Limits](#limits-and-edge-cases)). It also names the job's query-count artifact, `queryguard-json-<category>` with `" : < > \| * ? \ /` and line breaks turned into `-`, and its pull-request comment. Must not be empty. |
 | `json-file` | `queryguard.json` | The [per-test query counts](#query-counts-as-json), relative to `working-directory`; uploaded as the artifact `queryguard-json-<category>`. Empty: none. |
 | `compare` | `true` | On a pull request, compare the counts with the base branch and write the result to the job summary. |
 | `comment` | `true` | Also post the comparison as a pull-request comment, updated in place on later pushes. |
-| `github-token` | `github.token` | Token for the comparison and the comment. |
+| `trend` | `false` | Since 0.8.0, experimental. A number of runs N (2 to 100; `true` means 10): on pushes to the default branch and on pull requests, show how the counts moved over the last N runs, see [below](#query-counts-over-the-last-runs). |
+| `github-token` | `github.token` | Token for the comparison, the trend and the comment. |
 
-Outputs: `exit-code` (pytest's), `sarif-file` and `json-file`.
+`fail`, `upload`, `compare` and `comment` take `true` or `false` (in any
+case) and nothing else: the action stops with an error on a value such as
+`yes`, `1` or an empty string, which would otherwise quietly mean `false`.
+`trend` takes `false`, `true` or a number from 2 to 100, and stops the same
+way on anything else.
+
+Outputs: `exit-code` (pytest's), `sarif-file`, `json-file` and `trend-report`
+(since 0.8.0: the trend's Markdown file, empty when there is none).
 
 ### Query counts on pull requests
 
 On every run the action writes the [query counts](#query-counts-as-json) and
 uploads them as an artifact. On a pull request it downloads the file of the
-latest finished run of the same workflow on the base branch, compares the
+latest finished run of the same workflow on the base branch (a push or
+scheduled run, never a pull-request run: a fork's pull request from its own
+`main` would otherwise count as the base), compares the
 two, and writes the result to the job summary and to one pull-request
 comment:
 
 ```
 ### pytest-queryguard: queries compared with the base branch
 
-412 tests compared: 3120 -> 3187 statements (+67). 2 run more, 1 fewer; 1 new findings, 0 fixed.
+412 tests compared: 3120 -> 3187 statements (+67). 2 run more, 1 fewer; 1 new finding, 0 fixed.
 
 #### New findings
 | Kind | Label | Where | Times | Tests |
@@ -119,8 +138,81 @@ never fails the job.
 - `json-file: ""` turns the file, the artifact and the comparison off. Do not
   pass `--queryguard-json` in `pytest-args` as well: the action reads the file
   at `json-file`.
-- Several jobs (for example one per database) keep apart by `category`.
+- Several jobs (for example one per database, or the jobs of a matrix) keep
+  apart by `category`; see [Limits](#limits-and-edge-cases).
 - The same report locally: `python -m pytest_queryguard.compare base.json head.json`.
+
+### Query counts over the last runs
+
+Since 0.8.0; experimental (see [Stability](stability.md#experimental)).
+
+The comparison shows one step; `trend: "10"` shows the last ten runs, as an
+APM shows a query count over time in production. On a push to the default
+branch and on a pull request, the action downloads the query-count artifacts
+of the latest finished runs of the same workflow on the (base) branch, adds
+the file of this run as the newest, and appends the trend to the job summary.
+On a pull request with a comment it is also folded into that comment, as a
+collapsed `<details>` block below the comparison.
+
+```
+### pytest-queryguard: query counts over the last 5 runs
+
+5 runs, statements 3120 -> 3187 (+67) `▁▁▂▂█`. 3 tests changed their count, 2 new, 0 not in the latest run; 1 new finding, 0 gone.
+
+| Run | Tests | Statements | |
+| `1a2b3c4` | 410 | 3120 |  |
+| ... | | | |
+| `9f8e7d6 (this run)` | 412 | 3187 |  |
+
+#### Tests whose count changed most
+| Test | Runs | First | Last | Change |
+| `tests/test_orders.py::test_list` | `▁▁▁▁█` | 3 | 53 | +50 |
+```
+
+- Each run is named by its commit. A run that stopped early or whose
+  measurement failed (`complete: false`) is marked `incomplete`: its total is
+  partial, and tests missing from it did not run.
+- A test's change is its count in the latest run against its first run in the
+  window, with one sparkline character per run (`·` where the test did not
+  run), scaled between its lowest and highest count. A renamed test is one
+  new test and one that is no longer in the latest run.
+- New and gone findings compare the oldest run with the newest, as the
+  comparison does; `Since` is the run from which on a new finding is in
+  every run.
+- Pull-request runs are not history: only runs of other events (push,
+  schedule) on the branch count, one per commit. Runs without
+  the artifact (expired after 30 days, or a job that stopped before writing
+  it) or with a file that cannot be read are skipped, so the window may have
+  fewer runs. The
+  trend needs `actions: read` and never fails the job; without the
+  permission it has this run only and the log has a warning.
+
+The same report locally, from files given oldest first:
+
+```
+python -m pytest_queryguard.trend mon.json tue.json wed.json --top 20
+python -m pytest_queryguard.trend runs/*.json --test "tests/test_orders.py::*" --format text
+```
+
+`--format` is `markdown` (the default), `text` or `json`; `--test` keeps the
+tests whose node id contains the pattern, or matches it when it is a glob;
+`--label` names the runs (once per file, default: the file names). The
+sparklines use Unicode blocks; `--ascii` prints `_-~=+*#@` instead, and the
+console output falls back to it by itself when the console cannot print the
+blocks (a Windows console with cp1252). The exit status is 2 when a file
+cannot be read or is not a `--queryguard-json` file (`--skip-unreadable`
+leaves it out instead) or the `--output` file cannot be written, otherwise 0.
+
+`--format json` prints one object with `"format": 1` (the number goes up when
+a key changes meaning; new keys may be added): `runs` (per file, oldest first:
+`label`, `tests`, `statements`, `complete`), `complete`, `changed` (the tests
+whose count changed most, up to `--top`: `nodeid`, `counts` per run, null
+where the test did not run, `first`, `last`, `change`), `changed_total`,
+`added_tests` and `gone_tests` (how many tests are in the last run but not
+the first, and in an earlier run but not the last), `new_findings` and `gone_findings` (`kind`,
+`label`, `file`, `function`, `count`, `tests`; a new finding also has
+`since`, the label of the run from which on it is in every run). Like the
+rest of the trend it is experimental (see [Stability](stability.md#experimental)).
 
 A typical rollout: run once with `fail: "false"` to see the alerts, create a
 [baseline](baseline.md) for what you cannot fix yet, then switch to
@@ -146,6 +238,76 @@ A typical rollout: run once with `fail: "false"` to see the alerts, create a
   events where you do not want an upload at all.
 - Code scanning is free for public repositories. Private repositories need
   GitHub Code Security.
+
+### Permissions per input
+
+| Permission | Needed by | Without it |
+|---|---|---|
+| `contents: read` | `actions/checkout` | The checkout fails. |
+| `security-events: write` | `upload: "true"` | The upload step fails (it has `continue-on-error`), the job does not. |
+| `actions: read` | `compare`, `trend`; the upload in a private repository | The job summary or the log says the runs could not be listed. |
+| `pull-requests: write` | `comment: "true"` | A warning in the log; the report stays in the job summary. |
+
+Grant only what the inputs you use need: with `upload: "false"`,
+`compare: "false"` and `comment: "false"` the job needs `contents: read`
+alone.
+
+## Limits and edge cases
+
+- **Matrix jobs.** A composite action cannot see the matrix, so every job of
+  a matrix gets the same default `category`. Their artifacts then replace
+  each other (the action uploads with `overwrite: true`, so that a re-run of
+  a job can upload again), their comparisons share one comment, and code
+  scanning keeps the upload of the last job. Give each job its own category:
+  `category: queryguard-${{ matrix.python }}-${{ matrix.db }}`. Two
+  categories that differ only in characters turned into `-` (`a/b` and
+  `a:b`) share an artifact too.
+- **The first run.** Until a push to the base branch has run the workflow
+  with this action, a pull request has nothing to compare with: the job
+  summary says so, no comment is written, and the job is not failed.
+- **The comment's size.** GitHub refuses a comment over 65536 characters.
+  The comparison has at most 25 rows per table and cuts long names, so it
+  fits; when the trend folded below it would not, the comment leaves the
+  trend out and says it is in the job summary. A comparison that does not
+  fit by itself is cut at a line, with a note. The job summary always has
+  both in full.
+- **One comment, updated.** A later run finds its comment by the marker on
+  the first line and by its author: the user of a personal access token
+  given as `github-token`, or else a bot (`github-actions[bot]` for the
+  default token, the app for an app's token), newest first, passing over one
+  this token may not edit. A comment of a person that quotes the marker is
+  never edited. When GitHub cannot name the user of a personal token for a
+  moment, the run writes no comment rather than a second one. Two runs of one pull request that end
+  at the same moment can both find no comment and post two; and a re-run of
+  an older run writes its older comparison over the newer one. Cancelling
+  older runs avoids both:
+
+  ```yaml
+  concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+  ```
+
+- **Exit codes.** pytest's exit code is the `exit-code` output. With
+  `fail: "true"` any code but 0 fails the job; 2 (interrupted), 3 (internal
+  error), 4 (usage error) and 5 (no tests collected) also leave a warning, which
+  is all they leave with `fail: "false"`. A finding fails its test, so it
+  is code 1, as any failed test. An invalid input, an unclosed quote in
+  `pytest-args` or a failed install fails the job whatever `fail` says, and
+  then the later steps are skipped.
+- **Cancelled runs.** After a cancel nothing more runs: no upload, no
+  comparison, no comment. Failed tests do not stop them; an invalid input or
+  a failed install skips them, as pytest did not run.
+- **Runners.** Every step uses `bash`; the repository's CI runs the action on
+  `ubuntu-latest`. macOS runners have bash and `realpath`. On Windows, bash is
+  Git Bash, and the action turns the file paths it hands to the upload steps
+  into Windows paths (`cygpath -w`); macOS and Windows runners are not tested
+  by the repository's CI.
+- **Untrusted text.** No input or event value is pasted into a script: each
+  reaches the shell as an environment variable, and `pytest-args` is split by
+  Python's `shlex` without a shell. Test ids, labels and file names in the
+  comment are in code spans, with `|` escaped and backticks replaced, so a
+  test id cannot start a mention, a link or a table cell.
 
 ## Without the action
 
@@ -174,21 +336,23 @@ tests started running more queries before anything fails.
 ```json
 {
   "format": 1,
-  "tool": {"name": "pytest-queryguard", "version": "0.6.0"},
+  "tool": {"name": "pytest-queryguard", "version": "0.8.0"},
   "complete": true,
   "tests": {
     "tests/test_orders.py::test_list_orders": {
       "statements": 51,
       "by_verb": {"select": 51},
-      "db_time": 0.0003,
+      "db_time": 0.0007,
       "truncated": false,
       "findings": [
         {"kind": "relationship-load", "label": "Order.customer", "count": 50,
-         "file": "app/orders.py", "function": "list_orders", "line": 12,
+         "file": "app/orders.py", "function": "list_orders", "line": 10,
          "stack": [{"file": "tests/test_orders.py", "function": "test_list_orders",
                     "line": 7}],
-         "baselined": false}
-      ]
+         "baselined": false,
+         "message": "Order.customer was lazy-loaded 50 times\nfirst at app/orders.py:10 in list_orders\n..."}
+      ],
+      "max_queries_marker": false
     }
   }
 }
@@ -204,7 +368,9 @@ tests started running more queries before anything fails.
   lines of your code that called `file:line`, innermost first, as the
   terminal report's `called from` lines (`queryguard_stack_depth`). Findings in the
   baseline are listed too, with `"baselined": true`, so the file is the same
-  whether or not the baseline is being updated. `db_time` is null when no
+  whether or not the baseline is being updated. `message` (since 0.8.0) is the finding's
+  text as the terminal report shows it, without the indent; like every
+  message, its wording is not stable. `db_time` is null when no
   statement was timed.
 - `complete` is false when the run stopped early (`-x`, Ctrl-C, a collection
   error, a crashed pytest-xdist worker) or measurement failed: tests missing
@@ -221,6 +387,8 @@ The `action` job in `.github/workflows/ci.yml` runs the local action
 (`uses: ./action`) on `examples/action-sample`, a project with one N+1 query:
 once with `fail: "false"` (the SARIF file is checked, including that its URI
 starts with `examples/action-sample/`, the working directory), once expecting
-the step to fail, and once with the finding in a baseline. None of them
+the step to fail, and once with the finding in a baseline. The first run
+also has `trend: "5"`; when the trend wrote a report, the job checks that it
+has this run's row. None of them
 uploads: a sample upload with no results would make every pull request report
 "1 configuration not found" in its checks.

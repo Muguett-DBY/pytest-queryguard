@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, ClassVar
 
 import pytest
 from sqlalchemy import ForeignKey, String, create_engine, select
@@ -15,6 +16,7 @@ from sqlalchemy.orm import (
     load_only,
     mapped_column,
     relationship,
+    selectin_polymorphic,
     selectinload,
     undefer,
 )
@@ -276,6 +278,173 @@ def test_a_named_session_refresh_in_a_loop_is_a_refresh(session: Session) -> Non
     assert "Book was reloaded with session.refresh() 6 times" in report
     assert "label: Book (refresh)" in report
     assert "expire_on_commit" not in report
+
+
+# ------------------------------------------------- polymorphic subclasses
+
+
+class InheritanceBase(DeclarativeBase):
+    pass
+
+
+class Employee(InheritanceBase):
+    __tablename__ = "employee"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    type: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str] = mapped_column(String(20))
+    __mapper_args__: ClassVar[dict[str, Any]] = {
+        "polymorphic_on": "type",
+        "polymorphic_identity": "employee",
+    }
+
+
+class Engineer(Employee):
+    __tablename__ = "engineer"
+
+    id: Mapped[int] = mapped_column(ForeignKey("employee.id"), primary_key=True)
+    language: Mapped[str] = mapped_column(String(20))
+    __mapper_args__: ClassVar[dict[str, Any]] = {"polymorphic_identity": "engineer"}
+
+
+class Principal(Engineer):
+    __tablename__ = "principal"
+
+    id: Mapped[int] = mapped_column(ForeignKey("engineer.id"), primary_key=True)
+    reports: Mapped[int]
+    __mapper_args__: ClassVar[dict[str, Any]] = {"polymorphic_identity": "principal"}
+
+
+class Vehicle(InheritanceBase):
+    __tablename__ = "vehicle"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(10))
+    __mapper_args__: ClassVar[dict[str, Any]] = {
+        "polymorphic_on": "kind",
+        "polymorphic_identity": "vehicle",
+    }
+
+
+class Truck(Vehicle):
+    payload: Mapped[int | None] = mapped_column(nullable=True)
+    __mapper_args__: ClassVar[dict[str, Any]] = {"polymorphic_identity": "truck"}
+
+
+@pytest.fixture
+def staff() -> Iterator[Session]:
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    InheritanceBase.metadata.create_all(engine)
+    with Session(engine) as seed:
+        seed.add_all(
+            Engineer(id=i, name="e", language="py") for i in range(1, ROWS + 1)
+        )
+        seed.add_all(Truck(id=i, payload=i) for i in range(1, ROWS + 1))
+        seed.add_all(
+            Principal(id=100 + i, name="p", language="go", reports=i)
+            for i in range(1, ROWS + 1)
+        )
+        seed.commit()
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
+
+
+def _joined_subclass_loop(s: Session) -> None:
+    for employee in s.scalars(select(Employee).where(Employee.id < 100)):
+        assert isinstance(employee, Engineer)
+        _ = employee.language
+
+
+def _single_table_subclass_loop(s: Session) -> None:
+    for vehicle in s.scalars(select(Vehicle)):
+        assert isinstance(vehicle, Truck)
+        _ = vehicle.payload
+
+
+def test_joined_subclass_columns_get_the_polymorphic_hint(staff: Session) -> None:
+    report = _report(staff, _joined_subclass_loop)
+    assert (
+        "Engineer loaded its subclass columns on its own 6 times for 6 instances "
+        "(a query of the base class Employee leaves them out)"
+    ) in report
+    assert "label: Engineer (polymorphic)" in report
+    assert (
+        "select(Employee).options(selectin_polymorphic(Employee, [Engineer]))" in report
+    )
+    # the hint it used to get: nothing was committed or expired
+    assert "expire_on_commit" not in report
+    assert "after commit()" not in report
+
+
+def test_single_table_subclass_columns_get_the_polymorphic_hint(
+    staff: Session,
+) -> None:
+    report = _report(staff, _single_table_subclass_loop)
+    assert "label: Truck (polymorphic)" in report
+    # the columns are in the vehicle table: select them, no second query
+    assert "select(with_polymorphic(Vehicle, [Truck]))" in report
+    assert 'polymorphic_load="inline"' in report
+    assert "selectin_polymorphic" not in report
+    assert "expire_on_commit" not in report
+
+
+def test_selectin_polymorphic_loads_subclass_columns_with_the_query(
+    staff: Session,
+) -> None:
+    def work(s: Session) -> None:
+        stmt = (
+            select(Employee)
+            .where(Employee.id < 100)
+            .options(selectin_polymorphic(Employee, [Engineer]))
+        )
+        for employee in s.scalars(stmt):
+            _ = employee.language  # type: ignore[attr-defined]
+
+    assert _report(staff, work) == ""
+
+
+def test_subclass_instances_expired_by_commit_are_still_expired(
+    staff: Session,
+) -> None:
+    def work(s: Session) -> None:
+        engineers = s.scalars(select(Engineer).where(Engineer.id < 100)).all()
+        s.commit()
+        for engineer in engineers:
+            _ = engineer.language
+
+    report = _report(staff, work)
+    assert "label: Engineer (expired)" in report
+    assert "polymorphic" not in report
+
+
+def test_the_hint_names_the_class_the_query_selected(staff: Session) -> None:
+    # Principal -> Engineer -> Employee: a query of Engineer leaves out the
+    # Principal columns; the fix belongs on that query, not on Employee
+    def work(s: Session) -> None:
+        for engineer in s.scalars(select(Engineer).where(Engineer.id > 100)):
+            assert isinstance(engineer, Principal)
+            _ = engineer.reports
+
+    report = _report(staff, work)
+    assert "(a query of the base class Engineer leaves them out)" in report
+    assert "select(Engineer).options(selectin_polymorphic(Engineer, [Principal]))" in (
+        report
+    )
+
+
+def test_subclass_columns_expired_after_a_query_of_the_subclass_are_expired(
+    staff: Session,
+) -> None:
+    # select(Engineer) loaded every column; expire() named one: not polymorphic
+    def work(s: Session) -> None:
+        for engineer in s.scalars(select(Engineer).where(Engineer.id < 100)).all():
+            s.expire(engineer, ["language"])
+            _ = engineer.language
+
+    report = _report(staff, work)
+    assert "label: Engineer (expired)" in report
+    assert "polymorphic" not in report
 
 
 # ------------------------------------------------------ relationship hints

@@ -44,10 +44,12 @@ Python 3.10+, pytest 8+, SQLAlchemy 2.0.13+.
 | N+1 on a relationship | on | one relationship is lazy-loaded for 2 or more parent objects |
 | Repeated statement | on | one `SELECT` runs 5 or more times: ORM, Core or `text()` |
 | Column reloads | on | 5 or more objects reload a deferred or expired column one by one |
+| Cartesian joins | on, warns | one query `joinedload`s two collections side by side, so its rows grow as their product (`fail` makes it fail) |
 | Query and time budgets | per test | `@pytest.mark.max_queries(n)` or `max_db_time(seconds)` is exceeded |
 | Row-by-row writes | opt-in | one `INSERT`, `UPDATE` or `DELETE` runs once per row from one line |
 | Missing index, with the `CREATE INDEX` | opt-in | no index can serve a filter (PostgreSQL 16+, SQLite, MySQL, MariaDB) |
 | Unused eager loads | experimental, off | a relationship is eager-loaded and never read |
+| Unused columns | experimental, off | a query loads a wide row and the test reads few of its columns |
 
 Why not just `raiseload`? It blocks lazy loads where you add it to a model or
 query; this plugin needs no code change and also reports what `raiseload` does
@@ -99,7 +101,7 @@ also install `sqlalchemy[asyncio]`.
 Every test is checked automatically, inside the test function:
 
 - **relationship-load**: one relationship (`Order.customer`) is lazy-loaded
-  for 2 or more different parent objects. The hint is `joinedload` for a
+  for 2 or more parents loaded by one query. The hint is `joinedload` for a
   many-to-one relationship and `selectinload` for a collection;
 - **repeated-statement**: one `SELECT`, with its parameters and literals
   removed, runs 5 or more times. Core and `text()` statements count, not only
@@ -107,6 +109,9 @@ Every test is checked automatically, inside the test function:
 - **column-load**: 5 or more instances of one class each go back to the
   database for a deferred column (hint: `undefer`) or for attributes expired by
   `commit()` (hint: `expire_on_commit=False`);
+- **cartesian-load** (warns by default): one query loads two collections
+  with `joinedload` side by side, so each row repeats per pair of their items
+  (hint: `selectinload` for all but one);
 - **write-loop** (opt-in): the same `INSERT`, `UPDATE` or `DELETE`, one row per
   statement, runs many times from one source line;
 - **unused-eager-load** (experimental, off by default): a relationship is
@@ -175,7 +180,7 @@ check is off by default. See [PostgreSQL](https://maciejziel.github.io/pytest-qu
   for GitHub code scanning, and the action in [action](https://github.com/MaciejZiel/pytest-queryguard/tree/main/action) runs pytest and
   uploads it. See [CI and GitHub Action](https://maciejziel.github.io/pytest-queryguard/ci.html) and
   [SARIF](https://maciejziel.github.io/pytest-queryguard/sarif.html).
-- Leave out single findings with `@pytest.mark.allow_nplusone("Order.customer")`
+- Leave out single findings with `@pytest.mark.queryguard_ignore("Order.customer")`
   or `queryguard_ignore`; make kinds warn with `queryguard_fail_on` or
   `queryguard_mode = warn`. See [Ignoring findings](https://maciejziel.github.io/pytest-queryguard/ignoring.html).
 - Read the statements of a block in a test with `record_queries()`. See
@@ -224,16 +229,18 @@ Other tools find N+1 queries too: [queryspy](https://github.com/sqla-native/quer
 [django-zeal](https://github.com/taobojlen/django-zeal) for Django and others.
 The [comparison page](https://maciejziel.github.io/pytest-queryguard/comparison.html) has a feature matrix (dated, with what
 was run and what was only read) and the results of running 45 scenarios against
-queryspy 0.5.0 and pytest-querycount 0.4.0 (re-checked on 2026-10-13: no newer
-releases). In short, in my runs: pytest-queryguard fails on N+1 with no
-configuration (the other two need a flag or a marker), reported a loop of Core
+queryspy 0.5.0 and pytest-querycount 0.4.0 on 2026-10-12 and 2026-10-13
+(queryspy 0.5.1 and 0.6.0, released since, change only the supported Python
+versions by their changelog). In short, in my runs: pytest-queryguard fails on
+N+1 with no configuration (the other two need a flag or a marker), reported a loop of Core
 `select()` statements and a loop with literal values that queryspy missed, and
 lists the statements in a budget failure (queryspy's marker printed only the
 counts). queryspy and pytest-querycount also report runs of 2 to 4 identical
 statements, which pytest-queryguard does only when you set
 `queryguard_small_repeat_threshold`. pytest-querycount has a PostgreSQL
 missing-index check of its own, queryspy has middleware and a request panel for
-running apps, which pytest-queryguard does not, and django-zeal covers Django.
+running apps (so does pytest-queryguard's experimental [in-application mode](https://maciejziel.github.io/pytest-queryguard/in-app.html)
+since 0.5.0; the two were not compared), and django-zeal covers Django.
 Moving from nplusone: [migration guide](https://maciejziel.github.io/pytest-queryguard/migrating-from-nplusone.html).
 
 ## Overhead

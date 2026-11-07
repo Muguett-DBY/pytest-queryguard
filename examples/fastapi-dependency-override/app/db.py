@@ -1,6 +1,3 @@
-"""The application's engines. Tests replace the sessions through
-app.dependency_overrides and never touch these."""
-
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker

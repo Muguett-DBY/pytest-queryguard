@@ -10,8 +10,13 @@
   with `--queryguard-report`: a test that shows 0 statements was not seen. For
   Django see the [comparison](comparison.md).
 - The repeat rules count per test by default, so a test that makes several
-  independent requests can report a repeat that is no loop. Set
-  `queryguard_repeat_scope = session` to count per `Session`; that has limits
+  independent requests can report a repeat that is no loop. The same holds
+  for a service that opens a `Session` per call and is called on several
+  lines of a test: the relationship-load rule groups the parents by the query
+  line inside the service, not by the lines that called it, so two calls for
+  two objects look like one query returning two rows (MLflow's tracking
+  store, see [Real projects](accuracy.md#real-projects)). Set
+  `queryguard_scope = session` to count per `Session`; that has limits
   of its own, listed in [Tests with several sessions or
   requests](several-sessions.md).
 - Everything in `site-packages` counts as library code. If your application
@@ -31,12 +36,17 @@
   `await asyncio.to_thread(lambda: session.execute(stmt))` or a named helper.
 - One measurement is active per process at a time, so tests in one process
   must run sequentially. Under pytest-xdist each worker measures its own
-  tests, so detection and budgets work. The report needs a single process,
-  so under pytest-xdist it prints
-  `queryguard report: not available with pytest-xdist`.
+  tests, so detection and budgets work, and the workers send their counts
+  and notes to the controller, which prints the report and the summary.
+- A thread a test starts and does not stop (a daemon worker, a server started
+  in the test body) goes on into the tests after it: its statements count
+  for whichever test is measured while they run, in its findings and its
+  budgets, and cannot be told apart from that test's own. Stop and join such
+  threads in the test or in the teardown of its fixture. Statements that run
+  between two test bodies are not counted.
 - Tests that use `pytester` to run pytest in-process are also measured by the
   outer test, which sees the inner run's queries. Mark such tests with
-  `allow_nplusone` or use `pytester.runpytest_subprocess()`.
+  `queryguard_ignore` or use `pytester.runpytest_subprocess()`.
 - unittest `setUp` and `tearDown` run inside the test call, so their queries
   are counted, unlike pytest fixtures.
 - A non-strict `xfail` test that has an N+1 is reported as xfailed rather
@@ -60,7 +70,7 @@
   rule can tell a polling loop that repeats a statement on purpose from a
   loop-invariant query inside a loop: both repeat one statement with the same
   parameters, so both are reported. Raise `queryguard_repeat_threshold` or mark
-  the test with `allow_nplusone` for such code. The
+  the test with `queryguard_ignore` for such code. The
   [accuracy page](accuracy.md) lists the scenarios.
 - A few statements below the thresholds are not reported by default: fewer than
   five runs of one statement (`queryguard_small_repeat_threshold` reports them)
@@ -69,8 +79,9 @@
   rules report legitimate code: a cached lookup that runs twice, or two objects
   read after a commit.
 - The write-loop rule cannot tell test seeding (Factory Boy creating rows with
-  a flush each) or a per-row insert with its own error handling from a write
-  loop in the code under test. It is off by default for that reason; see
+  a flush each, or a repository's `create()` called per row by the test) or a
+  per-row insert with its own error handling from a write loop in the code
+  under test. It is off by default for that reason; see
   [Factory Boy and seeding](recipes-factory-boy.md) for suites that seed in
   the test body.
 - The PostgreSQL index check needs PostgreSQL 16 or newer, and a sync engine or an
@@ -121,9 +132,6 @@
   function called from a `SELECT`, is not seen, and the check may judge an
   index by its old definition. A fresh pytest session starts with an empty
   cache.
-- The index check's session summary is printed by the process that runs the
-  tests, so under pytest-xdist it is not shown. Findings in tests are
-  reported as usual.
 - On pytest 9.0 and 9.1, a wrongly typed value in the native `[tool.pytest]`
   table for one of pytest's own options (for example
   `console_output_style = 3`) stops pytest with an internal error, with or
@@ -137,8 +145,8 @@
   ORM yield_per feature in conjunction with unique()"; with `autoflush=False`
   it no longer flushes. The plugin installs such a listener only for strict
   mode (`queryguard_strict`) and the unused eager-load check
-  (`queryguard_unused_eager_load`), both off by default;
-  then, on those versions, it removes the inherited options from the loader
+  (`queryguard_unused_eager_load`), both off by default, and the in-app mode
+  installs none; then, on those versions, it removes the inherited options from the loader
   statement before SQLAlchemy reads them, and the statement runs as it does
   without the plugin; the cursor still gets the outer statement's options.
   This happens only when the plugin's listeners are the only ones: with a
@@ -152,7 +160,18 @@
   that retries the statement) counts once per `SELECT`.
 - With several `Session`s on one connection (a second `Session` joined to
   the external connection of a "test in a transaction" fixture) and
-  `queryguard_repeat_scope = session`, the query of a top-level
+  `queryguard_scope = session`, the query of a top-level
   `subqueryload` belongs to the `Session` that began on the connection last:
   SQLAlchemy does not say which `Session` runs it. Lazy loads, column loads
   and `selectinload` queries belong to their own `Session`.
+- SQLAlchemy checks an object's load context after the `refresh` instance
+  event only while a listener for that event exists, and the plugin always
+  has one (it notes which query read each object). A query with
+  `populate_existing` and a `subqueryload()` of a self-referential
+  relationship moves the objects to the subquery's context inside
+  SQLAlchemy, before the event, so with the plugin installed SQLAlchemy emits
+  `SAWarning: Loading context for <...> has changed within a load/refresh
+  handler`; without it, the same load runs silently. The loaded data is the
+  same. A suite with `filterwarnings = error` can ignore that message
+  (`ignore:Loading context for:sqlalchemy.exc.SAWarning`) or use
+  `selectinload()`, which does not move the objects.

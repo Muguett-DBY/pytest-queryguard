@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy.orm import InstrumentedAttribute
+from ._compat import ATTRIBUTE_DESCRIPTOR, attribute_get
 
 reads: set[tuple[type, str]] | None = None
 instances: dict[int, tuple[Any, set[str]]] | None = None
@@ -46,6 +46,7 @@ def _tracked_get(self: Any, instance: Any, owner: Any) -> Any:
         if instances is not None:
             try:
                 entry = instances.get(id(instance))
+                # _compat.INSTANCE_STATE, inline: this runs on every read
                 if entry is not None and entry[0] is instance._sa_instance_state:
                     entry[1].add(self.key)
             except Exception as exc:  # noqa: BLE001  # a plugin bug must never break the user suite
@@ -66,16 +67,17 @@ def install() -> None:
     global _users, _original
     _users += 1
     if _users == 1:
-        _original = InstrumentedAttribute.__get__
-        InstrumentedAttribute.__get__ = _tracked_get  # type: ignore[method-assign]
+        _original = attribute_get()
+        ATTRIBUTE_DESCRIPTOR.__get__ = _tracked_get  # type: ignore[method-assign]
 
 
 def uninstall() -> None:
     """Undo one ``install()``; the last one restores SQLAlchemy's descriptor."""
-    global _users, _original
+    global _users
     if _users == 0:
         return
     _users -= 1
     if _users == 0:
-        InstrumentedAttribute.__get__ = _original  # type: ignore[method-assign]
-        _original = None
+        # _original is kept: another thread may have entered _tracked_get
+        # just before this line and still has to call it.
+        ATTRIBUTE_DESCRIPTOR.__get__ = _original  # type: ignore[method-assign]

@@ -9,7 +9,7 @@ line is not a new finding. Baselined findings are left out of both lists.
 Tests that exist in only one of the files are counted, not compared.
 
 The report is for people (a pull-request comment, the job summary); the exit
-status is 0 unless a file cannot be read (2).
+status is 0 unless a file cannot be read or written (2).
 """
 
 from __future__ import annotations
@@ -76,14 +76,55 @@ class Comparison:
 
 def load(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        # utf-8-sig: a file saved again by Windows PowerShell 5 starts with a BOM
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, RecursionError) as exc:
         raise CompareError(f"cannot read {path}: {exc}") from None
+    if isinstance(data, dict) and "format" in data and data["format"] != 1:
+        raise CompareError(
+            f"{path} has format {data['format']!r}, but this pytest-queryguard "
+            "reads format 1; compare files written by the same release"
+        )
     if not isinstance(data, dict) or data.get("format") != 1:
-        raise CompareError(f"{path} is not a pytest-queryguard JSON file (format 1)")
-    if not isinstance(data.get("tests"), dict):
+        raise CompareError(
+            f"{path} is not a pytest-queryguard JSON file (format 1); "
+            "write one with pytest --queryguard-json=PATH"
+        )
+    tests = data.get("tests")
+    if not isinstance(tests, dict):
         raise CompareError(f"{path} has no tests")
+    for nodeid, entry in tests.items():
+        problem = _entry_problem(entry)
+        if problem:
+            raise CompareError(
+                f"{path} is not a pytest-queryguard JSON file: {nodeid!r} {problem}"
+            )
     return data
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _entry_problem(entry: Any) -> str:
+    """What is wrong with one test's entry, so that compare would not fail."""
+    if not isinstance(entry, dict) or not _is_number(entry.get("statements")):
+        return "has no statement count"
+    findings = entry.get("findings", [])
+    if not isinstance(findings, list):
+        return "has findings that are not a list"
+    for f in findings:
+        if not isinstance(f, dict):
+            return "has a finding that is not an object"
+        for key in ("kind", "label"):
+            if not isinstance(f.get(key), str):
+                return f"has a finding whose {key} is not a string"
+        if not _is_number(f.get("count", 0)):
+            return "has a finding whose count is not a number"
+        for key in ("file", "function"):
+            if not isinstance(f.get(key), (str, type(None))):
+                return f"has a finding whose {key} is not a string or null"
+    return ""
 
 
 def _findings(
@@ -164,6 +205,16 @@ def _tests(row: FindingRow) -> str:
     return first + (f" and {more} more" if more else "")
 
 
+def _noun(count: int, noun: str) -> str:
+    """``noun``, or its plural for any count but one."""
+    return noun if count == 1 else f"{noun}s"
+
+
+def _count(count: int, noun: str) -> str:
+    """``1 test``, ``2 tests``."""
+    return f"{count} {_noun(count, noun)}"
+
+
 def markdown(result: Comparison, *, rows: int = _ROWS, key: str = "") -> str:
     """The report, with a marker line so a later run can update the comment."""
     title = "### pytest-queryguard: queries compared with the base branch"
@@ -173,16 +224,17 @@ def markdown(result: Comparison, *, rows: int = _ROWS, key: str = "") -> str:
     delta = result.total_after - result.total_before
     sign = "+" if delta > 0 else ""
     lines.append(
-        f"{result.compared_tests} tests compared: {result.total_before} -> "
+        f"{_count(result.compared_tests, 'test')} compared: {result.total_before} -> "
         f"{result.total_after} statements ({sign}{delta}). "
         f"**{len(result.more)}** run more, {len(result.fewer)} fewer; "
-        f"**{len(result.new)}** new findings, {len(result.fixed)} fixed."
+        f"**{len(result.new)}** new {_noun(len(result.new), 'finding')}, "
+        f"{len(result.fixed)} fixed."
     )
     extra = []
     if result.added_tests:
-        extra.append(f"{result.added_tests} new tests")
+        extra.append(f"{result.added_tests} new {_noun(result.added_tests, 'test')}")
     if result.removed_tests:
-        extra.append(f"{result.removed_tests} tests not in this run")
+        extra.append(f"{_count(result.removed_tests, 'test')} not in this run")
     if extra:
         lines.append(f"Not compared: {', '.join(extra)}.")
     if not result.complete:
@@ -269,7 +321,14 @@ def main(argv: list[str] | None = None) -> int:
         reconfigure(errors="backslashreplace")
     sys.stdout.write(report)
     if args.output is not None:
-        args.output.write_text(report, encoding="utf-8")
+        try:
+            args.output.write_text(report, encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"pytest-queryguard compare: cannot write {args.output}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
     return 0
 
 

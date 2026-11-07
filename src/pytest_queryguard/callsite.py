@@ -6,10 +6,9 @@ import sys
 import sysconfig
 from collections.abc import Iterator
 from pathlib import Path
-from types import FrameType
+from types import CodeType, FrameType
 
-import sqlalchemy.orm.session as _orm_session
-
+from ._compat import FLUSH_CONTEXT, FLUSH_FUNCTION, SESSION_FILE
 from .events import CallSite
 
 
@@ -60,6 +59,52 @@ def _is_internal(filename: str) -> bool:
     except KeyError:
         result = _internal[filename] = _classify(filename)
         return result
+
+
+# code object -> is it a method of a Session subclass? A Session subclass in the
+# application's code (SQLModel's, installed in editable mode, or an app's own
+# override of execute()) is part of the session: every query of the test would
+# otherwise share its `super().execute()` line as call site, and lookups made
+# at different lines would look like one query line returning many rows.
+# Decided once per code object, from the `self` of its first run: a mixin
+# method shared by a Session subclass and another class keeps that answer.
+_session_methods: dict[CodeType, bool] = {}
+_MAX_SESSION_METHODS = 4096
+
+
+def _session_classes() -> tuple[type, ...]:
+    classes: list[type] = []
+    # only modules already loaded: an instance of one has imported it
+    for module_name, name in (
+        ("sqlalchemy.orm.session", "Session"),
+        ("sqlalchemy.ext.asyncio.session", "AsyncSession"),
+    ):
+        cls = getattr(sys.modules.get(module_name), name, None)
+        if isinstance(cls, type):
+            classes.append(cls)
+    return tuple(classes)
+
+
+def _is_session_method(frame: FrameType) -> bool:
+    """Whether ``frame`` runs a method of a ``Session`` or ``AsyncSession`` subclass."""
+    if frame.f_code.co_name in _INLINED:
+        frame = _outer(frame)  # a comprehension in the method, before 3.12
+    code = frame.f_code
+    try:
+        return _session_methods[code]
+    except KeyError:
+        pass
+    result = False
+    if code.co_argcount and code.co_varnames[0] == "self":
+        try:
+            this = frame.f_locals.get("self")
+            result = isinstance(this, _session_classes())
+        except Exception:  # noqa: BLE001  # a plugin bug must never break the user suite
+            result = False
+    if len(_session_methods) >= _MAX_SESSION_METHODS:
+        _session_methods.clear()
+    _session_methods[code] = result
+    return result
 
 
 def _parent_greenlet_frames() -> Iterator[FrameType]:
@@ -127,6 +172,26 @@ def _hook_caller() -> str:
     return _hook_prefix
 
 
+# Before 3.12 a list, dict or set comprehension runs in a frame of its own,
+# called by the function it is written in, at the same place (PEP 709 inlined
+# them). Reports name that function, as they do on 3.12 and later.
+_INLINED = (
+    frozenset({"<listcomp>", "<dictcomp>", "<setcomp>"})
+    if sys.version_info < (3, 12)
+    else frozenset()
+)
+
+
+def _outer(frame: FrameType) -> FrameType:
+    """The frame of the function a comprehension is written in, or ``frame``."""
+    while frame.f_code.co_name in _INLINED:
+        back = frame.f_back
+        if back is None or back.f_code.co_filename != frame.f_code.co_filename:
+            break
+        frame = back
+    return frame
+
+
 def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
     """Up to ``depth`` application frames from ``frame`` outwards.
 
@@ -139,7 +204,10 @@ def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
         code = frame.f_code
         if stop and os.path.normcase(code.co_filename).startswith(stop):
             break
-        if not _is_internal(code.co_filename):
+        if not _is_internal(code.co_filename) and not _is_session_method(frame):
+            if code.co_name in _INLINED:
+                frame = _outer(frame)
+                code = frame.f_code
             found.append(
                 CallSite(
                     filename=code.co_filename,
@@ -151,28 +219,44 @@ def _callers(frame: FrameType | None, depth: int) -> tuple[CallSite, ...]:
     return tuple(found)
 
 
-def _first_external(frame: FrameType | None, sites: Sites) -> CallSite | None:
+def _site(frame: FrameType, sites: Sites) -> CallSite:
+    code = frame.f_code
+    key = (code.co_filename, frame.f_lineno, code.co_name)
+    site = sites.get(key)
+    if site is None:
+        if len(sites) >= _MAX_SITES:
+            sites.clear()
+        outer = _outer(frame) if key[2] in _INLINED else frame
+        site = sites[key] = CallSite(
+            filename=key[0],
+            lineno=key[1],
+            function=outer.f_code.co_name,
+            callers=_callers(outer.f_back, _stack_depth),
+        )
+    return site
+
+
+def _first_external(
+    frame: FrameType | None, sites: Sites, skipped: list[FrameType] | None = None
+) -> CallSite | None:
+    """The first application frame from ``frame`` outwards, as a call site.
+
+    A method of a Session subclass is passed over (see _is_session_method);
+    the first one is appended to ``skipped``, the call site to use when no
+    other application frame is found.
+    """
     internal = _internal
     while frame is not None:
-        code = frame.f_code
-        filename = code.co_filename
+        filename = frame.f_code.co_filename
         try:
             skip = internal[filename]
         except KeyError:
             skip = internal[filename] = _classify(filename)
         if not skip:
-            key = (filename, frame.f_lineno, code.co_name)
-            site = sites.get(key)
-            if site is None:
-                if len(sites) >= _MAX_SITES:
-                    sites.clear()
-                site = sites[key] = CallSite(
-                    filename=filename,
-                    lineno=key[1],
-                    function=key[2],
-                    callers=_callers(frame.f_back, _stack_depth),
-                )
-            return site
+            if not _is_session_method(frame):
+                return _site(frame, sites)
+            if skipped is not None and not skipped:
+                skipped.append(frame)
         frame = frame.f_back
     return None
 
@@ -181,7 +265,7 @@ def _first_external(frame: FrameType | None, sites: Sites) -> CallSite | None:
 # `flush_context`. It sits behind a generated "warned" wrapper, so the frame is
 # found by function name and file. If a SQLAlchemy release renames either, no
 # statement is tagged and the write-loop rule counts every statement, as before.
-_SESSION_FILE = getattr(_orm_session, "__file__", None)
+_SESSION_FILE = SESSION_FILE
 _flush_numbers = itertools.count(1)
 _MAX_FLUSH_DEPTH = 60
 
@@ -199,8 +283,8 @@ def find_flush() -> int | None:
         if frame is None:
             return None
         code = frame.f_code
-        if code.co_name == "_flush" and code.co_filename == _SESSION_FILE:
-            context = frame.f_locals.get("flush_context")
+        if code.co_name == FLUSH_FUNCTION and code.co_filename == _SESSION_FILE:
+            context = frame.f_locals.get(FLUSH_CONTEXT)
             if context is None:
                 return None
             number = getattr(context, "_queryguard_flush", None)
@@ -218,20 +302,24 @@ def find_flush() -> int | None:
 def find_callsite(sites: Sites | None = None) -> CallSite | None:
     """First stack frame outside SQLAlchemy, pytest, stdlib, site-packages and us.
 
+    Methods of a Session subclass are passed over too, unless no other frame
+    is found: they are part of the session, not the line that ran the query.
+
     When the stack ends inside a greenlet (async sessions), the search goes on
     in the parent greenlets, where the awaiting user code lives. ``sites`` is
     the cache of call sites to use instead of the process-wide one.
     """
     if sites is None:
         sites = _sites
-    site = _first_external(sys._getframe(1), sites)
+    skipped: list[FrameType] = []
+    site = _first_external(sys._getframe(1), sites, skipped)
     if site is not None:
         return site
     for frame in _parent_greenlet_frames():
-        site = _first_external(frame, sites)
+        site = _first_external(frame, sites, skipped)
         if site is not None:
             return site
-    return None
+    return _site(skipped[0], sites) if skipped else None
 
 
 def trim_to_user_code(exc: BaseException) -> None:

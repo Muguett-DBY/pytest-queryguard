@@ -134,6 +134,10 @@ commit varies by about 5 points, so a bisect needs repeated, pinned runs.
 
 ## Comparison with other plugins
 
+A newer measurement, on a GitHub Actions runner with n-plus-one-sniffer
+too, is the [head-to-head](comparison.md#head-to-head-in-github-actions) of
+2026-11-07. The one below is from my machine.
+
 pytest-queryguard 0.5.0, pytest-querycount 0.4.0 and queryspy 0.6.0, measured
 on 2026-11-05 with Python 3.14.4, SQLAlchemy 2.1.1 and pytest 9.1.1 on the
 machine above, by `scripts/compare/run.py`:

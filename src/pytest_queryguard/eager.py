@@ -39,6 +39,14 @@ from sqlalchemy import event
 from sqlalchemy.orm import RelationshipProperty, Session
 
 from . import blocks, listeners, readhook
+from ._compat import (
+    EAGER_FROM_ALIAS,
+    ELEMENT_LOCAL_OPTS,
+    ELEMENT_PATH,
+    ELEMENT_STRATEGY,
+    LOAD_CONTEXT,
+    WITH_OPTIONS,
+)
 from .blocks import IgnoreBlock
 from .callsite import find_callsite
 from .events import CallSite
@@ -121,15 +129,15 @@ def loader_paths(options: Any) -> Iterator[tuple[tuple[Any, ...], str | None]]:
     Shared by the unused eager-load and the cartesian-load checks.
     """
     for option in options:
-        for element in getattr(option, "context", ()):
-            path = getattr(getattr(element, "path", None), "path", None)
+        for element in getattr(option, LOAD_CONTEXT, ()):
+            path = getattr(getattr(element, ELEMENT_PATH, None), "path", None)
             if not path or len(path) < 3 or len(path) % 2 == 0:
                 continue
             if not all(isinstance(p, RelationshipProperty) for p in path[1::2]):
                 continue
-            if "eager_from_alias" in getattr(element, "local_opts", {}):
+            if EAGER_FROM_ALIAS in getattr(element, ELEMENT_LOCAL_OPTS, {}):
                 continue
-            strategy = getattr(element, "strategy", None)
+            strategy = getattr(element, ELEMENT_STRATEGY, None)
             if not strategy:
                 yield tuple(path), None
             elif strategy[0][0] == "lazy":
@@ -159,7 +167,7 @@ def _on_orm_execute(state: Any) -> None:
     try:
         if not state.is_select or state.is_relationship_load or state.is_column_load:
             return
-        loads = _elements(getattr(state.statement, "_with_options", ()))
+        loads = _elements(getattr(state.statement, WITH_OPTIONS, ()))
         if not loads:
             return
         site = find_callsite()
@@ -278,8 +286,12 @@ def unused(tracker: Tracker, sieve: blocks.Sieve | None = None) -> list[EagerLoa
         load = group[0]
         if _was_read(tracker, load.owner, load.key):
             continue
-        if not any(_related(t, load.owner) for t in touched):
-            continue  # nothing ever looked at these instances: cannot tell
+        if not any(issubclass(t, load.owner) for t in touched):
+            # nothing ever looked at an instance that has the relationship:
+            # cannot tell. Only the owner and its subclasses have it, so reads
+            # of a base class's rows (with_polymorphic over a subclass with
+            # no rows) do not count.
+            continue
         if _deleted_with_cascade(tracker, load):
             continue
         if load.parent is not None and not _was_read(tracker, *load.parent):
@@ -311,9 +323,10 @@ def findings(
                     kind_line(KIND_UNUSED_EAGER_LOAD, load.label),
                     docs_line(KIND_UNUSED_EAGER_LOAD),
                     f"  fix: remove {option} from the query, or load it only where used",
-                    "  (experimental: if it is read later, or by code the plugin",
-                    "  cannot see, ignore it with allow_nplusone(kind=KIND) or",
-                    "  queryguard_ignore, KIND being unused-eager-load)",
+                    "  (experimental: if it is read later, or by code the plugin cannot see,",
+                    "  leave it out with @pytest.mark.queryguard_ignore(",
+                    f'      "{load.label}", kind="unused-eager-load")',
+                    f"  or the queryguard_ignore pattern unused-eager-load {load.label})",
                 ]
             )
             result.append(

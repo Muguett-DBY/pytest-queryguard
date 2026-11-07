@@ -24,12 +24,19 @@ one.
 
 ## Two parents each lazy-load one relationship. Is that really a finding?
 
-Yes, by default. The relationship rule counts distinct parent objects, and the
-default threshold is 2, so `order_a.customer` and `order_b.customer` loaded
-separately is reported as `Order.customer was lazy-loaded 2 times`. That is the
-smallest N+1, and test databases hold a few rows, so a higher default would
-miss loops in tests that only create a couple of objects. If two is too strict
-for your code, raise it:
+When one query loaded both, yes. The relationship rule counts distinct parent
+objects per query line that loaded them, and the default threshold is 2, so
+`order.customer` read for two orders of one `select(Order)` is reported as
+`Order.customer was lazy-loaded 2 times`. That is the smallest N+1, and test
+databases hold a few rows, so a higher default would miss loops in tests that
+only create a couple of objects. Two orders loaded separately, at two
+different lines (`session.get(Order, 1)` and `session.get(Order, 2)`), each
+reading its customer, are not an N+1 and are not reported. When the plugin
+cannot tell which query loaded a parent (an object the test created, or one
+loaded before the test body), that parent counts with the parents of every
+query line, so two such objects, or one of them and one looked up, are
+reported. If two is too strict for your
+code, raise it:
 
 ```toml
 [tool.pytest.ini_options]
@@ -48,7 +55,7 @@ the code is fine, all listed on the [Limitations](limitations.md) page, are:
 - pagination or a batched `IN (...)` load that runs five or more pages or
   chunks;
 - a test that makes several independent requests, each repeating the same
-  lookup (use `queryguard_repeat_scope = session`, see below);
+  lookup (use `queryguard_scope = session`, see below);
 - two parent objects that each load a relationship once (the default
   threshold of 2, see the next question);
 - `IN (...)` queries with lists of different lengths: every length is one
@@ -65,7 +72,7 @@ From the narrowest to the widest:
 
 - a few lines of code, in a test or in the application:
   `with pytest_queryguard.ignore("relationship-load"):`;
-- one finding, in one test: `@pytest.mark.allow_nplusone("Order.customer",
+- one finding, in one test: `@pytest.mark.queryguard_ignore("Order.customer",
   function="list_orders")`;
 - one finding, in the whole suite: a line in `queryguard_ignore`, for example
   `relationship-load Order.customer function=list_orders`;
@@ -89,7 +96,7 @@ with a note naming the option. Set it to count each `Session` on its own:
 
 ```toml
 [tool.pytest.ini_options]
-queryguard_repeat_scope = "session"
+queryguard_scope = "session"
 ```
 
 A loop inside one request, or any code that runs the same statement five times
@@ -98,16 +105,50 @@ loads and write loops. See [Tests with several sessions or
 requests](several-sessions.md) for how the scope is chosen and where it stops
 being exact.
 
+## Can a tool get a callback for every finding?
+
+Not during the test run: pytest-queryguard has no pytest hook or callback that
+is called per finding. A tool that wants the findings (to send them to a
+dashboard, to count them over time, to annotate a pull request) reads the file
+that `--queryguard-json=PATH` writes at the end of the run. That file is the
+integration point for tooling: its format is versioned (`"format": 1`), the
+keys it promises are listed in [Stability](stability.md), and they are
+described in [Query counts as JSON](ci.md#query-counts-as-json). Each test
+lists its findings with `kind`, `label`, `count`, `file`, `line`, `function`,
+`stack` and `baselined`:
+
+```python
+import json
+from pathlib import Path
+
+report = json.loads(Path("queryguard.json").read_text(encoding="utf-8"))
+if report["format"] != 1:
+    raise SystemExit(f"unsupported queryguard JSON format {report['format']}")
+for test_id, test in report["tests"].items():
+    for finding in test["findings"]:
+        if finding["baselined"]:
+            continue
+        print(test_id, finding["kind"], finding["label"], finding["count"],
+              f"{finding['file']}:{finding['line']}")
+if not report["complete"]:
+    print("the run stopped early; tests are missing")
+```
+
+Do not parse the terminal report or the `message` field: their wording is not
+stable. For code scanning, the [SARIF file](sarif.md) is the other stable
+output. In a running application (not in tests), the
+[in-application mode](in-app.md#settings) calls a `report` callable for every
+request with findings or over its budget, with a `RequestReport` that lists
+them.
+
 ## Does it work with pytest-xdist?
 
 Yes for detection, budgets, the baseline and SARIF: each worker measures its
-own tests, and the controller merges what the workers saw. The session report
-(`--queryguard-report`) needs one process and prints
-`queryguard report: not available with pytest-xdist`. The summary sections of
-the index check and the stale-ignore list are printed by the process that runs
-the tests, so they are not shown under xdist, except for stale `ignore()`
-blocks, which the workers send to the controller. The test suite runs the plugin
-under `-n 2` and `-n 4` in CI.
+own tests, and the controller merges what the workers saw: the session report
+(`--queryguard-report`), the index check's summary and the stale-ignore list
+are the same as in a serial run, and so are the JSON, SARIF, baseline, budget
+and patch files. The test suite runs the plugin under `-n 2` to `-n 4`, with
+each `--dist` mode, in CI and compares the outputs with a serial run.
 
 ## Which PostgreSQL drivers work?
 
@@ -262,7 +303,7 @@ transaction are left as they were.
   (markers such as `max_queries` are then unknown, which pytest reports as a
   warning, or an error under `--strict-markers`); `pytest --queryguard-mode=off`
   loads it but stops N+1 detection, while budgets still apply.
-- For one test: `@pytest.mark.allow_nplusone` without arguments.
+- For one test: `@pytest.mark.queryguard_ignore` without arguments.
 - For the suite: `queryguard_mode = "off"` in the configuration.
 
 ## Does it work in a monorepo?
@@ -292,6 +333,24 @@ mistakes that look like database problems (strict mode, async fixtures, event
 loop scopes), and [Getting started](getting-started.md#async-and-fastapi) has
 an async FastAPI example. On SQLAlchemy 2.1 and newer install
 `sqlalchemy[asyncio]` for greenlet.
+
+## Does it work on free-threaded Python?
+
+The free-threaded builds (CPython 3.13t and 3.14t, no GIL) are not in the
+package classifiers, so they are not a supported configuration. CI runs
+only the in-app mode's tests (`tests/inapp`) on 3.14t, not the whole
+suite. The whole suite was run once on CPython 3.14.4t with SQLAlchemy
+2.1.1 and passed; 3.13t was not tried. On those builds the
+counters of a measurement (statements, loads and database time) are
+updated under a lock, so statements from several threads are all counted
+and budgets hold; on a build with the GIL no lock is taken. The stored
+events are list appends and the call-site caches are dictionaries, which
+CPython keeps consistent without the GIL; the sequence numbers that order
+Sessions and executions (`itertools.count`) stayed unique from 8 threads
+on 3.14.4t. The missing-index check and the unused-eager-load tracker
+check and then update shared sets, so with several threads they may do
+one step twice; those were not examined further. Every listener fails
+open, so a race there costs accuracy, not the test run.
 
 ## When should I not use it?
 

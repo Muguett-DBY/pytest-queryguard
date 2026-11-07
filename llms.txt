@@ -1,6 +1,6 @@
 # pytest-queryguard
 
-> A pytest plugin that fails tests with N+1 queries and enforces query budgets for SQLAlchemy 2, in sync, async and FastAPI code. On PostgreSQL 16 and newer, SQLite, MySQL and MariaDB it can also fail tests whose queries have no index to use. MIT license. This file describes the repository; `CHANGELOG.md` says what is in which release (the latest release is on PyPI).
+> A pytest plugin that fails tests with N+1 queries and enforces query budgets for SQLAlchemy 2, in sync, async and FastAPI code. On PostgreSQL 16 and newer, SQLite, MySQL and MariaDB it can also fail tests whose queries have no index to use. MIT license. This file sums up the documentation of the release named below; `CHANGELOG.md` says what is in which release (the latest release is on PyPI).
 
 It watches the SQL each test function body sends (fixture setup and teardown are not measured) and points to the application line that caused a finding, even when the test database has only a few rows.
 
@@ -10,7 +10,7 @@ It watches the SQL each test function body sends (fixture setup and teardown are
 pip install pytest-queryguard
 ```
 
-This file describes 0.7.0. Needs Python 3.10+, pytest 8+ and SQLAlchemy 2.0.13+. The plugin registers itself through the `pytest11` entry point: there is nothing to import or configure. For async code on SQLAlchemy 2.1+, also install `sqlalchemy[asyncio]` (greenlet).
+This file describes 0.8.0. Needs Python 3.10+, pytest 8+ and SQLAlchemy 2.0.13+. The plugin registers itself through the `pytest11` entry point: there is nothing to import or configure. For async code on SQLAlchemy 2.1+, also install `sqlalchemy[asyncio]` (greenlet).
 
 ## Quick start
 
@@ -42,10 +42,11 @@ queryguard: N+1 detected
 
 A test fails when, inside the test function, one of these finding kinds is found (thresholds are ini options):
 
-- `relationship-load`: one relationship is lazy-loaded for 2 or more different parent objects (hint: `joinedload` for many-to-one, `selectinload` for collections);
+- `relationship-load`: one relationship is lazy-loaded for 2 or more different parent objects that one query line loaded (a parent whose query is unknown counts for every query line) (hint: `joinedload` for many-to-one, `selectinload` for collections);
 - `repeated-statement`: one `SELECT` (parameters and literals removed; ORM, Core and `text()`) runs 5 or more times; `INSERT`, `UPDATE` and `DELETE` never count towards it. With `queryguard_small_repeat_threshold` (off by default), 2 to 4 runs from one source line with different parameters count too;
 - `column-load`: 5 or more instances of one class each reload a deferred column (hint: `undefer`) or attributes expired by `commit()`/`expire()` (hint: `expire_on_commit=False`);
 - `write-loop` (opt-in, `queryguard_write_loop_threshold`): the same single-row `INSERT`, `UPDATE` or `DELETE` run many times from one source line;
+- `cartesian-load` (warns by default, `queryguard_cartesian_load = off|warn|fail`): one `SELECT` that joins two collections side by side, whose rows grow as their product;
 - `unused-eager-load` (experimental, off by default, `queryguard_unused_eager_load = off|warn|fail`): a relationship loaded with `selectinload`, `joinedload`, `subqueryload` or `immediateload` and never read. See docs/unused-eager-load.md;
 - `unused-columns` (experimental, off by default, `queryguard_unused_columns = off|warn|fail`): a query loads rows of a class with at least 8 columns and the test reads at most half of them (keys the ORM needs count as read); the fix line suggests `.options(load_only(...))`. See docs/unused-columns.md;
 - `missing-index` (opt-in): see below.
@@ -69,11 +70,11 @@ def test_checkout(service, cart):
         service.checkout(cart)
 
 
-@pytest.mark.allow_nplusone  # skip N+1 detection; a budget still applies
+@pytest.mark.queryguard_ignore  # skip N+1 detection; a budget still applies
 def test_legacy_report(session): ...
 
 
-@pytest.mark.allow_nplusone("Order.customer", function="list_orders")  # one finding
+@pytest.mark.queryguard_ignore("Order.customer", function="list_orders")  # one finding
 def test_one_finding(session): ...
 
 
@@ -81,10 +82,10 @@ def test_one_finding(session): ...
 def test_lookup(session): ...
 ```
 
-- `max_queries` marker: fails the test when its body runs more SQL statements than the limit, writes included, whatever `queryguard_mode` is. The failure lists every statement with its call site.
+- `max_queries` marker: fails the test when its body runs more SQL statements than the limit, writes included, whatever `queryguard_mode` is. The failure lists every statement with its call site. The limit is positional or `limit=`; `n=` is deprecated since 0.8.0 (`QueryGuardDeprecationWarning`, removed in 2.0). Since 0.8.0 `queryguard_max_queries` and `queryguard_max_db_time` are the same markers under names no other plugin reads (pytest-querycount also reads `max_queries`; see docs/budgets.md); the prefixed one wins when a test has both.
 - `max_db_time(seconds)` (marker and context manager): fails when the database and driver time of the statements exceeds the limit; the failure lists the slowest statements. `Query.duration`, `QueryLog.db_time` and `QueryLog.slowest(n)` expose the timing.
 - `max_queries(limit)` context manager: raises `QueryBudgetExceeded` (a subclass of `AssertionError`) above the limit. It does not depend on pytest. It checks the budget only, not N+1.
-- Public API (see docs/stability.md): `max_queries()`, `max_db_time()`, `QueryBudgetExceeded`, `record_queries()`, `QueryLog`, `QueryGuardFixture` and the `queryguard` fixture, `Query`, `CallSite`, `NPlusOneDetected`, `QueryGuardWarning` (N+1 and missing indexes in `warn` mode), `QueryGuardInternalWarning` (internal error; the plugin disables itself instead of failing tests), the four markers (`max_queries`, `max_db_time`, `allow_nplusone`, `allow_missing_index`), the `queryguard_*` ini options and the `--queryguard-*` flags. `QueryLog`, `Query` and `CallSite` are not constructible by users. `max_queries()` and `max_db_time()` yield the same `QueryLog` as `record_queries()`.
+- Public API (see docs/stability.md): `max_queries()`, `max_db_time()`, `QueryBudgetExceeded`, `record_queries()`, `QueryLog`, `QueryGuardFixture` and the `queryguard` fixture, `Query`, `CallSite`, `NPlusOneDetected`, `QueryGuardWarning` (N+1 and missing indexes in `warn` mode), `QueryGuardInternalWarning` (internal error; the plugin disables itself instead of failing tests), the markers (`max_queries`, `max_db_time`, `queryguard_max_queries`, `queryguard_max_db_time`, `queryguard_ignore` and its permanent alias `allow_nplusone`, `allow_missing_index`), the `queryguard_*` ini options and the `--queryguard-*` flags. `QueryLog`, `Query` and `CallSite` are not constructible by users. `max_queries()` and `max_db_time()` yield the same `QueryLog` as `record_queries()`.
 - `queryguard` fixture: `with queryguard.max_queries(n):` and `with queryguard.num_queries(n):` (exact, like pytest-django's `django_assert_num_queries`) raise `QueryBudgetExceeded` and yield a statements-only `QueryLog` (no `assert_no_nplusone()`); the blocks count only the test's own thread or asyncio task and what runs in a copy of its context, for every thread use `max_queries()`. `queryguard.queries` and `queryguard.count` are the statements of the test function so far, from every thread. Type hint: `QueryGuardFixture`.
 - Async: `AsyncSession` and `create_async_engine` work unchanged; failures point to the `await` in your code. FastAPI `TestClient`: queries from any thread are counted.
 
@@ -106,9 +107,13 @@ Here `list_orders` is the fixed function from the README (`select(Order).options
 
 - `record_queries()` records the statements a block sends, from any thread, and yields a `QueryLog`. It works outside pytest and changes nothing else.
 - `log.queries` is a tuple of `Query` objects (`sql`, `callsite` as a `CallSite` with `filename`, `lineno` and `function`, or `None`, and `relationship`, such as `"Order.customer"`, or `None`). `log.count`, `len(log)`, iteration and indexing also work; a `QueryLog` is not a `collections.abc.Sequence`.
-- `log.assert_no_nplusone()` raises `NPlusOneDetected` (a subclass of `AssertionError`) with the plugin's two rules. Thresholds are the keyword arguments `relationship_threshold=2`, `repeat_threshold=5`, `column_load_threshold=5`, `small_repeat_threshold` and `write_loop_threshold`; the `queryguard_*` ini options, `queryguard_mode` and `allow_nplusone` are not read.
+- `log.assert_no_nplusone()` raises `NPlusOneDetected` (a subclass of `AssertionError`) with the plugin's two rules. Thresholds are the keyword arguments `relationship_threshold=2`, `repeat_threshold=5`, `column_load_threshold=5`, `small_repeat_threshold` and `write_loop_threshold`, and `scope="test"` or `"session"` (like `queryguard_scope`; `repeat_scope=` is its deprecated name since 0.8.0); the `queryguard_*` ini options, `queryguard_mode` and the `queryguard_ignore` marker are not read.
 - After an internal error, a block that ends normally issues `QueryGuardInternalWarning` (the log may be incomplete), and `assert_no_nplusone()` raises `RuntimeError` instead of passing.
-- `QueryGuardDeprecationWarning` (a `DeprecationWarning`, not a `QueryGuardWarning`) is what a later release uses to announce an option or name it removes; a `filterwarnings` entry for `QueryGuardWarning` does not match it.
+- `QueryGuardDeprecationWarning` (a `DeprecationWarning`, not a `QueryGuardWarning`) is what a later release uses to announce an option or name it removes; a `filterwarnings` entry for `QueryGuardWarning` does not match it. Deprecated since 0.8.0, removed in 2.0: `queryguard_repeat_scope` (use `queryguard_scope`), `repeat_scope=` (use `scope=`), `max_queries(n=...)` (use a positional limit or `limit=`).
+
+## Static check (experimental, since 0.8.0)
+
+`python -m pytest_queryguard.lint --models app.models [--format text|json|sarif] [--output FILE] PATHS...` reads source code without running it. It imports the `--models` modules (their import-time code runs) to read every mapped class and its relationships, parses PATHS with `ast`, and reports a `for` loop, `async for` loop or comprehension over one ORM query of one class (`session.scalars(select(C))`, `session.execute(select(C)).scalars()`, `session.query(C)`, `C.query`, awaited async calls, optionally via a variable assigned once in the same function) that reads a `lazy="select"` relationship with no covering loader option (`joinedload`, `selectinload`, `subqueryload`, `immediateload`, `raiseload`, `noload`, `contains_eager`; `lazyload`/`defaultload` do not cover). Follows chains (`o.customer.address`) and nested loops over collections. One function at a time; unknown options, reassigned variables and reads that run once (block ends with `return`/`raise`/`break`) are not reported. Fix line as in the plugin. Exit 1 on findings, 2 on import or usage errors. Suppress with `# queryguard: ignore` on the read or the loop line. JSON `format` 1 keys: `files`, `errors`, `findings` (`rule`, `file`, `line`, `column`, `loop_line`, `query_line`, `function`, `relationship`, `path`, `query_class`, `fix`). SARIF rule `queryguard/static-relationship-load`, level warning. See docs/static-check.md.
 
 ## In-application mode (experimental, from 0.5.0)
 
@@ -120,10 +125,14 @@ app.add_middleware(queryguard.QueryGuardASGI, budgets={"GET /orders/{order_id}":
 flask_app.wsgi_app = queryguard.QueryGuardWSGI(flask_app.wsgi_app)
 ```
 
-- `pytest_queryguard.app` runs the same N+1 rules and per-route query budgets on every HTTP request of a running application, without pytest: `QueryGuardASGI` (pure ASGI, for FastAPI and Starlette; budgets match the route template from `scope["route"]`), `QueryGuardWSGI` (Flask and any WSGI app; `set_route()` names the Flask rule) and `track(name)` for other units of work. Findings go to the `pytest_queryguard.app` logger (`report="log"`, the default), to `QueryGuardWarning` (`"warn"`), to a callable that receives a `RequestReport`, or to the ready-made `opentelemetry_reporter()` (events on the current span) and `sentry_reporter()` (one Sentry message per finding, fingerprinted by its identity). `sample_rate` measures a random fraction of requests; `min_db_time` skips the N+1 rules for requests with less database time.
+- `pytest_queryguard.app` runs the same N+1 rules and per-route query budgets on every HTTP request of a running application, without pytest: `QueryGuardASGI` (pure ASGI, for FastAPI and Starlette; budgets match the route template from `scope["route"]`), `QueryGuardWSGI` (Flask and any WSGI app; `set_route()` names the Flask rule) and `track(name)` for other units of work. Findings go to the `pytest_queryguard.app` logger (`report="log"`, the default), to `QueryGuardWarning` (`"warn"`), to a callable that receives a `RequestReport`, or to the ready-made `opentelemetry_reporter()` (events on the current span) and `sentry_reporter()` (one Sentry message per finding, fingerprinted by its identity). `sample_rate` measures a random fraction of requests; `min_db_time` skips the N+1 rules for requests with less database time. `scope="session"` counts each Session on its own (`repeat_scope=` is its deprecated name since 0.8.0). Since 0.8.0, `page_report="footer"` or `"console"` adds the findings to the request's own HTML page (complete, uncompressed `text/html` responses with a `Content-Length` only).
 - Each request's statements go to a collector in a `contextvars.ContextVar`, so concurrent requests, asyncio tasks and threads that copy the context never mix; a thread started without the context is not counted.
 - `panel=True` serves `/_queryguard/` (a self-contained HTML page) and `/_queryguard/requests.json` with the last 50 requests, to loopback clients by default. Off by default; never enable it in production.
 - Nothing is registered until `watch()`; an internal error logs once and switches the mode off without affecting the application or the pytest plugin. Experimental: listed under "Experimental" in docs/stability.md, so names may change in a minor release. See docs/in-app.md.
+
+## MCP server for coding agents (experimental)
+
+`python -m pytest_queryguard.mcp` is a Model Context Protocol server over stdio (JSON-RPC 2.0, one message per line, standard library only). Add it to Claude Code with `claude mcp add queryguard -- python -m pytest_queryguard.mcp`, or to Cursor's `mcp.json` with `"command": "python", "args": ["-m", "pytest_queryguard.mcp"]`, using the project's interpreter, from the project directory. Tools: `run_tests(args, paths, timeout)` runs `python -m pytest` there and returns each test's findings (kind, label, file, line, function, count, message, fix hint, stack), the totals, the rootdir and the patch for `git apply`, all size-capped; `explain_finding(kind)`; `compare(base_json, head_json)` over two `--queryguard-json` files. It runs only pytest, without a shell. Experimental; see docs/mcp.md.
 
 ## Configuration
 
@@ -137,12 +146,19 @@ Ini options, read from `[tool.pytest.ini_options]`, pytest 9's `[tool.pytest]`, 
 | `queryguard_small_repeat_threshold` | `0` or integer >= 2 | `0` (off) |
 | `queryguard_column_load_threshold` | integer >= 2 | `5` |
 | `queryguard_write_loop_threshold` | `0` or integer >= 2 | `0` (off) |
+| `queryguard_scope` | since 0.8.0 (before: `queryguard_repeat_scope`, deprecated); `test` (everything a test runs counts together) or `session` (each Session or connection checkout on its own) | `test` |
 | `queryguard_unused_eager_load` | `off`, `warn`, `fail` | `off` |
 | `queryguard_unused_columns` | `off`, `warn`, `fail` | `off` |
-| `queryguard_fail_on` | finding kinds (`fnmatch`) per line; other kinds only warn | empty (all kinds fail) |
+| `queryguard_cartesian_load` | `off`, `warn`, `fail`: one SELECT that joins two collections side by side (kind `cartesian-load`) | `warn` |
+| `queryguard_strict` | `true`, `false`: raise `NPlusOneDetected` at the lazy load that makes the N+1 | `false` |
+| `queryguard_fail_on` | finding kinds (`fnmatch`) per line; other kinds only warn | empty (every kind fails, except `cartesian-load`, `unused-eager-load` and `unused-columns` unless their own option is `fail`) |
 | `queryguard_max_events` | integer >= 0 (`0`: no limit) | `10000` |
+| `queryguard_stack_depth` | integer >= 0: callers shown under a finding's first location (`0`: none) | `3` |
 | `queryguard_ignore` | `KIND LABEL [file=GLOB] [function=GLOB] [stack=GLOB]` per line (`stack`: any reported frame, `file` or `file:function`, up to `queryguard_stack_depth` callers) | empty |
 | `queryguard_baseline` | path relative to the rootdir | empty |
+| `queryguard_budgets` | budget file, path relative to the rootdir | empty |
+| `queryguard_max_queries` | integer >= 0: default budget of a test without a marker or budget-file entry | empty (none) |
+| `queryguard_show_patch` | experimental, since 0.8.0; `true`, `false`: print a patch that adds the loader option to the parent query, when that line is certain | `false` |
 | `queryguard_index_check` | `true`, `false` | `false` |
 | `queryguard_index_advisor` | `true`, `false` | `true` |
 | `queryguard_hypopg` | `auto`, `on`, `off` | `auto` |
@@ -159,12 +175,16 @@ queryguard_index_ignore_tables = ["countries", "lookup_*"]
 Command-line options:
 
 - `--queryguard-mode=fail|warn|off`: overrides `queryguard_mode` for this run.
+- `--queryguard-strict` / `--no-queryguard-strict`: turn `queryguard_strict` on or off for this run.
 - `--queryguard-report`: prints the 10 tests with the most queries at the end of the session.
 - `--queryguard-baseline=PATH`: findings listed in the baseline file do not fail or warn; `--queryguard-update-baseline` writes the file from this run (docs/baseline.md).
-- `--queryguard-sarif=PATH`: writes the findings as SARIF 2.1.0 for GitHub code scanning (docs/sarif.md).
+- `--queryguard-budgets=PATH`: the budget file (each listed test fails above its count); `--queryguard-update-budgets` writes this run's counts to it (docs/budgets.md).
+- `--queryguard-json=PATH`: writes each test's statement counts and findings as JSON (`"format": 1`), for `python -m pytest_queryguard.compare BASE HEAD` (docs/ci.md).
+- `--queryguard-sarif=PATH`: writes the findings as SARIF 2.1.0 for GitHub code scanning (docs/sarif.md); a `relationship-load` result with a certain parent query line has a `fixes` entry.
+- `--queryguard-show-patch` / `--queryguard-write-patch=PATH` (experimental, since 0.8.0): print under each `relationship-load` finding, or write to one file for `git apply` from the rootdir, a patch that adds the loader option (and its import) to the `select(Entity)` or `session.query(Entity)` call of the parent query line; only when that line is certain (docs/when-a-test-fails.md#a-patch-for-the-parent-query). `--no-queryguard-show-patch` turns `queryguard_show_patch` off for this run.
 - `--queryguard-index-check` / `--no-queryguard-index-check`: turn the missing-index check on or off for this run.
 
-Adopting on an existing project: record a baseline, run the GitHub Action in `action/` (pytest, SARIF upload; docs/ci.md), and ignore single findings with `allow_nplusone("Order.customer", kind=..., file=..., function=..., stack=...)` or `queryguard_ignore`, or a block of code with `with pytest_queryguard.ignore("relationship-load"):` (covers the thread or asyncio task that enters it, not threads started inside it).
+Adopting on an existing project: record a baseline, run the GitHub Action in `action/` (pytest, SARIF upload; docs/ci.md), and ignore single findings with the `queryguard_ignore("Order.customer", kind=..., file=..., function=..., stack=...)` marker or the `queryguard_ignore` option, or a block of code with `with pytest_queryguard.ignore("relationship-load"):` (covers the thread or asyncio task that enters it, not threads started inside it).
 
 ## Missing-index check (PostgreSQL 16+, SQLite, MySQL and MariaDB)
 
@@ -199,7 +219,7 @@ Findings follow `queryguard_mode`. Exclude small lookup tables with `queryguard_
 ## Docs
 
 - [README](https://github.com/MaciejZiel/pytest-queryguard/blob/main/README.md): overview and a first example
-- [Documentation pages](https://github.com/MaciejZiel/pytest-queryguard/tree/main/docs): getting started, how detection works, configuration reference, budgets, in-application mode, ignoring, baseline, CI and SARIF, index check (PostgreSQL, SQLite, MySQL and MariaDB), index advisor, unused eager loads, unused columns, limitations, FAQ, comparison with other tools, migration from nplusone, stability policy
+- [Documentation pages](https://github.com/MaciejZiel/pytest-queryguard/tree/main/docs): getting started, how detection works, configuration reference, budgets, in-application mode, MCP server, ignoring, baseline, CI and SARIF, index check (PostgreSQL, SQLite, MySQL and MariaDB), index advisor, unused eager loads, unused columns, static check, limitations, FAQ, comparison with other tools, migration from nplusone, stability policy
 - [Examples](https://github.com/MaciejZiel/pytest-queryguard/tree/main/examples): runnable projects
 - [CHANGELOG](https://github.com/MaciejZiel/pytest-queryguard/blob/main/CHANGELOG.md): changes per release
 - [PyPI](https://pypi.org/project/pytest-queryguard/): released versions

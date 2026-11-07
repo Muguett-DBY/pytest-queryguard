@@ -1,7 +1,8 @@
-"""Per-statement overhead of queryguard, queryspy and pytest-querycount.
+"""Per-statement overhead of queryguard and the other SQLAlchemy N+1 tools.
 
 Child: python bench_micro.py TOOL STATEMENTS BLOCKS -> JSON {loop: [us/stmt per block]}
-TOOL: off | noop | queryguard | queryspy | querycount
+TOOL: off | noop | queryguard | queryspy | querycount | sniffer | nplusone
+(sniffer and nplusone: scripts/head_to_head/overhead.py)
 """
 
 from __future__ import annotations
@@ -86,7 +87,7 @@ def lazy_loop(engine, n):
             _ = item.children  # the lazy load
 
 
-def setup(tool):
+def setup(tool, engine):
     if tool == "noop":
 
         def nop(*a, **k):
@@ -146,13 +147,46 @@ def setup(tool):
             return holder["r"].count
 
         return start, stop
+    if tool == "sniffer":
+        # n-plus-one-sniffer: its context manager on the engine, as documented
+        from n_plus_one_sniffer import catch_n_plus_one
+
+        holder = {}
+
+        def start():
+            holder["s"] = catch_n_plus_one(engine).start()
+
+        def stop():
+            sniffer = holder["s"]
+            sniffer.stop()
+            return sum(r.count for r in sniffer._records.values())
+
+        return start, stop
+    if tool == "nplusone":
+        # nplusone: the import patches SQLAlchemy; its Profiler, with every
+        # notification allowed, so the detection runs but never raises.
+        import nplusone.ext.sqlalchemy  # noqa: F401
+        from nplusone.core import profiler
+
+        holder = {}
+        allow = [{"label": "n_plus_one"}, {"label": "unused_eager_load"}]
+
+        def start():
+            holder["p"] = profiler.Profiler(whitelist=allow)
+            holder["p"].__enter__()
+
+        def stop():
+            holder["p"].__exit__(None, None, None)
+            return -1  # it does not count statements
+
+        return start, stop
     return lambda: None, lambda: 0
 
 
 def main():
     tool, n, blocks = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
     engine, table = database()
-    start, stop = setup(tool)
+    start, stop = setup(tool, engine)
     loops = {
         "core": lambda: core_loop(engine, table, n),
         "orm": lambda: orm_loop(engine, n),
@@ -170,7 +204,7 @@ def main():
             loop()
             el = time.perf_counter() - t
             seen = stop()
-            if tool not in ("off", "noop") and name != "lazy" and seen < n:
+            if tool not in ("off", "noop", "nplusone") and name != "lazy" and seen < n:
                 raise SystemExit(f"{tool} saw {seen} < {n}")
             out[name].append(el / n * 1e6)
     print(json.dumps(out))

@@ -19,9 +19,15 @@ def test_order_page_again(client):
 ```
 
 The keyword is `limit`, as in the function below. Releases before 0.4 called
-it `n`; `n=3` keeps working, without a warning. It may be removed in a future
-minor release, but only after a deprecation period with a warning (see
-[Stability](stability.md)).
+it `n`; since 0.8.0 `n=3` still works but emits a `QueryGuardDeprecationWarning`,
+and it will be removed in 2.0 (see [Stability](stability.md#deprecation-policy)).
+Write `max_queries(3)` or `max_queries(limit=3)` instead.
+
+`@pytest.mark.queryguard_max_queries(3)` (since 0.8.0) is the same marker under
+a name only this plugin reads. As with any marker, the closest one counts (the
+function's over the class's or the module's); when one place has both
+spellings, `queryguard_max_queries` counts. Use it when another plugin that reads `max_queries` is installed too,
+see [below](#pytest-querycount-and-the-max_queries-marker).
 
 The test fails when its body runs more SQL statements than the limit. The
 failure lists every statement with the line that issued it. Budgets count
@@ -39,7 +45,7 @@ queryguard_max_queries = 20
 Every test without a `max_queries` marker (and without an entry in the
 budget file below) gets this budget. A test above it fails with the usual
 budget report and the line
-`(the limit is queryguard_max_queries, the default budget of tests without one)`.
+`(the limit is the queryguard_max_queries ini option, the default budget of tests without a marker)`.
 Empty, the default, means no default budget.
 
 ## Lock today's counts: the budget file
@@ -137,8 +143,9 @@ def test_order_page(queryguard, client):
 ```
 
 Its blocks count only the statements of the test's own thread, or of its
-asyncio task: statements that a thread already running runs at the same
-time, such as a background worker or a server thread, do not count. That
+asyncio task, and of work run in a copy of their context: statements that a
+thread already running runs at the same time, such as a background worker
+or a server thread, do not count (a `TestClient` request does, see below). That
 makes them the equivalent of pytest-django's `django_assert_max_num_queries`
 and `django_assert_num_queries`:
 
@@ -169,10 +176,16 @@ and `django_assert_num_queries`:
   reading them before the test function starts (in a fixture's setup)
   raises `RuntimeError`.
 
-To count every thread in a block, as a FastAPI `TestClient` or a worker pool
-needs, use the `max_queries()` function or the marker above. Like them, the
+A FastAPI or Starlette `TestClient`, such as the `client` above, runs each
+request in another thread but with a copy of the test's context, so the
+endpoint's statements count in the block, whether the client was opened in a
+fixture or in the test (checked by hand with anyio 3.7 and 4). A thread that was
+already running and does not copy the context, such as a live server or a
+worker pool, does not count: to count every thread in a block, use the
+`max_queries()` function or the marker above. Like them, the
 fixture fails whatever `queryguard_mode` is set to; with `queryguard_strict`
-an N+1 inside a block raises `NPlusOneDetected` at the access first. After
+an N+1 inside a block raises `NPlusOneDetected` at the access first, with
+the budget failure under it when the block had already gone over. After
 an internal error of the plugin, a block and the fixture warn with
 `QueryGuardInternalWarning` that their statements may be incomplete, and
 `num_queries()` no longer fails on too few statements. In type hints the
@@ -202,4 +215,38 @@ that issued them. A `max_queries` failure shows the total database time and
 its three slowest statements too. Like `max_queries`, the budget fails
 whatever `queryguard_mode` is set to. In `record_queries()`, each `Query` has
 a `duration` (seconds), and the log has `db_time` and `slowest(n)`.
+`@pytest.mark.queryguard_max_db_time(0.25)` (since 0.8.0) is the same marker
+under the plugin's own prefix, chosen the same way as `queryguard_max_queries`.
+
+## pytest-querycount and the `max_queries` marker
+
+[pytest-querycount](https://github.com/ldavidsm/pytest-querycount) registers a
+`max_queries` marker of its own. With both plugins installed (checked with
+pytest-querycount 0.4.0), each reads every `max_queries` marker:
+
+- `@pytest.mark.max_queries(3)` is enforced twice, by each plugin with its own
+  count. When pytest-querycount fails the test first, its failure is the one
+  shown, since the original failure wins (see above).
+- `@pytest.mark.max_queries(limit=3)` stops the whole run at collection:
+  pytest-querycount takes only a positional limit or `n=` and reports
+  `@pytest.mark.max_queries needs a number`.
+- `pytest --querycount-write-budgets` writes `max_queries` markers into your
+  test files, and pytest-queryguard then enforces them too.
+
+`max_db_time` and the other markers of pytest-queryguard do not clash. To keep
+the budgets of the two plugins apart, use the prefixed markers for
+pytest-queryguard, which pytest-querycount does not read:
+
+```python
+@pytest.mark.queryguard_max_queries(3)  # pytest-queryguard only
+@pytest.mark.max_queries(5)  # pytest-querycount (and nothing else)
+def test_order_page(client):
+    client.get("/orders/1")
+```
+
+With both markers on a test, pytest-queryguard uses `queryguard_max_queries`
+and ignores `max_queries`. While pytest-querycount is installed,
+`max_queries(n=3)`, its own spelling, does not emit the deprecation warning of
+`n=`. Or turn one plugin off for a run with
+`-p no:querycount` or `-p no:queryguard`.
 

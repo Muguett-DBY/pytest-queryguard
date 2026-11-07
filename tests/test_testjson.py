@@ -105,6 +105,9 @@ def _check_suite(doc: dict[str, Any]) -> None:
     ]
     assert nplus["findings"][0]["file"] == "test_suite.py"
     assert nplus["findings"][0]["count"] >= 2
+    message = nplus["findings"][0]["message"]
+    assert message.startswith("Order.customer was lazy-loaded")
+    assert "\nfirst at " in message  # without the terminal report's indent
     assert tests["test_suite.py::test_clean"]["findings"] == []
     # one INSERT more than the seeding that every test does
     clean_inserts = tests["test_suite.py::test_clean"]["by_verb"]["insert"]
