@@ -103,8 +103,9 @@ scenarios that review changed.
 SQLModel was not installed (it needs SQLAlchemy below 2.1 and is only installed
 in the SQLAlchemy 2.0 CI job), so 266 of the 268 scenarios ran: 131 BUG and 135
 CLEAN. All numbers on this page are for those 266 and SQLite, except the
-comparison with other tools and the PostgreSQL run, which are the earlier
-141-scenario measurements and say so.
+PostgreSQL run, which is the earlier 141-scenario measurement and says so,
+and the comparison with other tools, which ran the 252 scenarios the corpus
+had on that day in GitHub Actions.
 
 ## Results, default configuration
 
@@ -531,46 +532,76 @@ are a floor against regressions, not a goal. Raise one in the same pull request
 that improves the corpus result; lower one only with a reason in that pull
 request, because every lowered minimum is a release that detects less.
 
-## Comparison with queryspy and pytest-querycount
+## Comparison with other tools
 
-Not run again on 2026-11-06: this section is the 141-scenario measurement of
-2026-10-13. The same 141 scenarios, each tool with its defaults plus the switch that makes it
-fail a test without a per-test marker (`--queryspy-strict`; the `no_n_plus_one` marker
-added to every scenario for pytest-querycount). A scenario counts as "flagged" when
-the test failed. Whether a tool reports the right kind is not compared.
+Measured on 2026-11-07 by the [head-to-head workflow](https://github.com/MaciejZiel/pytest-queryguard/actions/runs/42391426710)
+(`.github/workflows/head-to-head.yml`, `scripts/head_to_head/`) in GitHub
+Actions: the same 252 scenarios, one job per tool, each tool pinned and set
+up the way its own documentation says to fail a test on an N+1, with its
+defaults otherwise. Python 3.13.18, SQLAlchemy 2.1.1, pytest 9.1.1;
+pytest-queryguard 0.8.0 at the commit of the run. The method, the settings
+of each tool and the overhead of each are in
+[Comparison](comparison.md#head-to-head-in-github-actions).
 
-Run on 2026-10-13, on the machine above, with queryspy 0.5.0 and pytest-querycount
-0.4.0 installed in a scratch virtual environment (Python 3.13.13, SQLAlchemy 2.1.1,
-pytest 9.1.1, the corpus's other dependencies at the versions above) and passed to
-`scripts/accuracy_report.py --compare`.
+| tool | BUG flagged | BUG missed | BUG error | CLEAN passed | CLEAN flagged | CLEAN error | precision | recall (all BUG) | recall (kinds it claims) |
+|---|---|---|---|---|---|---|---|---|---|
+| pytest-queryguard 0.8.0, defaults | 106 | 17 | 0 | 127 | 2 | 0 | 98% | 86% | 97% |
+| pytest-queryguard 0.8.0, all opt-in rules | 122 | 1 | 0 | 121 | 8 | 0 | 94% | 99% | 99% |
+| queryspy 0.6.0, `--queryspy-strict` | 98 | 25 | 0 | 102 | 27 | 0 | 78% | 80% | 95% |
+| pytest-querycount 0.4.0, `no_n_plus_one` on every test | 103 | 20 | 0 | 102 | 27 | 0 | 79% | 84% | 100% |
+| n-plus-one-sniffer (git `d4790f8`), `no_n_plus_one` on every test | 103 | 20 | 0 | 104 | 25 | 0 | 80% | 84% | 97% |
+| nplusone 1.0.0 on SQLAlchemy 2.1.1 | 0 | 0 | 123 | 0 | 0 | 129 | n/a | 0% | 0% |
+| nplusone 1.0.0 on SQLAlchemy 2.0.54 | 1 | 122 | 0 | 127 | 0 | 2 | 100% | 1% | 2% |
 
-| tool | BUG flagged | BUG missed | CLEAN passed | CLEAN flagged |
-|---|---|---|---|---|
-| pytest-queryguard, defaults | 59 | 8 | 73 | 1 |
-| pytest-queryguard, all opt-in rules | 67 | 0 | 69 | 5 |
-| queryspy 0.5.0 | 57 | 10 | 57 | 17 |
-| pytest-querycount 0.4.0 | 62 | 5 | 57 | 17 |
+Precision is flagged BUG over everything flagged. "Recall (kinds it claims)"
+counts only the BUG scenarios with a kind the tool says it detects:
+relationship, column and repeated-statement loads for queryspy and
+pytest-querycount, those and write loops for n-plus-one-sniffer, lazy loads
+and unused eager loads for nplusone. A test that failed for another reason
+than the tool's report is an error, never a pass. Per kind, precision /
+recall; `n/a` where the tool does not claim the kind (or, for the defaults
+of pytest-queryguard, where the rule is off by default), `-` where the tool
+does not say which kind it found or reported nothing of that kind:
 
-- Of the BUG scenarios the defaults of pytest-queryguard miss, five are write loops
-  or an unused eager load (opt-in here, not reported by the other two either) and
-  three are below the thresholds, which the other tools flag.
-- queryspy did not flag the Core `select()` loop, the `text()` loop, the driver-SQL
-  loop and the f-string SQL loop, nor the thread-pool lookups; pytest-querycount
-  flagged them. This agrees with the earlier comparison, where queryspy missed Core
-  loops.
-- Both other tools flagged seventeen CLEAN scenarios: the pagination, chunk, polling, cache and
-  commit scenarios (pytest-queryguard reports the polling loop by default, and the
-  cache and commit ones only with its opt-in rules on), a `session.refresh()` of a
-  single object, a selectin-loaded tree, a `selectinload` over 3000 parents, a
-  `selectinload` two levels deep over 1500 parents and `yield_per` with
-  `selectinload`. A tool that treats every repeated shape as a finding will do
-  that; the choice is between catching small loops and flagging batching.
-- Five of those seventeen are the pagination and chunk scenarios written together
-  with pytest-queryguard's rule for them (listed above), which makes this table
-  favour pytest-queryguard even more than the rest of the corpus does.
-- The scenarios were written by the author of pytest-queryguard, so the table
-  favours it. Each of the other tools has
-  options I did not tune (budgets, thresholds, ignore blocks).
+| tool | relationship-load | repeated-statement | column-load | write-loop | unused-eager-load | cartesian-load | unused-columns |
+|---|---|---|---|---|---|---|---|
+| pytest-queryguard, defaults | 100% / 100% | 98% / 96% | 100% / 92% | n/a | n/a | 88% / 100% | n/a |
+| pytest-queryguard, all opt-in rules | 100% / 100% | 96% / 100% | 93% / 100% | 73% / 100% | 83% / 100% | 88% / 100% | 100% / 89% |
+| queryspy | 90% / 100% | 64% / 89% | 81% / 100% | n/a | n/a | n/a | n/a |
+| pytest-querycount | - / 100% | - / 100% | - / 100% | n/a | n/a | n/a | n/a |
+| n-plus-one-sniffer | - / 98% | - / 98% | - / 92% | - / 100% | n/a | n/a | n/a |
+| nplusone, SQLAlchemy 2.0 | - / 0% | n/a | n/a | n/a | 100% / 20% | n/a | n/a |
+
+- **The corpus was written by the author of pytest-queryguard, for
+  pytest-queryguard**, and that favours it. Its CLEAN scenarios include the
+  shapes its rules were taught to leave alone (pagination, `IN` chunks,
+  `selectinload` batches over many parents, `yield_per`), and three of them
+  (`clean_94` to `clean_96`) use pytest-queryguard's own `ignore()` API,
+  which the other tools cannot know. Each of the other tools has options I
+  did not tune (thresholds, budgets, ignore blocks).
+- The other three plugins find the N+1 shapes they claim: pytest-querycount
+  flagged every BUG scenario of its kinds, n-plus-one-sniffer missed three
+  (loops of two or three statements, not above its threshold of 3), queryspy missed five (the
+  Core `select()`, `text()`, driver-SQL and f-string loops and the
+  thread-pool lookups, as in 2026-10). Their cost is the CLEAN side: 25 to
+  27 of the 129 CLEAN scenarios fail, against 2 for the defaults of
+  pytest-queryguard. A tool that reports every repeated statement shape
+  catches small loops and flags batching too.
+- pytest-queryguard's defaults miss 17 BUG scenarios: 14 are write loops,
+  unused eager loads and unused columns, which are opt-in, and three are
+  loops of two or three statements below its thresholds. With every opt-in
+  rule on it misses one and flags 8 CLEAN scenarios.
+- queryspy names the kind. Its lower per-kind precision for
+  `repeated-statement` comes from the CLEAN scenarios it flags, nearly all
+  as repeated statements, and from BUG scenarios of other kinds (write loops,
+  cartesian loads) that it reports as repeated statements.
+- nplusone 1.0.0 does not import on SQLAlchemy 2.1 (`strategies.LazyLoader`
+  moved). On 2.0.54 it runs, reports one unused eager load, no lazy load in
+  any scenario (the 2.0-style `select()` does not go through the
+  `Query.__iter__` it patches), and raises `AttributeError` in its
+  `Query` patch on two `subqueryload` scenarios.
+- The table of 2026-10-13 (141 scenarios, queryspy 0.5.0) is replaced by
+  this one; the conclusions did not change.
 
 ## On PostgreSQL
 
