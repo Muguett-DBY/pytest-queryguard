@@ -173,8 +173,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the head-to-head workflow, on the 252 scenarios of the corpus, for
   queryspy 0.6.0, pytest-querycount 0.4.0, n-plus-one-sniffer and nplusone
   1.0.0 (which does not import on SQLAlchemy 2.1, and is also run on 2.0),
-  with precision and recall
-  per kind and the overhead of each tool on one runner.
+  with precision and recall per kind and the overhead of each tool on one
+  runner.
 
 - API-freeze audit before 1.0: the [stability policy](docs/stability.md)
   now states the naming, value and unit conventions of the public options
