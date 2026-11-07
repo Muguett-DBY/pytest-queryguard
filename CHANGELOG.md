@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stopped at the access under "stale ignores": the block may be for a
   finding after the access, which the test never reached. Its
   `queryguard_ignore` patterns were already left out the same way.
+- A `record_queries()` or `max_queries()` block, in the test or in any other
+  thread, no longer takes from the test where its objects were loaded. Any
+  such block starting or ending made the objects loaded before it lose their
+  origin, so strict mode did not raise at a lazy load of those objects (the
+  N+1 failed only at the end of the test) and the report left out "parents
+  loaded at". A block still uses only the origins noted inside it.
+- An attribute read of a mapped object in another thread while the last
+  session with `queryguard_unused_eager_load` or `queryguard_unused_columns`
+  ends (pytest's own end, or a `pytester` run) no longer raises
+  `TypeError: 'NoneType' object is not callable` into that thread.
 
 ## [0.8.0] - 2026-11-06
 

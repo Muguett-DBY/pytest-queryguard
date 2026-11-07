@@ -685,6 +685,24 @@ def test_an_error_in_the_read_hook_turns_only_the_check_off() -> None:
         unused_columns.disable()
 
 
+def test_a_read_that_entered_the_wrapper_before_the_last_disable_works() -> None:
+    """The end of a session restores the descriptor while another thread is
+    inside the wrapper; that read used to raise TypeError ('NoneType' object
+    is not callable) into the application. Calling the wrapper after the
+    disable is what that thread does."""
+    original = InstrumentedAttribute.__get__
+    unused_columns.enable()
+    try:
+        get = InstrumentedAttribute.__get__
+    finally:
+        unused_columns.disable()
+    assert get is readhook._tracked_get
+    assert InstrumentedAttribute.__get__ is original
+    customer = _account()
+    attribute = type(customer).name  # type: ignore[attr-defined]
+    assert get(attribute, customer, type(customer)) == "x"
+
+
 def test_mixed_unused_kinds_have_their_own_heading() -> None:
     from pytest_queryguard.findings import Finding
     from pytest_queryguard.messages import format_findings

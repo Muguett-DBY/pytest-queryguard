@@ -73,10 +73,11 @@ def install() -> None:
 
 def uninstall() -> None:
     """Undo one ``install()``; the last one restores SQLAlchemy's descriptor."""
-    global _users, _original
+    global _users
     if _users == 0:
         return
     _users -= 1
     if _users == 0:
+        # _original is kept: another thread may have entered _tracked_get
+        # just before this line and still has to call it.
         ATTRIBUTE_DESCRIPTOR.__get__ = _original  # type: ignore[method-assign]
-        _original = None

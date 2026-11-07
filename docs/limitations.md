@@ -34,6 +34,12 @@
   tests, so detection and budgets work. The report needs a single process,
   so under pytest-xdist it prints
   `queryguard report: not available with pytest-xdist`.
+- A thread a test starts and does not stop (a daemon worker, a server started
+  in the test body) goes on into the tests after it: its statements count
+  for whichever test is measured while they run, in its findings and its
+  budgets, and cannot be told apart from that test's own. Stop and join such
+  threads in the test or in the teardown of its fixture. Statements that run
+  between two test bodies are not counted.
 - Tests that use `pytester` to run pytest in-process are also measured by the
   outer test, which sees the inner run's queries. Mark such tests with
   `queryguard_ignore` or use `pytester.runpytest_subprocess()`.
