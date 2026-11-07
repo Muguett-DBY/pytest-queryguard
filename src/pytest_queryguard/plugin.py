@@ -790,7 +790,7 @@ def _strict_hook(
         error = NPlusOneDetected(
             format_strict(finding, parents, patch=settings.show_patch)
         )
-        error.queryguard_strict = True  # type: ignore[attr-defined]
+        error._queryguard_strict = True  # type: ignore[attr-defined]
         return error
 
     return check
@@ -2629,7 +2629,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, Any, Any]:
     try:
         result = yield
     except NPlusOneDetected as exc:
-        if not getattr(exc, "queryguard_strict", False):
+        if not getattr(exc, "_queryguard_strict", False):
             raise
         with contextlib.suppress(Exception):
             trim_to_user_code(exc)
@@ -2758,7 +2758,7 @@ def _hide_escalated_warning(
     """Hide a plugin frame only when a ``QueryGuardWarning`` was raised as an error."""
     return excinfo is not None and (
         excinfo.errisinstance(QueryGuardWarning)
-        or bool(getattr(excinfo.value, "queryguard_strict", False))
+        or bool(getattr(excinfo.value, "_queryguard_strict", False))
     )
 
 

@@ -51,7 +51,7 @@ def _measure(
     try:
         yield log
     except NPlusOneDetected as exc:
-        if getattr(exc, "queryguard_strict", False):
+        if getattr(exc, "_queryguard_strict", False):
             stopped = exc
         raise
     finally:

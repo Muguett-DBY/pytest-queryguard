@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The JSON output of the experimental trend
+  (`python -m pytest_queryguard.trend --format json`) starts with
+  `"format": 1`, like the other JSON files, and its keys are documented in
+  [CI](docs/ci.md#query-counts-over-the-last-runs).
+
 ### Fixed
 
 - The fix patch (`--queryguard-show-patch`, `--queryguard-write-patch`,
@@ -67,6 +74,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back; `params` that are not an object (`[]` and `0` included) get
   `-32602 Invalid params` instead of `-32600 Invalid Request` or being
   taken as no params.
+
+### Documentation
+
+- API-freeze audit before 1.0: the [stability policy](docs/stability.md)
+  now states the naming, value and unit conventions of the public options
+  and files (every time in seconds; `0` turns a threshold off in an ini
+  option, `None` in Python; `format` versus the baseline's `version` key),
+  the two defaults of `app.Settings` that differ from the plugin on purpose,
+  a table of deprecated names with their removal release, the exit status
+  of the plugin and the tools, and what is not public (environment
+  variables, submodule exceptions, the object `ignore()` returns).
+- `llms.txt` lists every ini option and flag: `queryguard_cartesian_load`,
+  `queryguard_strict`, `queryguard_stack_depth`, `queryguard_budgets`,
+  `queryguard_max_queries`, `--queryguard-strict`, `--queryguard-budgets`,
+  `--queryguard-update-budgets` and `--queryguard-json` were missing.
+
+### Internal
+
+- `tests/test_public_api.py` also snapshots the keys and format numbers of
+  the files the plugin writes (`--queryguard-json`, baseline, budget file,
+  SARIF rule ids, fingerprint key and properties), the finding kinds, the
+  arguments of the compare, trend and static-check tools (with their
+  defaults and choices), the trend's JSON keys, the compare
+  marker, the GitHub Action's inputs, defaults and outputs, the MCP tools and
+  their arguments, the deprecated names with their removal release, and the
+  defaults of `app.Settings`.
+- The flag that strict mode puts on its `NPlusOneDetected` is now the private
+  attribute `_queryguard_strict`; the undocumented `queryguard_strict`
+  attribute looked public.
 
 ## [0.8.0] - 2026-11-06
 

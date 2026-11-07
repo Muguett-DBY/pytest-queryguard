@@ -9,12 +9,14 @@ Additions are allowed but must be added to the snapshot on purpose.
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import importlib.metadata
 import inspect
 import pickle
 import re
 import warnings
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -493,3 +495,417 @@ def test_panel_json_keys() -> None:
     assert list(report) == EXPECTED_REPORT_DICT
     assert list(report["statements"][0]) == EXPECTED_STATEMENT_DICT
     assert list(report["findings"][0]) == EXPECTED_FINDING_DICT
+
+
+# --- files, tools and the action (docs/stability.md#files-tools-and-the-action)
+
+_MODELS = (Path(__file__).parent / "models.py").read_text(encoding="utf-8")
+
+_FILES_SUITE = """
+import pytest
+from qgmodels import Order, make_sync_session
+
+
+def list_orders(session):
+    return [order.customer.name for order in session.query(Order).all()]
+
+
+@pytest.mark.parametrize("i", range(2))
+def test_nplusone(i):
+    list_orders(make_sync_session())
+
+
+@pytest.mark.max_queries(100)
+def test_marked():
+    make_sync_session().query(Order).all()
+"""
+
+EXPECTED_JSON_TOP = ["format", "tool", "complete", "tests"]
+EXPECTED_JSON_TOOL = ["name", "version"]
+EXPECTED_JSON_TEST = [
+    "statements",
+    "by_verb",
+    "db_time",
+    "truncated",
+    "findings",
+    "max_queries_marker",
+]
+EXPECTED_JSON_FINDING = [
+    "kind",
+    "label",
+    "count",
+    "file",
+    "function",
+    "line",
+    "stack",
+    "baselined",
+    "message",
+]
+EXPECTED_JSON_FRAME = ["file", "function", "line"]
+EXPECTED_BASELINE_TOP = ["version", "findings"]
+EXPECTED_BASELINE_ENTRY = ["kind", "label", "file", "function"]
+EXPECTED_BUDGETS_TOP = ["format", "budgets"]
+
+# SARIF rule ids in the order of ruleIndex: a new kind goes at the end.
+EXPECTED_SARIF_RULES = [
+    "queryguard/relationship-load",
+    "queryguard/repeated-statement",
+    "queryguard/column-load",
+    "queryguard/write-loop",
+    "queryguard/unused-eager-load",
+    "queryguard/unused-columns",
+    "queryguard/cartesian-load",
+    "queryguard/missing-index",
+]
+EXPECTED_SARIF_FINGERPRINT = "queryguardIdentity/v1"
+EXPECTED_SARIF_PROPERTIES = ["count", "label", "tests", "peakCount"]
+
+# the finding kinds that queryguard_ignore and queryguard_fail_on accept
+EXPECTED_KINDS = [
+    "relationship-load",
+    "repeated-statement",
+    "column-load",
+    "write-loop",
+    "unused-eager-load",
+    "unused-columns",
+    "cartesian-load",
+    "missing-index",
+]
+
+
+def _json(path: Path) -> Any:
+    import json
+
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_the_written_files_keep_their_keys(pytester: pytest.Pytester) -> None:
+    """The keys of every file the plugin writes, as one run writes them."""
+    pytester.makepyfile(qgmodels=_MODELS, test_files=_FILES_SUITE)
+    result = pytester.runpytest_subprocess(
+        "-p",
+        "no:cacheprovider",
+        "--queryguard-mode=warn",
+        "--queryguard-json=q.json",
+        "--queryguard-sarif=s.sarif",
+        "--queryguard-budgets=b.json",
+        "--queryguard-update-budgets",
+    )
+    result.assert_outcomes(passed=3)
+    counts = _json(pytester.path / "q.json")
+    assert list(counts) == EXPECTED_JSON_TOP
+    assert counts["format"] == 1
+    assert list(counts["tool"]) == EXPECTED_JSON_TOOL
+    entry = counts["tests"]["test_files.py::test_nplusone[0]"]
+    assert list(entry) == EXPECTED_JSON_TEST
+    assert list(entry["findings"][0]) == EXPECTED_JSON_FINDING
+    assert list(entry["findings"][0]["stack"][0]) == EXPECTED_JSON_FRAME
+    assert counts["tests"]["test_files.py::test_marked"]["max_queries_marker"] is True
+
+    budgets = _json(pytester.path / "b.json")
+    assert list(budgets) == EXPECTED_BUDGETS_TOP
+    assert budgets["format"] == 1
+    # a test with its own marker has no entry
+    assert sorted(budgets["budgets"]) == [
+        "test_files.py::test_nplusone[0]",
+        "test_files.py::test_nplusone[1]",
+    ]
+
+    sarif = _json(pytester.path / "s.sarif")
+    assert sarif["version"] == "2.1.0"
+    driver = sarif["runs"][0]["tool"]["driver"]
+    assert [rule["id"] for rule in driver["rules"]] == EXPECTED_SARIF_RULES
+    (finding,) = sarif["runs"][0]["results"]  # one finding, from two tests
+    assert finding["ruleId"] == "queryguard/relationship-load"
+    assert EXPECTED_SARIF_FINGERPRINT in finding["partialFingerprints"]
+    assert list(finding["properties"]) == EXPECTED_SARIF_PROPERTIES
+
+    result = pytester.runpytest_subprocess(
+        "-p",
+        "no:cacheprovider",
+        "--queryguard-baseline=base.json",
+        "--queryguard-update-baseline",
+    )
+    result.assert_outcomes(passed=3)
+    baseline = _json(pytester.path / "base.json")
+    assert list(baseline) == EXPECTED_BASELINE_TOP
+    assert baseline["version"] == 1
+    assert list(baseline["findings"][0]) == EXPECTED_BASELINE_ENTRY
+
+
+def test_finding_kinds() -> None:
+    from pytest_queryguard import ignores, sarif
+
+    assert list(ignores.KINDS) == EXPECTED_KINDS
+    assert sorted(sarif.KINDS) == sorted(EXPECTED_KINDS)
+
+
+def _cli_arguments(main: Any, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The positional arguments and the options of a tool's argument parser."""
+    found: list[str] = []
+
+    def capture(parser: argparse.ArgumentParser, *args: Any, **kwargs: Any) -> Any:
+        for action in parser._actions:
+            if "--help" in action.option_strings:
+                continue
+            name = "/".join(action.option_strings) or action.dest
+            extra = [
+                f"{key}={value!r}"
+                for key, value in (
+                    ("nargs", action.nargs),
+                    ("default", action.default),
+                    ("choices", action.choices),
+                )
+                if value not in (None, [], False)
+            ]
+            found.append(" ".join([name, *extra]))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
+    with pytest.raises(SystemExit):
+        main([])
+    return found
+
+
+EXPECTED_TOOL_ARGUMENTS = {
+    # public
+    "compare": [
+        "base",
+        "head",
+        "--output",
+        "--rows default=25",
+        "--key default=''",
+    ],
+    # experimental, snapshotted so a change is deliberate
+    "trend": [
+        "runs nargs='+'",
+        "--top default=10",
+        "--test",
+        "--format default='markdown' choices=('markdown', 'text', 'json')",
+        "--ascii",
+        "--label",
+        "--key default=''",
+        "--details",
+        "--skip-unreadable",
+        "--output",
+    ],
+    "lint": [
+        "paths nargs='+'",
+        "--models",
+        "--format default='text' choices=('text', 'json', 'sarif')",
+        "--output",
+    ],
+}
+
+
+@pytest.mark.parametrize("tool", sorted(EXPECTED_TOOL_ARGUMENTS))
+def test_command_line_tool_arguments(
+    tool: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = importlib.import_module(f"pytest_queryguard.{tool}")
+    found = _cli_arguments(module.main, monkeypatch)
+    assert found == EXPECTED_TOOL_ARGUMENTS[tool]
+
+
+def test_compare_marker() -> None:
+    from pytest_queryguard import compare
+
+    assert compare.MARKER == "<!-- pytest-queryguard compare -->"
+
+
+EXPECTED_TREND_JSON = [
+    "format",
+    "runs",
+    "complete",
+    "changed",
+    "changed_total",
+    "added_tests",
+    "gone_tests",
+    "new_findings",
+    "gone_findings",
+]
+
+
+EXPECTED_TREND_RUN = ["label", "tests", "statements", "complete"]
+EXPECTED_TREND_CHANGED = ["nodeid", "counts", "first", "last", "change"]
+EXPECTED_TREND_FINDING = ["kind", "label", "file", "function", "count", "tests"]
+
+
+def test_trend_json_keys() -> None:
+    import json
+
+    from pytest_queryguard import trend
+
+    def run(tests: dict[str, Any]) -> dict[str, Any]:
+        return {"format": 1, "complete": True, "tests": tests}
+
+    def finding(label: str) -> dict[str, Any]:
+        return {
+            "kind": "relationship-load",
+            "label": label,
+            "count": 3,
+            "file": "a.py",
+            "function": "f",
+            "line": 1,
+        }
+
+    runs = [
+        run({"t.py::a": {"statements": 2, "findings": [finding("A.old")]}}),
+        run({"t.py::a": {"statements": 9, "findings": [finding("A.new")]}}),
+    ]
+    doc = json.loads(trend.as_json(trend.trend(runs, ["r1", "r2"])))
+    assert list(doc) == EXPECTED_TREND_JSON
+    assert doc["format"] == 1
+    assert list(doc["runs"][0]) == EXPECTED_TREND_RUN
+    assert list(doc["changed"][0]) == EXPECTED_TREND_CHANGED
+    assert list(doc["new_findings"][0]) == [*EXPECTED_TREND_FINDING, "since"]
+    assert list(doc["gone_findings"][0]) == EXPECTED_TREND_FINDING
+
+
+# Experimental (docs/mcp.md): tool name -> (argument names, required ones).
+EXPECTED_MCP_TOOLS = {
+    "run_tests": (["args", "paths", "timeout"], []),
+    "explain_finding": (["kind"], ["kind"]),
+    "compare": (["base_json", "head_json"], ["base_json", "head_json"]),
+}
+
+
+def test_mcp_tools_and_arguments() -> None:
+    from pytest_queryguard import mcp
+
+    found = {
+        name: (sorted(tool.properties), sorted(tool.required))
+        for name, tool in mcp.TOOLS.items()
+    }
+    assert found == EXPECTED_MCP_TOOLS
+
+
+EXPECTED_ACTION_INPUTS = {
+    "pytest-args": '""',
+    "python-version": '""',
+    "package": '""',
+    "baseline": '""',
+    "fail": '"true"',
+    "working-directory": '"."',
+    "sarif-file": "queryguard.sarif",
+    "upload": '"true"',
+    "category": "pytest-queryguard",
+    "json-file": "queryguard.json",
+    "compare": '"true"',
+    "comment": '"true"',
+    "trend": '"false"',
+    "github-token": "${{ github.token }}",
+}
+EXPECTED_ACTION_OUTPUTS = ["exit-code", "sarif-file", "json-file", "trend-report"]
+
+
+def _action_section(text: str, name: str) -> str:
+    match = re.search(rf"^{name}:\n(.*?)(?=^\S)", text, re.MULTILINE | re.DOTALL)
+    assert match, name
+    return match[1]
+
+
+def test_action_inputs_outputs_and_artifact() -> None:
+    text = (Path(__file__).parents[1] / "action" / "action.yml").read_text(
+        encoding="utf-8"
+    )
+    inputs: dict[str, str] = {}
+    name = ""
+    for line in _action_section(text, "inputs").splitlines():
+        key = re.fullmatch(r"  ([a-z-]+):", line)
+        if key:
+            name = key[1]
+            inputs[name] = "(none)"
+        default = re.fullmatch(r"    default: (.*)", line)
+        if default:
+            inputs[name] = default[1].strip()
+    assert inputs == EXPECTED_ACTION_INPUTS
+    outputs = re.findall(
+        r"^  ([a-z-]+):$", _action_section(text, "outputs"), re.MULTILINE
+    )
+    assert outputs == EXPECTED_ACTION_OUTPUTS
+    assert "name: queryguard-json-${{ inputs.category }}" in text
+
+
+# docs/stability.md#deprecated-names
+def test_deprecated_names_say_when_they_go() -> None:
+    from pytest_queryguard import app
+    from pytest_queryguard.warnings import REMOVED_IN
+
+    assert REMOVED_IN == "2.0"
+    deprecation = pytest_queryguard.QueryGuardDeprecationWarning
+    with pytest.warns(deprecation, match=r"removed in pytest-queryguard 2\.0"):
+        settings = app.Settings(repeat_scope="session")
+    assert settings.scope == "session"
+    with pytest_queryguard.record_queries() as log:
+        pass
+    with pytest.warns(deprecation, match=r"removed in pytest-queryguard 2\.0"):
+        log.assert_no_nplusone(repeat_scope="session")
+
+
+def test_deprecated_option_and_marker_say_when_they_go(
+    pytester: pytest.Pytester,
+) -> None:
+    pytester.makeini("[pytest]\nqueryguard_repeat_scope = session\n")
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.max_queries(n=5)
+        def test_old_marker():
+            pass
+        """
+    )
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1)
+    removed = "is deprecated and will be removed in pytest-queryguard 2.0*"
+    result.stdout.fnmatch_lines(
+        [
+            f"*QueryGuardDeprecationWarning: queryguard_repeat_scope {removed}",
+            f"*QueryGuardDeprecationWarning: max_queries(n=...) {removed}",
+        ]
+    )
+
+
+# Experimental, but the defaults are documented in docs/in-app.md.
+EXPECTED_APP_SETTINGS_DEFAULTS = {
+    "relationship_threshold": 2,
+    "repeat_threshold": 5,
+    "column_load_threshold": 5,
+    "small_repeat_threshold": None,
+    "write_loop_threshold": None,
+    "scope": "request",
+    "budgets": {},
+    "default_budget": None,
+    "report": "log",
+    "max_events": 1000,
+    "sample_rate": 1.0,
+    "min_db_time": 0.0,
+    "page_report": "off",
+    "repeat_scope": None,
+}
+
+
+def test_app_settings_defaults() -> None:
+    from pytest_queryguard import app
+
+    settings = app.Settings()
+    found = {
+        f.name: getattr(settings, f.name) for f in dataclasses.fields(app.Settings)
+    }
+    assert found == EXPECTED_APP_SETTINGS_DEFAULTS
+
+
+def test_query_defaults_agree_between_the_plugin_and_python() -> None:
+    """``assert_no_nplusone()`` and ``app.Settings`` use the ini defaults."""
+    from pytest_queryguard import app
+
+    params = inspect.signature(pytest_queryguard.QueryLog.assert_no_nplusone).parameters
+    for name in ("relationship_threshold", "repeat_threshold", "column_load_threshold"):
+        ini = int(EXPECTED_INI[f"queryguard_{name}"])
+        assert params[name].default == ini, name
+        assert EXPECTED_APP_SETTINGS_DEFAULTS[name] == ini, name
+    for name in ("small_repeat_threshold", "write_loop_threshold"):
+        assert EXPECTED_INI[f"queryguard_{name}"] == "0"  # 0 is off in ini
+        assert params[name].default is None  # None is off in Python
+        assert getattr(app.Settings(), name) is None
