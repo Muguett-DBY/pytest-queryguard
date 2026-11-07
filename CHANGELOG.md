@@ -203,6 +203,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   n-plus-one-sniffer (read, not run), and a section on problems users report
   with other N+1 tools that pytest-queryguard avoids, with the issues as
   evidence.
+- Documentation site review:
+  - The overview page answers why to pick this tool ("Why this one", linking
+    to the comparison) and says that the site, published from `main`, may
+    describe options added since 0.8.0.
+  - "In short" leads on the comparison, in-application mode and stability
+    pages, and a table of every finding kind with its default at the top of
+    "The rules" in How detection works.
+  - Outdated statements corrected: Migrating from queryspy said there was no
+    suite-wide budget, no JSON output and no in-application mode (all exist
+    since 0.5.0 or 0.6.0); the comparison said pytest-queryguard had no way
+    to record budgets (the budget file, since 0.6.0); the strict-mode
+    message in "A test failed: now what" was the text from before 0.8.0;
+    `context7.json` named `allow_nplusone` before `queryguard_ignore`; the
+    accuracy page's description named a corpus size that had changed.
+  - The free-threaded Python note moved from Getting started to the FAQ, so
+    the first page goes from install to a first test.
+  - On a phone, inline code wraps instead of making 22 pages scroll sideways.
+    A test checks that a link to a missing anchor fails the strict build.
 
 ### Internal
 

@@ -140,6 +140,43 @@ def test_a_page_without_a_description_fails_the_strict_build(
     assert "has no description" in capsys.readouterr().err
 
 
+def test_a_link_to_a_missing_anchor_fails_the_strict_build(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A renamed heading breaks every link to it; the build has to say where."""
+    module = _load()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text(
+        "# Home\n\n[ok](other.md#real) [same page](#home) "
+        "[broken](other.md#gone) [broken here](#nowhere)\n",
+        encoding="utf-8",
+    )
+    (docs / "other.md").write_text("# Other\n\n## Real\n\ntext\n", encoding="utf-8")
+    (docs / "site.toml").write_text(
+        'title = "T"\nbase_url = "https://x.test/"\nrepo_url = "https://x.test/r"\n'
+        '[[section]]\ntitle = "S"\npages = [\n'
+        '  { title = "Home", file = "index.md", description = "d" },\n'
+        '  { title = "Other", file = "other.md", description = "d" },\n]\n',
+        encoding="utf-8",
+    )
+    module.DOCS = docs
+    module.ROOT = tmp_path
+    assert module.build(tmp_path / "out", strict=True) == 1
+    err = capsys.readouterr().err
+    assert "index.md: no anchor #gone in other.md" in err
+    assert "index.md: no anchor #nowhere in index.md" in err
+    assert "#real" not in err and "#home" not in err
+
+
+def test_inline_code_wraps_on_narrow_screens(site: Path) -> None:
+    """A long inline name would otherwise make the whole page scroll sideways
+    on a phone; code blocks keep their own horizontal scroll."""
+    css = (site / "style.css").read_text(encoding="utf-8")
+    narrow = css[css.index("@media (max-width:48rem)") :]
+    assert ":not(pre)>code{overflow-wrap:anywhere}" in narrow
+
+
 def test_the_page_list_collapses_on_narrow_screens(site: Path) -> None:
     """On a phone the list of pages would push the content two screens down."""
     page = (site / "faq.html").read_text(encoding="utf-8")

@@ -336,6 +336,24 @@ loop scopes), and [Getting started](getting-started.md#async-and-fastapi) has
 an async FastAPI example. On SQLAlchemy 2.1 and newer install
 `sqlalchemy[asyncio]` for greenlet.
 
+## Does it work on free-threaded Python?
+
+The free-threaded builds (CPython 3.13t and 3.14t, no GIL) are not in the
+package classifiers, so they are not a supported configuration. CI runs
+only the in-app mode's tests (`tests/inapp`) on 3.14t, not the whole
+suite. The whole suite was run once on CPython 3.14.4t with SQLAlchemy
+2.1.1 and passed; 3.13t was not tried. On those builds the
+counters of a measurement (statements, loads and database time) are
+updated under a lock, so statements from several threads are all counted
+and budgets hold; on a build with the GIL no lock is taken. The stored
+events are list appends and the call-site caches are dictionaries, which
+CPython keeps consistent without the GIL; the sequence numbers that order
+Sessions and executions (`itertools.count`) stayed unique from 8 threads
+on 3.14.4t. The missing-index check and the unused-eager-load tracker
+check and then update shared sets, so with several threads they may do
+one step twice; those were not examined further. Every listener fails
+open, so a race there costs accuracy, not the test run.
+
 ## When should I not use it?
 
 - Your data access does not go through SQLAlchemy 2: Django ORM, Peewee,

@@ -15,6 +15,14 @@ It ships from 0.5.0 on. It is experimental (see
 names in `pytest_queryguard.app`, their settings and the panel's JSON may still
 change in a minor release, without a deprecation period.
 
+**In short:** call `queryguard.watch(engine)` at startup and add
+`QueryGuardASGI` (FastAPI, Starlette, any ASGI app) or `QueryGuardWSGI`
+(Flask, any WSGI app). Each request with a finding or over its budget logs a
+WARNING on the `pytest_queryguard.app` logger. Optional: a
+[panel](#the-panel) at `/_queryguard/`, [findings in the page](#findings-in-the-page),
+[OpenTelemetry and Sentry](#reporting-to-opentelemetry-and-sentry), and
+`track()` for jobs and tasks [outside HTTP](#outside-http).
+
 ## FastAPI and Starlette
 
 Watch the engine, add the middleware. A shortened version of `app/main.py` in
