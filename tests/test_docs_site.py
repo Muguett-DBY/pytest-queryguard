@@ -173,8 +173,15 @@ def test_inline_code_wraps_on_narrow_screens(site: Path) -> None:
     """A long inline name would otherwise make the whole page scroll sideways
     on a phone; code blocks keep their own horizontal scroll."""
     css = (site / "style.css").read_text(encoding="utf-8")
-    narrow = css[css.index("@media (max-width:48rem)") :]
-    assert ":not(pre)>code{overflow-wrap:anywhere}" in narrow
+    start = css.index("{", css.index("@media (max-width:48rem)")) + 1
+    depth, end = 1, start
+    while depth:
+        depth += {"{": 1, "}": -1}.get(css[end], 0)
+        end += 1
+    narrow = re.sub(r"\s+", "", css[start:end])
+    assert re.search(r":not\(pre\)>code\{[^}]*overflow-wrap:anywhere", narrow)
+    wide = re.sub(r"\s+", "", css[:start] + css[end:])
+    assert "overflow-wrap:anywhere" not in wide
 
 
 def test_the_page_list_collapses_on_narrow_screens(site: Path) -> None:

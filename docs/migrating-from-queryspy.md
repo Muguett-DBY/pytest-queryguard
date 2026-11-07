@@ -41,7 +41,7 @@ queryguard_mode = "warn"
 | `queryspy_fail_on = none` (the default: report only) | `queryguard_mode = warn` |
 | `queryspy_fail_on = n_plus_one` (every kind) | The default; `queryguard_fail_on` empty |
 | `queryspy_fail_on = lazy_load, column_load` | `queryguard_fail_on = ["relationship-load", "column-load"]`; the other kinds become warnings |
-| `queryspy_budget = 20` (every test) | `queryguard_max_queries = 20`: every test without a `max_queries` marker gets it ([Budgets](budgets.md#a-default-budget-for-every-test)) |
+| `queryspy_budget = 20` (every test) | `queryguard_max_queries = 20`: every test without a `max_queries` marker or a [budget file](budgets.md#lock-todays-counts-the-budget-file) entry gets it ([Budgets](budgets.md#a-default-budget-for-every-test)) |
 | `queryspy_capture_stacks = false` | No equivalent: the call site is always recorded |
 | `--queryspy-report=queryspy.sarif` | `--queryguard-sarif=queryguard.sarif` ([SARIF](sarif.md)) |
 | `--queryspy-report=queryspy.json` (JSON) | `--queryguard-json=queryguard.json`: each test's statement count, database time and findings ([CI](ci.md#query-counts-as-json)); the format differs |
@@ -84,7 +84,7 @@ queryguard_column_load_threshold = 2
 | `with no_n_plus_one():` | `with record_queries() as log:` and then `log.assert_no_nplusone()` |
 | `with record() as recorder:` | `with record_queries() as log:` ([Reading the queries](python-api.md)) |
 | `with queryspy.ignore():` in application code | `with pytest_queryguard.ignore("*"):`, or name the kinds; threads started inside the block are not covered ([the `ignore()` block](ignoring.md#the-ignore-block)) |
-| `QuerySpyMiddleware` (ASGI, WSGI), the panel | Not covered: tests only |
+| `QuerySpyMiddleware` (ASGI, WSGI), the panel | `QueryGuardASGI`, `QueryGuardWSGI` with `panel=True` ([in-application mode](in-app.md), experimental; not compared with queryspy's) |
 
 The helpers, side by side. They run against the fixed `fetch_customers`, the
 one in `app/customers_fixed.py` of [the first test](getting-started.md#a-first-test),
@@ -117,7 +117,7 @@ passed (see [Reading the queries](python-api.md)).
 ## A budget for every test
 
 `queryspy_budget` becomes `queryguard_max_queries`; a test with a
-`max_queries` marker keeps its own:
+`max_queries` marker, or with an entry in the budget file, keeps its own:
 
 ```toml
 [tool.pytest.ini_options]

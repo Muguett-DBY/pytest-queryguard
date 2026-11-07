@@ -212,10 +212,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     "The rules" in How detection works.
   - Outdated statements corrected: Migrating from queryspy said there was no
     suite-wide budget, no JSON output and no in-application mode (all exist
-    since 0.5.0 or 0.6.0); the comparison said pytest-queryguard had no way
+    since 0.5.0 or 0.6.0), and Migrating from nplusone that it runs in tests
+    only; the comparison said pytest-queryguard had no way
     to record budgets (the budget file, since 0.6.0); the strict-mode
     message in "A test failed: now what" was the text from before 0.8.0;
-    `context7.json` named `allow_nplusone` before `queryguard_ignore`; the
+    `context7.json` named `allow_nplusone` before `queryguard_ignore` and
+    left out the `cartesian-load` and `unused-columns` kinds; the
     accuracy page's description named a corpus size that had changed.
   - The free-threaded Python note moved from Getting started to the FAQ, so
     the first page goes from install to a first test.

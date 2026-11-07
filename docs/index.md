@@ -30,14 +30,16 @@ pip install pytest-queryguard
 
 It is on by default: there is nothing to import or configure. These pages
 describe 0.8.0, see [Getting started](getting-started.md#install). They are
-published from `main`, so an option added since 0.8.0 may already be here:
-the [changelog](../CHANGELOG.md) lists those under Unreleased.
+published from `main`, so an option added since 0.8.0 may already be here
+before it is on PyPI: if pytest does not know an option, check the
+[changelog](../CHANGELOG.md) under Unreleased.
 
 ## Why this one
 
 - **Zero configuration.** Every test is checked once it is installed; the
-  other SQLAlchemy tools in the [comparison](comparison.md) need a marker,
-  an option or a fixture before a test fails.
+  other SQLAlchemy test plugins in the [comparison](comparison.md) need a
+  marker, an option or a fixture before a test fails, and some never fail
+  one.
 - **More than lazy loads.** Repeated statements from `session.get()` loops,
   Core and `text()`, deferred and expired column loads, and query budgets
   that list every statement with the line that sent it.
