@@ -9,7 +9,7 @@ line is not a new finding. Baselined findings are left out of both lists.
 Tests that exist in only one of the files are counted, not compared.
 
 The report is for people (a pull-request comment, the job summary); the exit
-status is 0 unless a file cannot be read (2).
+status is 0 unless a file cannot be read or written (2).
 """
 
 from __future__ import annotations
@@ -76,14 +76,47 @@ class Comparison:
 
 def load(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: a file saved again by Windows PowerShell 5 starts with a BOM
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise CompareError(f"cannot read {path}: {exc}") from None
     if not isinstance(data, dict) or data.get("format") != 1:
         raise CompareError(f"{path} is not a pytest-queryguard JSON file (format 1)")
-    if not isinstance(data.get("tests"), dict):
+    tests = data.get("tests")
+    if not isinstance(tests, dict):
         raise CompareError(f"{path} has no tests")
+    for nodeid, entry in tests.items():
+        problem = _entry_problem(entry)
+        if problem:
+            raise CompareError(
+                f"{path} is not a pytest-queryguard JSON file: {nodeid!r} {problem}"
+            )
     return data
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _entry_problem(entry: Any) -> str:
+    """What is wrong with one test's entry, so that compare would not fail."""
+    if not isinstance(entry, dict) or not _is_int(entry.get("statements")):
+        return "has no statement count"
+    findings = entry.get("findings", [])
+    if not isinstance(findings, list):
+        return "has findings that are not a list"
+    for f in findings:
+        if not (
+            isinstance(f, dict)
+            and isinstance(f.get("kind"), str)
+            and isinstance(f.get("label"), str)
+            and _is_int(f.get("count", 0))
+            and all(
+                isinstance(f.get(k), (str, type(None))) for k in ("file", "function")
+            )
+        ):
+            return "has a finding without a kind, label, count, file or function"
+    return ""
 
 
 def _findings(
@@ -269,7 +302,14 @@ def main(argv: list[str] | None = None) -> int:
         reconfigure(errors="backslashreplace")
     sys.stdout.write(report)
     if args.output is not None:
-        args.output.write_text(report, encoding="utf-8")
+        try:
+            args.output.write_text(report, encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"pytest-queryguard compare: cannot write {args.output}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
     return 0
 
 

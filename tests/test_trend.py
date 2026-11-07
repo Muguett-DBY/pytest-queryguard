@@ -328,3 +328,27 @@ def test_unreadable_files_can_be_left_out(
     assert "cannot read" in captured.err
     assert trend.main(args) == 2
     assert trend.main([str(bad), "--skip-unreadable"]) == 2
+
+
+def test_a_malformed_file_can_be_left_out(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # a test entry without a statement count raised KeyError before, even
+    # with --skip-unreadable, the option the GitHub Action passes
+    paths = _write(tmp_path)
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"format": 1, "tests": {"t.py::a": {}}}))
+    args = [paths[0], str(bad), paths[2], "--format", "json"]
+    assert trend.main([*args, "--skip-unreadable"]) == 0
+    captured = capsys.readouterr()
+    assert [r["label"] for r in json.loads(captured.out)["runs"]] == ["r1", "r3"]
+    assert "not a pytest-queryguard JSON file" in captured.err
+    assert trend.main(args) == 2
+
+
+def test_an_output_file_that_cannot_be_written_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = _write(tmp_path)
+    assert trend.main([*paths, "--output", str(tmp_path)]) == 2
+    assert f"cannot write {tmp_path}" in capsys.readouterr().err

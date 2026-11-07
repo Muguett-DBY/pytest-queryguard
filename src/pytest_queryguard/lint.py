@@ -16,7 +16,8 @@ another function, a variable assigned twice, an option it does not know) is
 not reported. It looks at one function at a time.
 
 The exit status is 1 when something is reported, 0 when nothing is, and 2
-when a model module cannot be imported or the arguments are wrong.
+when a model module cannot be imported, the ``--output`` file cannot be written
+or the arguments are wrong.
 """
 
 from __future__ import annotations
@@ -1005,6 +1006,7 @@ def _ignored_lines(source: str) -> set[int]:
 
 
 def python_files(paths: Iterable[Path]) -> list[Path]:
+    """The files to check, each once (``app app/models.py`` names one twice)."""
     found: list[Path] = []
     for path in paths:
         if path.is_dir():
@@ -1017,7 +1019,14 @@ def python_files(paths: Iterable[Path]) -> list[Path]:
             found.append(path)
         else:
             raise LintError(f"{path} does not exist")
-    return found
+    seen: set[Path] = set()
+    unique = []
+    for path in found:
+        key = path.resolve()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 
 def display_path(path: Path) -> str:
@@ -1051,7 +1060,9 @@ def lint(paths: Iterable[Path], models: Models) -> Report:
         shown = display_path(path)
         report.files += 1
         try:
-            source = path.read_text(encoding="utf-8")
+            # as Python reads it: a BOM or a PEP 263 coding declaration
+            with tokenize.open(path) as handle:
+                source = handle.read()
             report.findings += lint_source(source, shown, models)
         except (
             OSError,
@@ -1236,7 +1247,14 @@ def main(argv: list[str] | None = None) -> int:
         reconfigure(errors="backslashreplace")
     sys.stdout.write(output)
     if args.output is not None:
-        args.output.write_text(output, encoding="utf-8")
+        try:
+            args.output.write_text(output, encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"pytest-queryguard lint: cannot write {args.output}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
     return 1 if report.findings else 0
 
 

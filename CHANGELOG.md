@@ -19,6 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stopped at the access under "stale ignores": the block may be for a
   finding after the access, which the test never reached. Its
   `queryguard_ignore` patterns were already left out the same way.
+- `python -m pytest_queryguard.compare` and `python -m pytest_queryguard.trend`
+  report a `--queryguard-json` file with a malformed test entry (no
+  statement count, a finding without a kind or label) as not a
+  pytest-queryguard JSON file, exit status 2, instead of a traceback; with
+  `--skip-unreadable`, as the GitHub Action runs the trend, such a file is
+  left out. The MCP server's `compare` tool returns it as a tool error. A
+  file with a UTF-8 byte order mark is read.
+- `compare`, `trend` and `lint` report an `--output` file that cannot be
+  written (a missing directory, a directory) with a message and exit
+  status 2 instead of a traceback.
+- `python -m pytest_queryguard.lint` reads a file with a byte order mark or a
+  PEP 263 coding declaration as Python does; it skipped it before. A file
+  named twice (`app app/models.py`) is checked once, not reported twice.
+- The MCP server no longer stops on a line that is not UTF-8 (now a parse
+  error) or on a request with a lone surrogate escape such as `"\ud800"`,
+  which it could not write back; `params` that are not an object get
+  `-32602 Invalid params` instead of `-32600 Invalid Request`.
 
 ## [0.8.0] - 2026-11-06
 

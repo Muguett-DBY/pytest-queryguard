@@ -306,3 +306,47 @@ def test_tool_list_fits_the_schema() -> None:
         schema = tool["inputSchema"]
         assert set(schema["required"]) <= set(schema["properties"])
         assert tool["description"].strip()
+
+
+def test_a_line_that_is_not_utf8_is_a_parse_error(server: Server) -> None:
+    # the server stopped with a UnicodeDecodeError before
+    stdin = server.process.stdin
+    assert stdin is not None
+    stdin.buffer.write(b'{"jsonrpc": "2.0", "id": 1, "method": "\xff"}\n')
+    stdin.flush()
+    response = server.receive()
+    assert response["id"] is None
+    assert response["error"]["code"] == -32700
+    assert server.request("ping")["result"] == {}
+
+
+def test_a_lone_surrogate_does_not_stop_the_server(server: Server) -> None:
+    # "\ud800" is valid JSON but cannot be written as UTF-8; the server stopped
+    # with a UnicodeEncodeError writing the error that quoted it
+    server.send('{"jsonrpc": "2.0", "id": 1, "method": "\\ud800"}')
+    response = server.receive()
+    assert response["error"]["code"] == -32601
+    assert response["error"]["message"] == "Method not found: \ud800"
+    server.send(
+        '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", '
+        '"params": {"name": "\\udfff"}}'
+    )
+    assert server.receive()["error"]["code"] == -32602
+    assert server.request("ping")["result"] == {}
+
+
+def test_params_that_are_not_an_object_are_invalid_params(server: Server) -> None:
+    server.send('{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": [1]}')
+    assert server.receive()["error"] == {"code": -32602, "message": "Invalid params"}
+
+
+def test_compare_reports_a_malformed_file_as_a_tool_error(
+    server: Server, project: Path
+) -> None:
+    good = {"format": 1, "complete": True, "tests": {}}
+    (project / "good.json").write_text(json.dumps(good), encoding="utf-8")
+    bad = {"format": 1, "tests": {"t.py::a": {"findings": []}}}
+    (project / "bad.json").write_text(json.dumps(bad), encoding="utf-8")
+    result = server.call("compare", {"base_json": "good.json", "head_json": "bad.json"})
+    assert result["isError"] is True
+    assert "not a pytest-queryguard JSON file" in result["content"][0]["text"]

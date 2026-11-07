@@ -107,7 +107,10 @@ over the network.
 The server answers `initialize`, `ping`, `tools/list` and `tools/call`, and
 ignores notifications. It supports the MCP protocol versions 2025-11-25,
 2025-06-18, 2025-03-26 and 2024-11-05, and answers a client that asks for
-another version with the newest. Tool results are one `text` content item
+another version with the newest. A line that is not JSON (or not UTF-8) is
+a parse error, `params` that are not an object are invalid params, and a
+batch (a JSON array, which MCP removed in 2025-06-18) is an invalid request;
+the server keeps serving after each. Tool results are one `text` content item
 holding a JSON object; a tool call with bad arguments returns `isError: true`
 with the reason, and an unknown tool is a JSON-RPC error. Requests are handled
 one at a time, and a running test session cannot be cancelled except by its

@@ -236,3 +236,47 @@ def test_the_report_is_ascii_so_any_console_prints_it() -> None:
     base = _doc({f"t.py::t{n:02}": {"statements": 1} for n in range(30)})
     head = _doc({f"t.py::t{n:02}": {"statements": 2} for n in range(30)})
     assert compare.markdown(compare.compare(base, head), rows=2).isascii()
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {},  # no statement count
+        [],
+        {"statements": "12"},
+        {"statements": True},
+        {"statements": 1, "findings": {}},
+        {"statements": 1, "findings": [{"kind": "relationship-load"}]},
+        {"statements": 1, "findings": [{"kind": "k", "label": ["a"]}]},
+        {"statements": 1, "findings": [{"kind": "k", "label": "a", "count": "2"}]},
+        {"statements": 1, "findings": [{"kind": "k", "label": "a", "file": [1]}]},
+    ],
+)
+def test_a_malformed_test_entry_is_an_unreadable_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], entry: Any
+) -> None:
+    # a traceback before; the trend in the action could not skip the file
+    base, bad = tmp_path / "b.json", tmp_path / "bad.json"
+    base.write_text(json.dumps(BASE))
+    bad.write_text(json.dumps({"format": 1, "tests": {"t.py::a": entry}}))
+    assert compare.main([str(base), str(bad)]) == 2
+    err = capsys.readouterr().err
+    assert "not a pytest-queryguard JSON file" in err
+    assert "t.py::a" in err
+
+
+def test_a_file_with_a_byte_order_mark_is_read(tmp_path: Path) -> None:
+    # Windows PowerShell 5 writes UTF-8 with a BOM
+    path = tmp_path / "bom.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(BASE).encode())
+    assert compare.load(path)["tests"] == BASE["tests"]
+
+
+def test_an_output_file_that_cannot_be_written_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = tmp_path / "b.json"
+    base.write_text(json.dumps(BASE))
+    out = tmp_path / "missing" / "r.md"
+    assert compare.main([str(base), str(base), "--output", str(out)]) == 2
+    assert f"cannot write {out}" in capsys.readouterr().err

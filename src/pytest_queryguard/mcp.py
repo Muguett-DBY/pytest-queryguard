@@ -393,8 +393,10 @@ def handle(message: Any) -> dict[str, Any] | None:
     method = message.get("method")
     params = message.get("params") or {}
     try:
-        if not isinstance(method, str) or not isinstance(params, dict):
+        if not isinstance(method, str):
             raise _RpcError(-32600, "Invalid Request")
+        if not isinstance(params, dict):  # MCP's params are always an object
+            raise _RpcError(-32602, "Invalid params")
         if method == "initialize":
             asked = params.get("protocolVersion")
             result: dict[str, Any] = {
@@ -427,13 +429,15 @@ def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     }
 
 
-def serve(stdin: IO[str], stdout: IO[str]) -> None:
+def serve(stdin: IO[bytes], stdout: IO[bytes]) -> None:
+    """Answer the JSON-RPC messages of ``stdin``, one per line, on ``stdout``."""
     for line in stdin:
         if not line.strip():
             continue
         try:
-            message = json.loads(line)
-        except ValueError:
+            # a line that is not UTF-8 is one bad message, not the end of the server
+            message = json.loads(line.decode("utf-8"))
+        except ValueError:  # UnicodeDecodeError included
             response: dict[str, Any] | None = _error(None, -32700, "Parse error")
         else:
             try:
@@ -442,13 +446,15 @@ def serve(stdin: IO[str], stdout: IO[str]) -> None:
                 request_id = message.get("id") if isinstance(message, dict) else None
                 response = _error(request_id, -32603, f"Internal error: {exc}")
         if response is not None:
-            stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
+            # ASCII: a lone surrogate ("\ud800" is valid JSON) cannot be
+            # encoded as UTF-8, but its escape can be written
+            stdout.write(json.dumps(response).encode("ascii") + b"\n")
             stdout.flush()
 
 
 def main() -> int:
-    stdin = open(sys.stdin.fileno(), encoding="utf-8", closefd=False)  # noqa: SIM115
-    stdout = open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False)  # noqa: SIM115
+    stdin = open(sys.stdin.fileno(), "rb", closefd=False)  # noqa: SIM115
+    stdout = open(sys.stdout.fileno(), "wb", closefd=False)  # noqa: SIM115
     with stdin, stdout:
         serve(stdin, stdout)
     return 0

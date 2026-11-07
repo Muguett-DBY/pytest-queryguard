@@ -193,7 +193,8 @@ tests whose node id contains the pattern, or matches it when it is a glob;
 sparklines use Unicode blocks; `--ascii` prints `_-~=+*#@` instead, and the
 console output falls back to it by itself when the console cannot print the
 blocks (a Windows console with cp1252). The exit status is 2 when a file
-cannot be read (`--skip-unreadable` leaves it out instead), otherwise 0.
+cannot be read or is not a `--queryguard-json` file (`--skip-unreadable`
+leaves it out instead) or the `--output` file cannot be written, otherwise 0.
 
 A typical rollout: run once with `fail: "false"` to see the alerts, create a
 [baseline](baseline.md) for what you cannot fix yet, then switch to
