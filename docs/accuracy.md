@@ -622,8 +622,87 @@ compares the two runs' JUnit XML and reads the plugin's JSON file:
 - the extra wall time of the run with the plugin (one run each, so noisy).
 
 The workflow is started by hand only, never on pushes or pull requests,
-because it installs and runs third-party code. The results will be published
-here after the first run.
+because it installs and runs third-party code. Findings never fail a job; a
+job fails when the plugin broke something or when the project's tests did not
+run without the plugin either (a harness problem), and a last job puts one
+table of all projects on the run's page.
+
+### Results of 2026-11-07
+
+Plugin `main` at 4e1a888 (0.8.0 plus the unreleased changes), runs
+[42389509168](https://github.com/MaciejZiel/pytest-queryguard/actions/runs/42389509168)
+(four projects; MLflow and SQLAdmin stopped at collection under SQLAlchemy
+2.1, since capped below 2.1) and
+[42390905254](https://github.com/MaciejZiel/pytest-queryguard/actions/runs/42390905254)
+(MLflow and SQLAdmin), on GitHub's `ubuntu-latest`. Every finding was read
+against the project's code at its tag.
+
+| project | tag (commit) | Python, SQLAlchemy | tests without the plugin (pass/fail/skip) | changed by the plugin | internal warnings/errors | findings | false | debatable |
+|---|---|---|---|---|---|---|---|---|
+| SQLModel | 0.0.24 (de78b8c) | 3.12, 2.0.57 | 220/35/3 | 0 | 0/0 | 9 | 9 | 0 |
+| full-stack FastAPI template | 0.8.0 (2eb8f5b) | 3.12, 2.0.35, PostgreSQL 17 | 53/2/0 | 0 | 0/0 | 0 | 0 | 0 |
+| MLflow tracking store | v2.22.0 (fd2d986) | 3.11, 2.0.57 | 219/1/16 | 0 | 0/0 | 179 | 78 | 54 |
+| SQLAdmin | 0.20.1 (ab2d48a) | 3.12, 2.0.57 | 177/2/3 | 0 | 0/0 | 51 | 16 | 1 |
+| Advanced Alchemy (unit tests) | v1.4.4 (6cc26ef) | 3.12, 2.0.41 | 564/0/3 | 0 | 0/0 | 0 | 0 | 0 |
+| FastAPI Users SQLAlchemy | v7.0.0 (6397ace) | 3.12, 2.0.57 | 6/0/0 | 0 | 0/0 | 0 | 0 | 0 |
+
+The failures without the plugin come from the projects' unpinned test
+dependencies (SQLModel's OpenAPI snapshots, the template's `called_once_with`
+on a newer `mock`); they fail the same way with the plugin. The plugin
+changed no test's outcome, raised no internal warning or error, and its wall
+time was within the noise of one run each (from −28 % to +4 %).
+
+What the findings were:
+
+- **SQLModel, 9 relationship-loads, all false.** The many-to-many tutorials
+  create three heroes, commit, refresh each and print each hero's teams on a
+  line of its own. No query loaded those objects, and all parents of unknown
+  origin counted as one group. Fixed: such parents are grouped by the line
+  that read the relationship (scenario `clean_132`). The findings were also
+  located in SQLModel's `Session.execute` override, an editable install, not
+  in the tutorial; methods of a `Session` subclass are no longer call sites
+  (scenario `clean_131`). With both fixes the branch's run
+  [42393464145](https://github.com/MaciejZiel/pytest-queryguard/actions/runs/42393464145)
+  has no SQLModel finding and the same findings elsewhere.
+- **MLflow, 40 relationship-loads, true.** `search_traces` loads a page of
+  traces and `to_mlflow_entity()` reads each trace's `tags` and
+  `request_metadata` lazily (`sqlalchemy_store.py:1744`,
+  `dbmodels/models.py:693-694`): two queries per trace.
+- **MLflow, 7 unused-columns, true.** `_get_deleted_runs` loads whole runs to
+  return their ids, `_log_inputs_impl` loads whole datasets (with their
+  schema and profile) to read name, digest and id; one is in a test.
+- **MLflow, 132 findings (113 repeated-statements, 19 relationship-loads)
+  across as many Sessions as statements.** Every store method opens its own
+  Session, and the tests call the store many times. About 54 come from a loop
+  in the test (`test_log_batch_limits` calls `get_metric_history` for 1000
+  keys; tests seed traces and runs in loops): the shape of
+  `bug_47_session_per_item`, an N+1 of the test's own loop, counted as
+  debatable. About 78 come from calls on separate lines with no loop
+  (`test_set_experiment_tag`): false, a known limit (scenario `clean_133`):
+  the parents are grouped by the query line in the shared `_get_experiment()`,
+  not by the lines that called it, and by default the test is one unit. The
+  split is by reading the first stack of each finding, so approximate.
+  `queryguard_scope = session` removes all 132.
+- **SQLAdmin, 5 relationship-loads, true.** The list and export pages read a
+  relationship that the query did not load for each row through
+  `_lazyload_prop`, which opens a new Session per row (`models.py:883`,
+  `887`); "delete selected" deletes each row in a Session of its own and
+  loads its `complaints` for the cascade.
+- **SQLAdmin, 29 unused-eager-loads, true (experimental kind).** The export
+  loads every relationship of the list view with `selectinload` but writes
+  only `name` and `status`; the edit form loads relationships the request does
+  not use. 15 of them, in the async tests, have no location
+  (`<unknown location>`), not explained yet.
+- **SQLAdmin, 16 false and 1 debatable.** The tests post several forms in a
+  row; each request loads the form's options (`SELECT addresses.id ... FROM
+  addresses`) and the edited user's relationships again: separate requests
+  counted as one unit by default ([Tests with several sessions or
+  requests](several-sessions.md)). The options query runs through
+  `anyio.to_thread.run_sync(session.execute, stmt)`, so it has no call site
+  (a documented [limitation](limitations.md)). The debatable one mixes the
+  per-row deletes with separate page requests.
+
+The true findings were not reported to the projects.
 
 ## Known limits
 

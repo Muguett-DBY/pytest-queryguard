@@ -59,14 +59,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The relationship-load rule groups the parents whose query is unknown
+  (objects the test created, loaded before the test body or read by two
+  queries) by the line that read the relationship, as it groups the others by
+  the line of their query. Code that creates a few objects and reads each
+  one's relationship on a line of its own is no longer an N+1; a loop over
+  them still is, and so is a loop over such objects mixed with the rows of a
+  query. All 9 findings of the real-world run in SQLModel's tutorials were
+  of this kind. Strict mode's report site follows the same grouping.
 - A method of a `Session` or `AsyncSession` subclass outside
   `site-packages` (SQLModel's `Session` in an editable install, an
   application's own override of `execute()`) is no longer the call site of
   the queries that go through it; the line that called the session is. Every
-  query had the override's `super().execute()` line as call site, so
-  single-object lookups and refreshes at different lines were grouped as
-  one query line and reported as a relationship-load (9 false findings in
-  SQLModel's tutorials, found by the real-world workflow).
+  query had the override's `super().execute()` line as call site: findings
+  pointed there (all of SQLModel's in the real-world workflow), and
+  single-object lookups at different lines were grouped as one query line
+  and reported as a relationship-load.
 - In strict mode, an N+1 whose `NPlusOneDetected` a library caught and
   replaced with its own error (Pydantic's `from_attributes`, FastAPI's
   `response_model`), or that the code swallowed before the test failed on

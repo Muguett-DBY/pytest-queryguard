@@ -1,22 +1,18 @@
 """CLEAN: a ``Session`` subclass whose ``execute`` override every query goes through.
 
-From SQLModel 0.0.24 (``sqlmodel/orm/session.py``, its tutorial
-``docs_src/tutorial/many_to_many/tutorial001.py``), seen by
+From SQLModel 0.0.24 (``sqlmodel/orm/session.py``), seen by
 ``.github/workflows/realworld.yml``: SQLModel's ``Session`` overrides
-``execute`` and adds ``exec``, both calling ``super().execute()``. The tutorial
-refreshes three new heroes, one per line, and prints each hero's teams. Three
-lazy loads of ``Hero.teams``, but each for the one parent a line of its own
-refreshed: no loop over rows (see ``clean_93_two_single_object_lookups``).
-Here three customers are looked up at three lines, through ``get()``,
-``exec()`` and ``execute()``, which all go through the override, as
-``refresh()`` does.
+``execute`` and adds ``exec``, both calling ``super().execute()``. In
+SQLModel's own suite the package is not in ``site-packages`` (an editable
+install), and every finding in its tutorials was located at that
+``return super().execute(...)`` line instead of the tutorial's. The same holds
+for any application that subclasses ``Session`` in its own code.
 
-In SQLModel's own test suite its package is not in ``site-packages`` (an
-editable install), and the same holds for any application that subclasses
-``Session`` in its own code. The plugin took the override's
-``return super().execute(...)`` line for the line that loaded each parent, so
-the three refreshes looked like one query line returning three rows, and
-reported them as a relationship-load.
+The line of a query is also how the relationship-load rule groups parents:
+here three customers are looked up at three lines, through ``get()``,
+``exec()`` and ``execute()``, each reading its orders. No loop over rows (see
+``clean_93_two_single_object_lookups``), but with the override as the line of
+every query the three looked like one query returning three rows.
 """
 
 from typing import Any
