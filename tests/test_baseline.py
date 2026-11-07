@@ -366,7 +366,15 @@ def test_no_baseline_means_no_changes(project: pytest.Pytester) -> None:
     project.makepyfile(test_a=ONE_LOOP)
     result = project.runpytest()
     result.assert_outcomes(failed=1)
-    result.stdout.no_fnmatch_line("*queryguard*baseline*")
+    # The temp path and the test's own name may contain "baseline": blank
+    # out the test directory and the test name before looking.
+    root = str(project.path)
+    text = [line.replace(root, "<root>") for line in result.outlines]
+    assert not [
+        line
+        for line in text
+        if "baseline" in line.replace("test_no_baseline_means_no_changes", "")
+    ]
 
 
 def test_a_missing_file_is_a_usage_error(project: pytest.Pytester) -> None:
