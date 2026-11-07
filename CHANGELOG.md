@@ -168,6 +168,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- [Comparison](docs/comparison.md#head-to-head-in-github-actions) and
+  [accuracy](docs/accuracy.md#comparison-with-other-tools): new numbers
+  from the head-to-head workflow, on the 252 scenarios of the corpus, for
+  queryspy 0.6.0, pytest-querycount 0.4.0, n-plus-one-sniffer and nplusone
+  1.0.0 (which does not import on SQLAlchemy 2.1, and is also run on 2.0),
+  with precision and recall
+  per kind and the overhead of each tool on one runner.
+
 - API-freeze audit before 1.0: the [stability policy](docs/stability.md)
   now states the naming, value and unit conventions of the public options
   and files (every time in seconds; `0` turns a threshold off in an ini
@@ -205,6 +213,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evidence.
 
 ### Internal
+
+- `.github/workflows/head-to-head.yml` (started by hand and monthly) runs
+  the accuracy corpus under queryspy, pytest-querycount, n-plus-one-sniffer
+  and nplusone, each pinned and set up as its documentation says, one job
+  per tool, plus the per-statement and suite overhead of every tool on one
+  runner, and puts the results together as a Markdown summary and a JSON
+  artifact (`scripts/head_to_head/`, tested in `tests/test_head_to_head.py`).
+  A test that fails for another reason than the tool's report counts as an
+  error, never as a pass. `scripts/compare/bench_micro.py` also measures
+  n-plus-one-sniffer and nplusone.
 
 - `tests/test_public_api.py` also snapshots the keys and format numbers of
   the files the plugin writes (`--queryguard-json`, baseline, budget file,
