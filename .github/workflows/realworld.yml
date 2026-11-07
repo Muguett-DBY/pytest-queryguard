@@ -11,6 +11,15 @@ name: Real-world projects
 # The harness (the project list and the scripts) always comes from the commit
 # the run was started on; only the plugin that is installed comes from the
 # plugin-ref input, so a release older than this workflow can be measured too.
+# The select job resolves plugin-ref to a commit SHA once, and every project
+# installs that commit: a branch deleted or pushed to during the run (a pull
+# request merged) does not break or change the later jobs.
+#
+# Findings never fail a job: they are what is measured. A project's job fails
+# when the plugin broke something (a test, an internal warning or error) or
+# when the harness did not run the project's tests (see
+# scripts/realworld_summary.py); the report job puts one table of all projects
+# on the run's summary page.
 on:
   workflow_dispatch:
     inputs:
@@ -32,10 +41,25 @@ jobs:
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      plugin-sha: ${{ steps.plugin.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Resolve the plugin ref to a commit
+        id: plugin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.plugin-ref }}
+        run: |
+          if [ -z "$REF" ]; then
+            sha=$GITHUB_SHA
+          elif ! sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$REF" --jq .sha); then
+            echo "::error::plugin-ref '$REF' is not a branch, tag or commit of $GITHUB_REPOSITORY"
+            exit 1
+          fi
+          echo "plugin-ref '${REF:-the commit of the run}' is $sha" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - name: Select the projects
         id: matrix
         env:
@@ -70,7 +94,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.plugin-ref }}
+          ref: ${{ needs.select.outputs.plugin-sha }}
           path: plugin
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,6 +193,9 @@ jobs:
             -W "always::pytest_queryguard.QueryGuardInternalWarning" \
             --queryguard-json="$OUT/queryguard.json" \
             --queryguard-sarif="$OUT/queryguard.sarif"
+      # Exit status 1: the plugin broke something; 2: the project's tests did
+      # not run without the plugin either (the harness). Findings are never a
+      # failure.
       - name: Summary
         if: always() && steps.runs.outcome == 'success'
         env:
@@ -177,11 +204,18 @@ jobs:
         run: |
           set +e
           python -I "$GITHUB_WORKSPACE/harness/scripts/realworld_summary.py" \
-            --dir "$OUT" --project "$PROJECT" --ref "$REF" > "$OUT/summary.md"
+            --dir "$OUT" --project "$PROJECT" --ref "$REF" \
+            --json-out "$OUT/summary.json" > "$OUT/summary.md"
           code=$?
           set -e
           cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
           cat "$OUT/summary.md"
+          case $code in
+            0) ;;
+            1) echo "::error::$PROJECT: the plugin broke something, see Problems in the summary" ;;
+            2) echo "::error::$PROJECT: the tests did not run without the plugin either: a harness problem, see the summary" ;;
+            *) echo "::error::$PROJECT: realworld_summary.py failed ($code)" ;;
+          esac
           exit "$code"
       - name: Upload the outputs
         if: always()
@@ -191,3 +225,40 @@ jobs:
           path: out/
           if-no-files-found: ignore
           retention-days: 30
+
+  report:
+    name: Report
+    needs: [select, project]
+    if: always() && needs.select.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: realworld-*
+          path: results
+      - name: One table for all projects
+        env:
+          PLUGIN_SHA: ${{ needs.select.outputs.plugin-sha }}
+          MATRIX: ${{ needs.select.outputs.matrix }}
+        run: |
+          {
+            echo "## Real-world projects, plugin at \`$PLUGIN_SHA\`"
+            echo
+            files=()
+            for name in $(jq -r '.include[].name' <<< "$MATRIX"); do
+              file="results/realworld-$name/summary.json"
+              if [ -f "$file" ]; then
+                files+=("$file")
+              else
+                echo "- $name: no summary (the job stopped before its tests ran; see its log)"
+              fi
+            done
+            echo
+            if [ "${#files[@]}" -gt 0 ]; then
+              python3 -I scripts/realworld_summary.py --table "${files[@]}"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -30,6 +30,12 @@ def summary() -> ModuleType:
     return module
 
 
+def summarize(summary: ModuleType, *args: Any, **kwargs: Any) -> tuple[str, list[str]]:
+    """The report and the plugin's problems."""
+    result = summary.summarize(*args, **kwargs)
+    return result.report, result.problems
+
+
 def junit(*cases: tuple[str, str]) -> str:
     """JUnit XML as pytest writes it; each case is (name, outcome)."""
     body = []
@@ -118,12 +124,12 @@ def test_a_clean_run_reports_findings_and_overhead(
         }
     )
     write_runs(tmp_path, cases, cases, counts=counts, probe=[])
-    report, problems = summary.summarize(tmp_path, "demo", "org/demo@v1")
+    report, problems = summarize(summary, tmp_path, "demo", "org/demo@v1")
 
     assert problems == []
     assert report.startswith("## demo @ `org/demo@v1`")
-    assert "| passed | 2 | 2 |" in report
-    assert "| skipped | 1 | 1 |" in report
+    assert "| passed | 2 | 2 (+0) |" in report
+    assert "| skipped | 1 | 1 (+0) |" in report
     assert "Overhead: **+25.0 %**" in report
     assert "### Tests that pass only without the plugin: 0" in report
     assert "### Internal warnings: 0, internal errors: 0" in report
@@ -143,7 +149,7 @@ def test_samples_are_limited_per_kind(summary: ModuleType, tmp_path: Path) -> No
         {"t::a": [finding("repeated-statement", line) for line in range(1, 9)]}
     )
     write_runs(tmp_path, cases, cases, counts=counts, probe=[])
-    report, _ = summary.summarize(tmp_path, "demo", "v1", samples=3)
+    report, _ = summarize(summary, tmp_path, "demo", "v1", samples=3)
     assert report.count("- `app/orders.py:") == 3
     assert "| `repeated-statement` | 8 | 1 |" in report
 
@@ -158,7 +164,7 @@ def test_a_test_the_plugin_breaks_is_a_problem(
         plugin_meta={"exit": 1, "seconds": 11},
         counts=counts_file({}),
     )
-    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    report, problems = summarize(summary, tmp_path, "demo", "v1")
 
     assert problems == ["2 test(s) pass only without the plugin"]
     assert "### Tests that pass only without the plugin: 2" in report
@@ -179,7 +185,7 @@ def test_a_teardown_error_counts_as_a_failure(
         junit(("test_a", "passed"), ("test_a", "error")),
         counts=counts_file({}),
     )
-    _, problems = summary.summarize(tmp_path, "demo", "v1")
+    _, problems = summarize(summary, tmp_path, "demo", "v1")
     assert problems == ["1 test(s) pass only without the plugin"]
 
 
@@ -197,7 +203,7 @@ def test_internal_warnings_and_errors_are_problems(
     (tmp_path / "probe.jsonl").write_text(
         (tmp_path / "probe.jsonl").read_text() + "not json\n\n", encoding="utf-8"
     )
-    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    report, problems = summarize(summary, tmp_path, "demo", "v1")
 
     assert problems == ["3 internal warning(s), 1 internal error(s)"]
     assert "### Internal warnings: 3, internal errors: 1" in report
@@ -215,7 +221,7 @@ def test_missing_and_incomplete_outputs_of_the_plugin_run(
         None,
         plugin_meta={"exit": 124, "seconds": 720},
     )
-    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    report, problems = summarize(summary, tmp_path, "demo", "v1")
     assert problems == [
         "the run with the plugin left no JUnit XML",
         "the run with the plugin ended with 124 (timed out)",
@@ -228,13 +234,13 @@ def test_missing_and_incomplete_outputs_of_the_plugin_run(
     other.mkdir()
     cases = junit(("test_a", "passed"))
     write_runs(other, cases, cases, counts=counts_file({}, complete=False))
-    _, problems = summary.summarize(other, "demo", "v1")
+    _, problems = summarize(summary, other, "demo", "v1")
     assert problems == ["the queryguard JSON says the run is incomplete"]
 
     third = tmp_path / "third"
     third.mkdir()
     write_runs(third, cases, cases)
-    _, problems = summary.summarize(third, "demo", "v1")
+    _, problems = summarize(summary, third, "demo", "v1")
     assert problems == ["the run with the plugin wrote no queryguard JSON"]
 
 
@@ -247,7 +253,7 @@ def test_a_test_missing_from_the_plugin_run_is_a_problem(
         junit(("test_a", "passed")),
         counts=counts_file({}),
     )
-    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    report, problems = summarize(summary, tmp_path, "demo", "v1")
     assert problems == ["1 test(s) did not run with the plugin"]
     assert "for example `tests.test_app::test_b`" in report
 
@@ -263,10 +269,36 @@ def test_a_baseline_without_junit_is_not_the_plugins_problem(
         plugin_meta={"exit": 4, "seconds": 1},
         counts=counts_file({}),
     )
-    report, problems = summary.summarize(tmp_path, "demo", "v1")
-    assert problems == []
-    assert "The run without the plugin left no JUnit XML." in report
-    assert "| exit status | 4 (usage error) | 4 (usage error) |" in report
+    result = summary.summarize(tmp_path, "demo", "v1")
+    assert result.problems == []
+    assert "The run without the plugin left no JUnit XML." in result.report
+    assert "| exit status | 4 (usage error) | 4 (usage error) |" in result.report
+    (problem,) = result.harness
+    assert problem.startswith("the tests did not run without the plugin (4 (usage")
+    assert "### Harness problems" in result.report
+
+
+def test_a_usage_error_in_both_runs_is_a_harness_problem_only(
+    summary: ModuleType, tmp_path: Path
+) -> None:
+    """The first run of the full-stack template: a wrong test path.
+
+    pytest stops with a usage error in both runs and the plugin's JSON says the
+    run is incomplete; that is the harness's problem, not the plugin's.
+    """
+    empty = junit()
+    write_runs(
+        tmp_path,
+        empty,
+        empty,
+        baseline_meta={"exit": 4, "seconds": 0.2},
+        plugin_meta={"exit": 4, "seconds": 0.4},
+        counts=counts_file({}, complete=False),
+    )
+    result = summary.summarize(tmp_path, "demo", "v1")
+    assert result.problems == []
+    assert len(result.harness) == 1
+    assert summary.main(["--dir", str(tmp_path), "--project", "p", "--ref", "r"]) == 2
 
 
 def test_unreadable_files_do_not_crash(summary: ModuleType, tmp_path: Path) -> None:
@@ -274,7 +306,7 @@ def test_unreadable_files_do_not_crash(summary: ModuleType, tmp_path: Path) -> N
     (tmp_path / "baseline.meta.json").write_text('{"exit": "x"}', encoding="utf-8")
     (tmp_path / "plugin.meta.json").write_text("[1]", encoding="utf-8")
     (tmp_path / "queryguard.json").write_text("[]", encoding="utf-8")
-    report, _ = summary.summarize(tmp_path, "demo", "v1")
+    report, _ = summarize(summary, tmp_path, "demo", "v1")
     assert "| exit status | unknown | unknown |" in report
     assert "| wall time | unknown | unknown |" in report
 
@@ -290,6 +322,86 @@ def test_main_exit_status(
     assert summary.main(["--dir", str(tmp_path), "--project", "p", "--ref", "r"]) == 1
 
 
+def test_findings_alone_exit_zero(
+    summary: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cases = junit(("test_a", "passed"))
+    counts = counts_file({"t::a": [finding("relationship-load", 3)]})
+    write_runs(tmp_path, cases, cases, counts=counts)
+    assert summary.main(["--dir", str(tmp_path), "--project", "p", "--ref", "r"]) == 0
+    assert "### Findings: 1" in capsys.readouterr().out
+
+
+def test_the_json_numbers_and_the_table(
+    summary: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    good = tmp_path / "good"
+    good.mkdir()
+    write_runs(
+        good,
+        junit(("test_a", "passed"), ("test_b", "passed"), ("test_c", "skipped")),
+        junit(("test_a", "passed"), ("test_b", "failed"), ("test_c", "skipped")),
+        plugin_meta={"exit": 1, "seconds": 12.5},
+        counts=counts_file(
+            {
+                "t::a": [finding("relationship-load", 3), finding("unused-columns", 4)],
+                "t::b": [finding("relationship-load", 5)],
+            }
+        ),
+        probe=[{"event": "internal-warning", "message": "x", "nodeid": "t::a"}],
+    )
+    (good / "versions.txt").write_text(
+        "3.12.1 (main)\nsqlalchemy 2.0.35\npytest 9.2.0\npytest-queryguard 0.8.0\n",
+        encoding="utf-8",
+    )
+    out = good / "summary.json"
+    args = ["--dir", str(good), "--project", "good", "--ref", "o/g@1"]
+    assert summary.main([*args, "--json-out", str(out)]) == 1
+    capsys.readouterr()
+    stats = json.loads(out.read_text())
+    assert stats["baseline"] == {
+        "exit": 0,
+        "seconds": 10,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 1,
+    }
+    assert stats["findings"] == {"relationship-load": 2, "unused-columns": 1}
+    assert stats["broken"] == 1
+    assert stats["internal_warnings"] == 1
+    assert stats["overhead_pct"] == 25.0
+    assert stats["plugin_version"] == "0.8.0"
+
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    write_runs(bad, None, None, baseline_meta={"exit": 4, "seconds": 1})
+    bad_out = bad / "summary.json"
+    args = ["--dir", str(bad), "--project", "bad", "--ref", "o/b@1"]
+    assert summary.main([*args, "--json-out", str(bad_out)]) == 2
+    capsys.readouterr()
+
+    assert summary.main(["--table", str(out), str(bad_out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("| project | plugin |")
+    assert lines[2] == (
+        "| good | 0.8.0 | 2/0/1 | -1 / +1 | 1 | relationship-load 2, unused-columns 1 "
+        "| 1/0 | +25.0 % | plugin problem |"
+    )
+    assert lines[3] == "| bad | ? | ?/?/? | ? | ? | ? | 0/0 | ? | harness problem |"
+
+
+def test_the_passed_counts_show_the_delta(summary: ModuleType, tmp_path: Path) -> None:
+    write_runs(
+        tmp_path,
+        junit(("test_a", "passed"), ("test_b", "passed")),
+        junit(("test_a", "passed"), ("test_b", "failed")),
+        counts=counts_file({}),
+    )
+    report, _ = summarize(summary, tmp_path, "demo", "v1")
+    assert "| passed | 2 | 1 (-1) |" in report
+    assert "| failed | 0 | 1 (+1) |" in report
+
+
 def test_a_test_skipped_only_with_the_plugin_is_a_problem(
     summary: ModuleType, tmp_path: Path
 ) -> None:
@@ -299,7 +411,7 @@ def test_a_test_skipped_only_with_the_plugin_is_a_problem(
         junit(("test_a", "skipped"), ("test_new", "passed")),
         counts=counts_file({}),
     )
-    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    report, problems = summarize(summary, tmp_path, "demo", "v1")
     assert problems == ["1 test(s) pass only without the plugin"]
     assert "- `tests.test_app::test_a`: skipped: no" in report
     assert "1 test(s) ran only with the plugin, for example" in report
@@ -321,7 +433,7 @@ def test_an_unusable_json_file_is_a_problem(
     cases = junit(("test_a", "passed"))
     write_runs(tmp_path, cases, cases)
     (tmp_path / "queryguard.json").write_text(content, encoding="utf-8")
-    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    report, problems = summarize(summary, tmp_path, "demo", "v1")
     assert "Unusable queryguard JSON file" in report
     (problem,) = problems
     assert problem.startswith("the queryguard JSON file is unusable")
@@ -334,7 +446,7 @@ def test_odd_entries_in_a_valid_file_are_skipped(
     counts = counts_file({"t::a": ["junk", finding("relationship-load", 3)]})
     counts["tests"]["t::a"]["statements"] = "many"
     write_runs(tmp_path, cases, cases, counts=counts)
-    report, problems = summary.summarize(tmp_path, "demo", "v1")
+    report, problems = summarize(summary, tmp_path, "demo", "v1")
     assert problems == []
     assert "### Findings: 1" in report
     assert "0 statements" in report

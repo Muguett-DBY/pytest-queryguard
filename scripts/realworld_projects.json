@@ -33,7 +33,7 @@
       "workdir": "backend",
       "install": "uv sync --frozen",
       "prepare": "docker exec realworld-postgres psql -U postgres -d postgres -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app' && python app/backend_pre_start.py && alembic upgrade head && python app/initial_data.py",
-      "pytest_args": "tests",
+      "pytest_args": "app/tests",
       "postgres": true,
       "env": {
         "POSTGRES_SERVER": "localhost",
