@@ -163,14 +163,25 @@ def build(
     else:
         lines += [
             (
-                f"Best of {overhead.get('rounds')} runs per tool, all tools on the same runner, "
-                "interleaved; added time against the same run with no tool."
+                f"{overhead.get('rounds')} rounds per tool, all tools on the same runner, "
+                "interleaved; added time against the same run with no tool. Per statement: the "
+                "best round; the suite: the best and the median round."
             ),
             "",
             *common.overhead_table(overhead),
         ]
         if overhead.get("failed"):
-            lines += ["", "Failed: " + "; ".join(overhead["failed"])]
+            # the last line of each error: the whole output is in the JSON
+            lines += [
+                "",
+                "Failed: "
+                + "; ".join(
+                    f
+                    if "\n" not in f
+                    else f"{f.split(':', 1)[0]}: {common.first_line(f)}"
+                    for f in overhead["failed"]
+                ),
+            ]
         if overhead.get("versions"):
             lines += ["", "```", json.dumps(overhead["versions"], indent=1), "```"]
     return "\n".join(lines) + "\n", payload

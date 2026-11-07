@@ -57,7 +57,9 @@ def pytest_collection_modifyitems(items):
         item.add_marker(pytest.mark.no_n_plus_one)
 """
 SUITE_CONFTEST = {
-    "querycount": MARK_ALL,
+    # its default threshold (2) fails the suite, which looks up one parent
+    # twice per test; 3, as in docs/performance.md
+    "querycount": MARK_ALL.replace("no_n_plus_one", "no_n_plus_one(threshold=3)"),
     "sniffer": MARK_ALL
     + """
 @pytest.fixture

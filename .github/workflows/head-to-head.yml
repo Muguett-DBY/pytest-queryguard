@@ -70,7 +70,7 @@ jobs:
 
   overhead:
     runs-on: ubuntu-latest
-    # six environments, then 9 rounds of six micro runs and six 300-test suites
+    # six environments, then 15 rounds of six micro runs and six 300-test suites
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,7 +84,7 @@ jobs:
         run: >-
           uv run --no-sync python scripts/head_to_head/overhead.py
           --queryguard . --python "$PYTHON_VERSION" --work "$RUNNER_TEMP/h2h"
-          --out results/overhead.json
+          --rounds 15 --out results/overhead.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: overhead

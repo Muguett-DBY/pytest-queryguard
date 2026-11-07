@@ -442,17 +442,22 @@ def overhead_table(overhead: dict[str, object]) -> list[str]:
     labels = {"queryguard": "pytest-queryguard"}
     head = [labels.get(t, TOOLS[t].label) for t in tools]
     lines = ["| | " + " | ".join(head) + " |", "|---|" + "---|" * len(tools)]
-    off_suite = suite.get("off")  # type: ignore[union-attr]
-    if off_suite:
+    tests = overhead.get("tests", "?")
+    for key, how in (("suite", "best"), ("suite_median", "median")):
+        runs = overhead.get(key) or {}
+        off_suite = runs.get("off")  # type: ignore[union-attr]
+        if not off_suite:
+            continue
         cells = []
         for t in tools:
-            v = suite.get(t)  # type: ignore[union-attr]
+            v = runs.get(t)  # type: ignore[union-attr]
             cells.append(
                 "failed" if v is None else f"{(v - off_suite) / off_suite:+.1%}"
             )
-        tests = overhead.get("tests", "?")
         lines.append(
-            f"| {tests}-test suite, added wall time | " + " | ".join(cells) + " |"
+            f"| {tests}-test suite, added wall time ({how}) | "
+            + " | ".join(cells)
+            + " |"
         )
     for loop, label in (
         ("core", "Core `select`"),

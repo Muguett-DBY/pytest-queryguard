@@ -233,7 +233,7 @@ def test_aggregate(tmp_path):
         in (markdown)
     )
     assert "every plugin off: every scenario passes" in markdown
-    assert "| 300-test suite, added wall time | +5.0% |" in markdown
+    assert "| 300-test suite, added wall time (best) | +5.0% |" in markdown
     assert "| lazy load, added per statement | +3.5 us |" in markdown
     assert "Failed: sniffer: install failed" in markdown
     assert "x / y" in markdown  # a | in a detail cannot break the list
