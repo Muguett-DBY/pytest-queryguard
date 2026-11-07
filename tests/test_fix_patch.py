@@ -1949,7 +1949,7 @@ def test_git_quotes_a_name_as_git_does() -> None:
     byte = "\\355\\263\\251" if sys.platform == "win32" else "\\351"
     assert fixpatch.git_path("b/", "caf\udce9/v.py") == f'"b/caf{byte}/v.py"'
     # once quoted, every byte that is not printable ASCII is escaped
-    assert fixpatch.git_path("a/", "ż\udce9.py") == '"a/\\305\\274\\351.py"'
+    assert fixpatch.git_path("a/", "ż\udce9.py") == f'"a/\\305\\274{byte}.py"'
     assert fixpatch.git_path("a/", 'q"\\\t\n.py') == '"a/q\\"\\\\\\t\\n.py"'
 
 
