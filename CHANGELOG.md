@@ -14,6 +14,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"format": 1`, like the other JSON files, and its keys are documented in
   [CI](docs/ci.md#query-counts-over-the-last-runs).
 
+### Changed
+
+- The accuracy corpus has 57 more scenarios (254): inheritance (single,
+  concrete, `selectin_polymorphic`, polymorphic collections), association
+  proxies, `deferred_group`, `query_expression`, `WriteOnlyMapped`,
+  `viewonly` relationships, composite keys, `lazy="immediate"`, `"subquery"`
+  and `"noload"`, `populate_existing`, the identity map, `merge(load=False)`,
+  `bulk_save_objects`, dataclass and imperative mappings, and shapes
+  reported to other N+1 tools. The release gate now needs 250 scenarios and a
+  column-load recall of 90%. See docs/accuracy.md.
+- With `queryguard_strict`, a test whose `queryguard_ignore` or
+  `allow_nplusone` marker has invalid arguments no longer leaves its
+  collector measuring for the rest of the session: the marker error now
+  fails the test before measurement starts.
+- A relationship-load finding no longer names, as the place its parents were
+  loaded, a line of an earlier test that ran the same statement object when
+  the rows became instances from a result made outside the measurement (in a
+  fixture).
+- The SARIF file is written when a finding's path is not valid UTF-8 (a lone
+  surrogate in the file name), as the baseline file already was: the location
+  URI carries the file name's bytes percent-encoded and the file stays valid
+  UTF-8. Before, the whole file failed to write.
+- The baseline, budget, JSON, SARIF and patch files are written with the
+  permissions of the file they replace, or those of the umask for a new file,
+  not owner-only (0600) as the temporary file they are written through.
+
 ### Fixed
 
 - The fix patch (`--queryguard-show-patch`, `--queryguard-write-patch`,
@@ -116,23 +142,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `queryguard_strict`, `queryguard_stack_depth`, `queryguard_budgets`,
   `queryguard_max_queries`, `--queryguard-strict`, `--queryguard-budgets`,
   `--queryguard-update-budgets` and `--queryguard-json` were missing.
-
-### Internal
-
-- `tests/test_public_api.py` also snapshots the keys and format numbers of
-  the files the plugin writes (`--queryguard-json`, baseline, budget file,
-  SARIF rule ids, fingerprint key and properties), the finding kinds, the
-  arguments of the compare, trend and static-check tools (with their
-  defaults and choices), the trend's JSON keys, the compare
-  marker, the GitHub Action's inputs, defaults and outputs, the MCP tools and
-  their arguments, the deprecated names with their removal release, and the
-  defaults of `app.Settings`.
-- The flag that strict mode puts on its `NPlusOneDetected` is now the private
-  attribute `_queryguard_strict`; the undocumented `queryguard_strict`
-  attribute looked public.
-
-### Documentation
-
 - New recipe, docs/recipes-test-transaction.md: a session per request in a
   test transaction. A test that hands every
   request one shared `Session` makes the requests one unit of work and gets
@@ -157,34 +166,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with other N+1 tools that pytest-queryguard avoids, with the issues as
   evidence.
 
-### Changed
-
-- The accuracy corpus has 57 more scenarios (254): inheritance (single,
-  concrete, `selectin_polymorphic`, polymorphic collections), association
-  proxies, `deferred_group`, `query_expression`, `WriteOnlyMapped`,
-  `viewonly` relationships, composite keys, `lazy="immediate"`, `"subquery"`
-  and `"noload"`, `populate_existing`, the identity map, `merge(load=False)`,
-  `bulk_save_objects`, dataclass and imperative mappings, and shapes
-  reported to other N+1 tools. The release gate now needs 250 scenarios and a
-  column-load recall of 90%. See docs/accuracy.md.
-- With `queryguard_strict`, a test whose `queryguard_ignore` or
-  `allow_nplusone` marker has invalid arguments no longer leaves its
-  collector measuring for the rest of the session: the marker error now
-  fails the test before measurement starts.
-- A relationship-load finding no longer names, as the place its parents were
-  loaded, a line of an earlier test that ran the same statement object when
-  the rows became instances from a result made outside the measurement (in a
-  fixture).
-- The SARIF file is written when a finding's path is not valid UTF-8 (a lone
-  surrogate in the file name), as the baseline file already was: the location
-  URI carries the file name's bytes percent-encoded and the file stays valid
-  UTF-8. Before, the whole file failed to write.
-- The baseline, budget, JSON, SARIF and patch files are written with the
-  permissions of the file they replace, or those of the umask for a new file,
-  not owner-only (0600) as the temporary file they are written through.
-
 ### Internal
 
+- `tests/test_public_api.py` also snapshots the keys and format numbers of
+  the files the plugin writes (`--queryguard-json`, baseline, budget file,
+  SARIF rule ids, fingerprint key and properties), the finding kinds, the
+  arguments of the compare, trend and static-check tools (with their
+  defaults and choices), the trend's JSON keys, the compare
+  marker, the GitHub Action's inputs, defaults and outputs, the MCP tools and
+  their arguments, the deprecated names with their removal release, and the
+  defaults of `app.Settings`.
+- The flag that strict mode puts on its `NPlusOneDetected` is now the private
+  attribute `_queryguard_strict`; the undocumented `queryguard_strict`
+  attribute looked public.
 - `scripts/release_gate.py contents` checks the wheel's METADATA against the
   repository: the Python classifiers are the versions `ci.yml` tests and
   `Requires-Python` the oldest of them, the `pytest` and `sqlalchemy` lower

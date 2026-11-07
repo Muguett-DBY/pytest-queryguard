@@ -387,17 +387,18 @@ pytest session, runs the 43 BUG scenarios with a relationship-load with
 expects a patch; every other one expects none, so a patch that appears or
 disappears fails the test.
 
-Measured on 2026-11-07: **17 of the 29 get a patch; every patch applies, and
-in all 17 the relationship-load is gone after it, with no new finding** (a
+Measured on 2026-11-07: **20 of the 43 get a patch; every patch applies, and
+in all 20 the relationship-load is gone after it, with no new finding** (a
 `joinedload` next to another joined collection would be a cartesian-load).
 The other finding of `bug_88_strict_lazy_then_lookup_loop`, a
-repeated-statement, stays, as it should. The 12 without a patch, each a case
+repeated-statement, stays, as it should. The 23 without a patch, each a case
 where the patch cannot be certain of the change:
 
 | why no patch | scenarios |
 |---|---|
-| the query runs inside a comprehension or generator expression | 7 (`bug_03`, `bug_13`, `bug_16`, `bug_19`, `bug_41`, `bug_43`, `bug_92`) |
+| the query runs inside a comprehension or generator expression | 14 (`bug_03`, `bug_13`, `bug_16`, `bug_19`, `bug_41`, `bug_43`, `bug_92`, `bug_100`, `bug_104`, `bug_105`, `bug_112`, `bug_113`, `bug_122`, `bug_123`) |
 | a recursive walk of a self-referential relationship: the deeper parents were loaded by the relationship itself, so no one query started them | 2 (`bug_37`, `bug_95`) |
+| the objects were first loaded by another query that already eager-loads the relationship, and `populate_existing` or a second Session undid it | 2 (`bug_116`, `bug_117`) |
 | Flask-SQLAlchemy's `db.select(Author)` | 1 (`bug_07`) |
 | `select(with_polymorphic(...))` | 1 (`bug_96`) |
 | the parents were loaded by a fixture, before the measurement | 1 (`bug_90`) |
@@ -596,7 +597,7 @@ See also [Limitations](limitations.md).
   also stops the test at the first N+1, so later ones are not reported.
 - `--queryguard-write-patch` writes a patch only for a `select(Class)` (or
   `select(module.Class)`) written on the line that ran it, or assigned once to
-  the variable that line runs, and not inside a comprehension: 17 of the 29
+  the variable that line runs, and not inside a comprehension: 20 of the 43
   relationship-load BUG scenarios.
 - The corpus is small and written by one person; precision and recall from 254
   scenarios have wide error bars. It ran on SQLite, and its first 141 scenarios
