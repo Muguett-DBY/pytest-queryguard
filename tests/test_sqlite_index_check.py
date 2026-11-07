@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from pytest_queryguard import sqlite_index
+from pytest_queryguard import catalog, sqlite_index
 
 # pytester runs sessions in-process, so the outer plugin sees their queries too.
 pytestmark = pytest.mark.allow_nplusone
@@ -400,6 +400,11 @@ def test_one_explain_per_statement_shape(
             session.query(Order).filter(Order.id.in_([1, 2, 3, 4])).all()
         """
     )
+    # Earlier in-process tests leave connections with DDL in an open
+    # transaction (test_index_created_by_the_test_is_seen, among others).
+    # When the garbage collector frees one mid-run, catalog._lost clears the
+    # cache and every statement is explained again. Hide them from this run.
+    monkeypatch.setattr(catalog, "_pending", {})
     project.runpytest(*ARGS).assert_outcomes(passed=1)
     mine = [c for c in calls if "orders" in c and "WHERE" in c]
     # 1 for the id lookups, 1 for both IN lists (they collapse to one shape)
