@@ -331,8 +331,11 @@ rows for one customer, and the ORM folds them back into 20 + 20 objects. The
 rows grow as the product of the collections, which is slow and memory-heavy
 long before a test notices.
 
-The rule reads the loader options of each top-level ORM SELECT. It reports a
-statement in which two collections are loaded with `joinedload` side by side:
+The rule reads the loader options of each top-level ORM SELECT, and the
+loader strategies of the mapping (`relationship(lazy="joined")`, or the old
+`lazy=False`) of each
+entity it loads. It reports a statement in which two collections are joined
+side by side:
 
 - **side by side**: neither is on the path of the other.
   `joinedload(Customer.orders).joinedload(Order.items)` is a chain whose rows
@@ -371,10 +374,30 @@ query each and no repeated rows:
        select(Customer).options(joinedload(Customer.notes), selectinload(Customer.orders))
 ```
 
+- A strategy of the mapping counts as SQLAlchemy uses it: where no option of
+  the query names the relationship and no wildcard (`lazyload("*")`,
+  `Load(A).raiseload("*")`) covers it, and below an eager step only. Two
+  collections with `lazy="joined"` are reported on every `select()` of the
+  class, `session.get()` included; a collection with `lazy="joined"` next to
+  a `joinedload()` option is reported too. A relationship that loads lazily
+  is not followed (its children are joined only if it is read), and a
+  self-referential relationship is followed only as deep as its `join_depth`.
+  A `select()` of columns (`select(A.id)`), `from_statement()` and a
+  `Query` with `enable_eagerloads(False)` load no instances and are left out.
+
 It warns by default (`queryguard_cartesian_load = warn`); `fail` fails the
-test in `fail` mode, `off` turns the check off. Loader strategies set on the
-mapping (`relationship(lazy="joined")`) are not options of the query and are
-not seen.
+test in `fail` mode, `off` turns the check off.
+
+The rule does not count rows: it cannot know that two collections stay small,
+such as a user's two roles and two e-mail addresses joined into one login
+query, and reports them like two that grow. A test database rarely holds as
+many rows as production, so a rule that counted them would miss the products
+that matter. When a product stays small by design, keep the joins and silence
+that one finding: `queryguard_ignore = cartesian-load User.emails + User.roles`
+in the configuration, or `with ignore("cartesian-load"):` around the query (see
+[Ignoring findings](ignoring.md)). A product on the mapping is fixed on the
+query (`selectinload()` of all but one of the collections) or on the mapping
+(`lazy="selectin"`).
 
 ### missing-index
 

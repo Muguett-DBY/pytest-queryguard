@@ -75,8 +75,9 @@
   rules report legitimate code: a cached lookup that runs twice, or two objects
   read after a commit.
 - The write-loop rule cannot tell test seeding (Factory Boy creating rows with
-  a flush each) or a per-row insert with its own error handling from a write
-  loop in the code under test. It is off by default for that reason; see
+  a flush each, or a repository's `create()` called per row by the test) or a
+  per-row insert with its own error handling from a write loop in the code
+  under test. It is off by default for that reason; see
   [Factory Boy and seeding](recipes-factory-boy.md) for suites that seed in
   the test body.
 - The PostgreSQL index check needs PostgreSQL 16 or newer, and a sync engine or an

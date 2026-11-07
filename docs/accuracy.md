@@ -92,7 +92,12 @@ Measured on 2026-11-07 on Linux 7.0.0 (x86_64, 13th Gen Intel Core i5-13500H, 16
 threads), Python 3.13.18, SQLAlchemy 2.1.1, pytest 9.1.1, Flask-SQLAlchemy 3.1.1,
 FastAPI 0.141.1, pytest-queryguard 0.8.0 at `main` e527a3a plus the changes of
 its pull request (the scenarios and the two fixes below), with
-`uv run python scripts/accuracy_report.py`.
+`uv run python scripts/accuracy_report.py`. The default tables, the opt-in
+tables and the release thresholds were measured again on the same day after
+the review of every disagreement (see
+[Every disagreement reviewed](#every-disagreement-reviewed-2026-11-07)), on the
+same machine and packages with Python 3.14.4; the two runs differ only in the
+scenarios that review changed.
 SQLModel was not installed (it needs SQLAlchemy below 2.1 and is only installed
 in the SQLAlchemy 2.0 CI job), so 252 of the 254 scenarios ran: 123 BUG and 129
 CLEAN. All numbers on this page are for those 252 and SQLite, except the
@@ -101,7 +106,7 @@ comparison with other tools and the PostgreSQL run, which are the earlier
 
 ## Results, default configuration
 
-105 of the 109 BUG scenarios that the default rules can report are flagged
+106 of the 109 BUG scenarios that the default rules can report are flagged
 (the other 14 BUG scenarios are write loops, unused eager loads and unused
 columns, which are opt-in), and 2 of the 143 scenarios without an expected
 default kind are flagged.
@@ -111,11 +116,62 @@ default kind are flagged.
 | relationship-load | 43 | 0 | 0 | 100% | 100% |
 | repeated-statement | 45 | 1 | 2 | 98% | 96% |
 | column-load | 12 | 0 | 1 | 100% | 92% |
-| cartesian-load | 6 | 1 | 1 | 86% | 86% |
+| cartesian-load | 7 | 1 | 0 | 88% | 100% |
 
 The small counts (43, 47, 13, 7) mean that one scenario moves a percentage by
 several points. The relationship-load row is 43 scenarios, not a claim about
 every ORM pattern.
+
+### Every disagreement reviewed (2026-11-07)
+
+After the scenarios of 2026-11-07 were added, each disagreement of the
+default configuration and each documented limit (73 strict `xfail`s of
+(scenario, configuration)) was read again and put in one of three classes: a
+bug of the plugin, fixed at its cause with a unit test first; a limit of the
+approach, explained in the user documentation with a workaround; or a wrong
+verdict, corrected. No verdict was wrong. Two causes were bugs:
+
+- `bug_77_cartesian_mapping_lazy_joined`: two collections with
+  `relationship(lazy="joined")` on the mapping make the same product as two
+  `joinedload()` options, but the cartesian-load rule read only the options
+  of the query. **Fixed**: it now follows the loader strategies of the
+  mapping for each entity the SELECT loads, as SQLAlchemy does (an option or
+  a wildcard such as `lazyload("*")` wins, a lazy relationship is not
+  followed, a cycle stops unless `join_depth` allows it). 9 `xfail`s fewer,
+  one in each configuration.
+- `bug_76_cartesian_async_endpoint` and `clean_78_joined_collection_and_scalar`:
+  a page for one article, `select(Article).where(Article.id == id)`, reads
+  three of twelve columns, and the unused-columns check reported it. Such a
+  query returns one row by construction, so `load_only()` would save one
+  row's width; a reviewer would not ask for it, and a lookup per item is the
+  repeated-statement rule's finding anyway. **Fixed**: a group whose every
+  query pins the whole primary key of the class with `=` (`session.get()`
+  included) is not reported. 4 `xfail`s fewer, with the check on and with
+  all opt-in rules.
+
+The other 60 are limits, each explained where a user looks for it (the page
+in brackets) with what to do:
+
+| scenarios | configurations | limit | what to do |
+|---|---|---|---|
+| `clean_16_polling_loop` | all | a polling loop and a loop-invariant query repeat one statement with the same parameters ([Limitations](limitations.md)) | the `queryguard_ignore` marker on the test |
+| `clean_82_two_small_collections_joined` | all | the cartesian-load rule cannot know that collections stay small ([How detection works](how-detection-works.md#cartesian-load)) | it only warns by default; an ignore pattern or `ignore("cartesian-load")` for a product that stays small by design |
+| `bug_42`, `bug_45` (repeats), `bug_44` (column loads) | all but the threshold-2 ones | below the default thresholds of 5 ([Limitations](limitations.md)) | `queryguard_small_repeat_threshold`, `queryguard_column_load_threshold` |
+| `clean_20`, `clean_22` | small-repeat, column-load-2 | what those lower thresholds also report ([Limitations](limitations.md)) | keep the defaults, or ignore the test |
+| `clean_18`, `clean_30`, `clean_77` | write-loop, all opt-in | seeding and per-row writes on purpose look like a write loop ([Limitations](limitations.md), [Factory Boy](recipes-factory-boy.md)) | the rule is opt-in for that reason |
+| `bug_47`, `bug_48`, `bug_52`, `bug_53` | session-scope | each Session is counted on its own, by design ([Several sessions](several-sessions.md)) | the default scope |
+| `bug_86_unused_columns_via_selectinload` | unused-columns, all opt-in | rows loaded through a relationship are not grouped ([Unused columns](unused-columns.md)) | `selectinload(...).load_only(...)` by hand |
+| `clean_124_collection_checked_through_inspect` | unused-eager-load, all opt-in | reads through `inspect()` are invisible ([Unused eager loads](unused-eager-load.md)) | ignore it |
+| `bug_04`, `bug_06` | strict | Pydantic turns the strict exception into its own error, so the report at the end does not run ([When a test fails](when-a-test-fails.md#strict-mode-fail-at-the-access)) | the test still fails with the N+1 in its message; run without strict mode for SARIF and JSON |
+| `bug_88_strict_lazy_then_lookup_loop` | strict | strict mode stops the test at the first N+1 ([When a test fails](when-a-test-fails.md#strict-mode-fail-at-the-access)) | fix it and run again, or run without strict mode |
+
+Before and after, every configuration, on the 252 scenarios that ran (no
+other finding of any scenario changed in any configuration):
+
+| configuration | kind | before: TP, FP, FN | after: TP, FP, FN |
+|---|---|---|---|
+| every configuration | `cartesian-load` | 6, 1, 1 (86%, 86%) | 7, 1, 0 (88%, 100%) |
+| unused-columns = fail, all five rules | `unused-columns` | 8, 2, 1 (80%, 89%) | 8, 0, 1 (100%, 89%) |
 
 ### The scenarios of 2026-11-07, before and after
 
@@ -244,7 +300,7 @@ reported by the small-repeat rule either.
 | write-loop = 2 | write-loop | 8 | 3 | 0 | 73% | 100% |
 | column-load threshold 2 | column-load | 13 | 1 | 0 | 93% | 100% |
 | unused-eager-load = fail | unused-eager-load | 5 | 1 | 0 | 83% | 100% |
-| unused-columns = fail | unused-columns | 8 | 2 | 1 | 80% | 89% |
+| unused-columns = fail | unused-columns | 8 | 0 | 1 | 100% | 89% |
 | repeat scope `session` | repeated-statement | 41 | 1 | 6 | 98% | 87% |
 | strict = true | relationship-load | 41 | 0 | 2 | 100% | 95% |
 | strict = true | repeated-statement | 44 | 1 | 3 | 98% | 94% |
@@ -252,17 +308,17 @@ reported by the small-repeat rule either.
 | all five rules | column-load | 13 | 1 | 0 | 93% | 100% |
 | all five rules | write-loop | 8 | 3 | 0 | 73% | 100% |
 | all five rules | unused-eager-load | 5 | 1 | 0 | 83% | 100% |
-| all five rules | unused-columns | 8 | 2 | 1 | 80% | 89% |
+| all five rules | unused-columns | 8 | 0 | 1 | 100% | 89% |
 
-`relationship-load` stays at 43 TP, 0 FP, 0 FN and `cartesian-load` at 6 TP,
-1 FP, 1 FN in every configuration but strict. The unused-eager-load row is
+`relationship-load` stays at 43 TP, 0 FP, 0 FN in every configuration but
+strict, and `cartesian-load` at 7 TP, 1 FP, 0 FN in every configuration. The unused-eager-load row is
 five BUG scenarios (a joined many-to-one of which only the foreign key is
 read, the unread second link of a `selectinload` chain, a repository method
 reused by a page that needs less, an async handler) against CLEAN scenarios
 where the eager load is read by some rows only, by Pydantic, by an
 `association_proxy`, or by a delete cascade. Its one false positive is
 `clean_124_collection_checked_through_inspect` (a read through `inspect()`,
-see below). With all rules on, 121 of 123 BUG scenarios are flagged, and 9 of
+see below). With all rules on, 122 of 123 BUG scenarios are flagged, and 8 of
 129 CLEAN scenarios are.
 
 **Effect of `queryguard_scope = session`** (added after the first run of this
@@ -287,9 +343,9 @@ rules report is the polling loop, which repeats one statement inside one `Sessio
 | `clean_18_factory_boy_seed_in_body`, `clean_30_savepoint_per_row_insert`, `clean_77_refresh_after_each_create` | CLEAN: seeding, per-row inserts with their own error handling, eight creates each refreshed | `write-loop` with the rule on | The rule cannot tell them from a write loop. |
 | `bug_47_session_per_item`, `bug_48_threadpool_lookups`, `bug_52_async_gather_session_per_task`, `bug_53_celery_task_per_id` | BUG | not reported with scope `session` | By design of the option. |
 | `clean_93_two_single_object_lookups` | CLEAN: one order from `session.get`, another from a `select`, each showing its customer | `relationship-load` in every configuration before #307, nothing after | Fixed by [#307](https://github.com/MaciejZiel/pytest-queryguard/issues/307): the report groups the parents of a relationship by the query line that loaded them, as strict mode does, so two single-object lookups at two lines are no N+1. |
-| `clean_82_two_small_collections_joined` | CLEAN: a user's two roles and two e-mail addresses joined in one login query | `cartesian-load` (a warning) | The rule reads the loader options, not how many rows the collections hold. A product of 2 x 2 rows is reported like one of 20 x 20. |
-| `bug_77_cartesian_mapping_lazy_joined` | BUG: two collections with `lazy="joined"` on the mapping | not reported | Loader strategies set on the mapping are not options of the query, and the rule reads only the query's options (documented in [How detection works](how-detection-works.md#cartesian-load)). |
-| `bug_76_cartesian_async_endpoint`, `clean_78_joined_collection_and_scalar` | the cartesian verdict, and no unused columns: a page for one article | `unused-columns` with the check on | The check has no minimum number of rows: one article whose page reads its title (and body) of twelve columns is reported, which no reviewer would ask to change for one row. |
+| `clean_82_two_small_collections_joined` | CLEAN: a user's two roles and two e-mail addresses joined in one login query | `cartesian-load` (a warning) | The rule reads the loader strategies, not how many rows the collections hold. A product of 2 x 2 rows is reported like one of 20 x 20. |
+| `bug_77_cartesian_mapping_lazy_joined` | BUG: two collections with `lazy="joined"` on the mapping | not reported before the fix; `cartesian-load` after | Fixed on 2026-11-07: the rule follows the loader strategies of the mapping, not only the options of the query. |
+| `bug_76_cartesian_async_endpoint`, `clean_78_joined_collection_and_scalar` | the cartesian verdict, and no unused columns: a page for one article | `unused-columns` with the check on, before the fix; nothing after | Fixed on 2026-11-07: a query that pins the whole primary key returns one row, and the check no longer reports a group of such queries. |
 | `bug_86_unused_columns_via_selectinload` | BUG: `selectinload(Author.articles)`, only `title` read of each article | not reported by the unused-columns check | The check groups only the instances a query returns itself, not those loaded through a relationship (documented in [Unused columns](unused-columns.md)). |
 | `bug_04_pydantic_from_attributes`, `bug_06_fastapi_response_model` | BUG: Pydantic `from_attributes` and a FastAPI `response_model` over lazy relationships | no finding in strict mode; the test fails with Pydantic's or FastAPI's validation error | Pydantic catches the `NPlusOneDetected` that strict mode raises at the access and raises its own validation error, with the strict message inside, once per remaining item. The plugin sees that error, not its own, so the report at the end (and SARIF, `--queryguard-json`, the summary) does not run. The test still fails, with the N+1 in its message. |
 | `bug_88_strict_lazy_then_lookup_loop` | BUG: a lazy loop, then a `session.get` loop | only `relationship-load` in strict mode | Strict mode stops the test at the first N+1, so the second loop never runs. |
@@ -441,14 +497,16 @@ installed, 252 of the 254 scenarios), rounded down to a multiple of 10%:
 | `relationship-load` | 100% | 100% | 43 TP, 0 FP, 0 FN (100% and 100%) |
 | `repeated-statement` | 90% | 90% | 45 TP, 1 FP, 2 FN (98% and 96%) |
 | `column-load` | 100% | 90% | 12 TP, 0 FP, 1 FN (100% and 92%) |
-| `cartesian-load` | 80% | 80% | 6 TP, 1 FP, 1 FN (86% and 86%) |
+| `cartesian-load` | 80% | 100% | 7 TP, 1 FP, 0 FN (88% and 100%) |
 
 The repeated-statement minimum precision went from 80% to 90% with the rule for
 pagination and chunks, in the same change. The relationship-load minimum
 precision went from 100% to 90% on 2026-11-06, when
 `clean_93_two_single_object_lookups` was added (a CLEAN scenario the rule then
 reported), and back to 100% with #307, which fixed it. `cartesian-load` got
-its minimums on 2026-11-06, the first time it was measured. The
+its minimums on 2026-11-06, the first time it was measured; its minimum
+recall went from 80% to 100% on 2026-11-07, when the rule learned the loader
+strategies of the mapping. The
 `column-load` minimum recall went from 80% to 90%, and the minimum number
 of scenarios from 195 to 250, with the scenarios of 2026-11-07. The minimums
 are a floor against regressions, not a goal. Raise one in the same pull request
@@ -582,15 +640,13 @@ See also [Limitations](limitations.md).
   lower them report legitimate code too (a cache, two objects after a commit).
 - The write-loop rule cannot tell seeding or per-row inserts with error handling
   from a write loop.
-- The relationship rule counts the parents of a relationship wherever they were
-  loaded: two objects from two lookups, each reading it once, are reported.
-- The cartesian-load rule reads the loader options: it reports two small
-  collections joined on purpose, and does not see `lazy="joined"` on the
-  mapping.
+- The cartesian-load rule reads the loader strategies, not the rows: it
+  reports two small collections joined on purpose.
 - The unused-eager-load check (experimental) does not see a collection read
   through `inspect(obj).attrs` or `__dict__`, and reports it as unused.
-- The unused-columns check (experimental) reports a single row as readily as
-  a thousand, and does not see instances loaded through a relationship.
+- The unused-columns check (experimental) does not see instances loaded
+  through a relationship. It leaves out queries that pin the primary key (one
+  row each), but otherwise reports three rows as readily as a thousand.
 - In strict mode, a library that catches the exception at the access
   (Pydantic, FastAPI's response validation) fails the test with its own error;
   the N+1 is in its message but not in the report, SARIF or JSON. Strict mode

@@ -21,10 +21,12 @@ from sqlalchemy import ForeignKey, create_engine, event, inspect, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import (
     DeclarativeBase,
+    Load,
     Mapped,
     Session,
     contains_eager,
     joinedload,
+    lazyload,
     mapped_column,
     relationship,
     selectinload,
@@ -33,6 +35,7 @@ from sqlalchemy.orm import (
 from pytest_queryguard import _compat, callsite, eager, listeners
 from pytest_queryguard._compat import (
     ADAPTED_CURSOR,
+    ANNOTATIONS,
     ATTRIBUTE_DESCRIPTOR,
     CHUNKS_CODE,
     CHUNKS_CONTEXT,
@@ -44,6 +47,7 @@ from pytest_queryguard._compat import (
     ELEMENT_LOCAL_OPTS,
     ELEMENT_PATH,
     ELEMENT_STRATEGY,
+    ENABLE_EAGERLOADS,
     EVENTS_TODO,
     FLUSH_CONTEXT,
     FLUSH_FUNCTION,
@@ -59,17 +63,21 @@ from pytest_queryguard._compat import (
     ONLY_LOAD_PROPS,
     OPTION_ENGINE_PARENT,
     ORM_PLUGIN,
+    PARENT_ENTITY,
     PROPAGATE_ATTRS,
     PYMYSQL_RESULT,
     QUERY_LOAD_OPTIONS,
     QUERY_REFRESH_STATE,
     QUERY_STATEMENT,
+    RAW_COLUMNS,
     REFRESH_STATE,
+    RELATIONSHIP_TOKEN,
     RUNID,
     SESSION_FILE,
     STATE_LOAD_PATH,
     TOP_LEVEL_CONTEXT,
     TOP_LEVEL_ORM_CONTEXT,
+    WHERE_CRITERIA,
     WITH_OPTIONS,
     QueryContext,
     attribute_get,
@@ -286,6 +294,31 @@ def test_loader_options() -> None:
     assert EAGER_FROM_ALIAS in getattr(element, ELEMENT_LOCAL_OPTS), _gone(
         "contains_eager()'s local_opts", EAGER_FROM_ALIAS
     )
+
+
+def test_the_entities_wildcards_and_criteria_of_a_select() -> None:
+    """What the cartesian-load check reads for the strategies of the mapping,
+    and the unused-columns check for a primary key lookup."""
+    (column,) = _attr(select(Shelf), RAW_COLUMNS, "a select()")
+    assert column.is_selectable
+    annotations = _attr(column, ANNOTATIONS, "an entity of a select()")
+    assert _option(annotations, PARENT_ENTITY, "an entity's annotations") is (
+        Shelf.__mapper__
+    )
+    query = Session().query(Shelf).enable_eagerloads(False)._statement_20()
+    compile_options = _attr(query, COMPILE_OPTIONS, "a Query's select()")
+    assert _attr(compile_options, ENABLE_EAGERLOADS, "the ORM compile options") is False
+    (unbound,) = select(Shelf).options(lazyload("*"))._with_options
+    assert _attr(unbound, ELEMENT_PATH, "a wildcard option")[-1].startswith(
+        RELATIONSHIP_TOKEN
+    ), _gone("an unbound wildcard's path", RELATIONSHIP_TOKEN)
+    (criterion,) = _attr(
+        select(Shelf).where(Shelf.id == 1), WHERE_CRITERIA, "a select()"
+    )
+    assert criterion.left.name == "id"
+    (bound,) = select(Shelf).options(Load(Shelf).lazyload("*"))._with_options
+    (element,) = getattr(bound, LOAD_CONTEXT)
+    assert getattr(element, ELEMENT_PATH).path[-1].startswith(RELATIONSHIP_TOKEN)
 
 
 def test_the_query_context_and_frames_of_a_load(engine: Engine) -> None:

@@ -4,6 +4,6 @@
     "relationship-load": {"precision": 1.0, "recall": 1.0},
     "repeated-statement": {"precision": 0.9, "recall": 0.9},
     "column-load": {"precision": 1.0, "recall": 0.9},
-    "cartesian-load": {"precision": 0.8, "recall": 0.8}
+    "cartesian-load": {"precision": 0.8, "recall": 1.0}
   }
 }
