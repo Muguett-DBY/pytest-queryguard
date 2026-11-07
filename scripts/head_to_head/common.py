@@ -59,6 +59,12 @@ class Tool:
     # the pytest-queryguard configuration (tests/corpus/runner.py CONFIGS)
     config: str | None = None
     notes: str = ""
+    # installed with it: a pin that replaces one of the corpus's dependencies
+    extra: tuple[str, ...] = ()
+
+    @property
+    def install(self) -> tuple[str, ...]:
+        return (self.requirement, *self.extra) if self.requirement else self.extra
 
 
 QUERYGUARD_DEFAULT_KINDS = frozenset({REL, REPEAT, COLUMN, CARTESIAN})
@@ -74,6 +80,16 @@ TOOLS: dict[str, Tool] = {
             supported=frozenset(),
             reports_kinds=False,
             notes="Every plugin off: a scenario that fails here fails on its own.",
+        ),
+        Tool(
+            key="none-sa20",
+            label="no tool, SQLAlchemy 2.0 (baseline)",
+            requirement="",
+            args=("-p", "no:queryguard"),
+            supported=frozenset(),
+            reports_kinds=False,
+            notes="The baseline of the SQLAlchemy 2.0 runs.",
+            extra=("sqlalchemy==2.0.54",),
         ),
         Tool(
             key="queryguard",
@@ -152,7 +168,32 @@ TOOLS: dict[str, Tool] = {
                 (r"Potential n\+1 query detected", REL),
                 (r"Potential unnecessary eager load detected", UNUSED),
             ),
-            notes="`import nplusone.ext.sqlalchemy` and `profiler.Profiler()` around each test call.",
+            notes=(
+                "`import nplusone.ext.sqlalchemy` and `profiler.Profiler()` around each "
+                "test call. On SQLAlchemy 2.1 the import fails (`LazyLoader` moved)."
+            ),
+        ),
+        Tool(
+            key="nplusone-sa20",
+            label="nplusone on SQLAlchemy 2.0",
+            requirement="nplusone==1.0.0",
+            extra=("sqlalchemy==2.0.54",),
+            args=("-p", "no:queryguard"),
+            supported=frozenset({REL, UNUSED}),
+            reports_kinds=True,
+            markers=(
+                "NPlusOneError",
+                "Potential n+1 query",
+                "Potential unnecessary eager load",
+            ),
+            kind_patterns=(
+                (r"Potential n\+1 query detected", REL),
+                (r"Potential unnecessary eager load detected", UNUSED),
+            ),
+            notes=(
+                "`import nplusone.ext.sqlalchemy` and `profiler.Profiler()` around each "
+                "test call, with SQLAlchemy 2.0.54 instead of 2.1 (nplusone does not import on 2.1)."
+            ),
         ),
     )
 }
@@ -165,6 +206,7 @@ COMPARED = (
     "querycount",
     "sniffer",
     "nplusone",
+    "nplusone-sa20",
 )
 
 

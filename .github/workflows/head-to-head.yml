@@ -36,7 +36,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tool: [none, queryguard, queryguard-all, queryspy, querycount, sniffer, nplusone]
+        # nplusone does not import on SQLAlchemy 2.1, so it also runs on 2.0
+        # (with its own baseline); the other tools run on the locked 2.1
+        tool:
+          [none, none-sa20, queryguard, queryguard-all, queryspy, querycount, sniffer, nplusone, nplusone-sa20]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,10 +52,10 @@ jobs:
         env:
           TOOL: ${{ matrix.tool }}
         run: |
-          requirement=$(uv run --no-sync python -c "import sys; sys.path.insert(0, 'scripts/head_to_head'); import common; print(common.TOOLS['$TOOL'].requirement)")
-          if [ -n "$requirement" ]; then
+          mapfile -t packages < <(uv run --no-sync python -c "import sys; sys.path.insert(0, 'scripts/head_to_head'); import common; print('\n'.join(common.TOOLS[sys.argv[1]].install))" "$TOOL")
+          if [ -n "${packages[0]:-}" ]; then
             # not under the project's exclude-newer: the tool is pinned exactly
-            uv pip install --no-config --python .venv/bin/python "$requirement"
+            uv pip install --no-config --python .venv/bin/python "${packages[@]}"
           fi
           uv pip list --python .venv/bin/python
       - name: Run the corpus

@@ -231,7 +231,7 @@ def test_aggregate(tmp_path):
         "Not run (job failed or tool not installable): pytest-queryguard, all opt-in"
         in (markdown)
     )
-    assert "every scenario passes" in markdown
+    assert "every plugin off: every scenario passes" in markdown
     assert "| 300-test suite, added wall time | +5.0% |" in markdown
     assert "| lazy load, added per statement | +3.5 us |" in markdown
     assert "Failed: sniffer: install failed" in markdown

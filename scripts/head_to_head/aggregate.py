@@ -85,14 +85,14 @@ def build(
                 "",
                 "Not run (job failed or tool not installable): " + ", ".join(missing),
             ]
-        if "none" in corpus:
-            base = common.score(
-                common.TOOLS["none"], scenarios, verdicts(corpus["none"])
-            )
+        for key in ("none", "none-sa20"):
+            if key not in corpus:
+                continue
+            base = common.score(common.TOOLS[key], scenarios, verdicts(corpus[key]))
             failing = [name for name, _ in base.errors]
             lines += [
                 "",
-                "Baseline with every plugin off: "
+                f"{common.TOOLS[key].label}, every plugin off: "
                 + (
                     "every scenario passes."
                     if not failing
@@ -101,7 +101,7 @@ def build(
                 ),
             ]
         lines += ["", "### Settings and versions", ""]
-        for key in ("none", *common.COMPARED):
+        for key in ("none", "none-sa20", *common.COMPARED):
             if key not in corpus:
                 continue
             tool, data = common.TOOLS[key], corpus[key]
@@ -113,6 +113,7 @@ def build(
                 "querycount": "pytest-querycount",
                 "sniffer": "n-plus-one-sniffer",
                 "nplusone": "nplusone",
+                "nplusone-sa20": "nplusone",
             }.get(key)
             version = f" {v.get(pkg, '?')}" if pkg else ""
             lines.append(

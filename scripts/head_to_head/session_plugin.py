@@ -69,7 +69,7 @@ if TOOL == "sniffer":
         return Engine
 
 
-if TOOL == "nplusone":
+if TOOL in ("nplusone", "nplusone-sa20"):
     # nplusone's documented use outside a web framework: import the ORM
     # extension (it patches SQLAlchemy) and run the code in a Profiler, which
     # raises NPlusOneError. Only the test call is profiled, not the setup.

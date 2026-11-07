@@ -95,6 +95,11 @@ def run(tool: common.Tool, work: Path, timeout: int) -> dict[str, object]:
     results = {}
     for name in names:
         verdict = common.classify(tool, phases.get(name, []), findings.get(name))
+        if not lines and proc.returncode:
+            # the session never started a test: say why (the last line of its error)
+            verdict = common.Verdict(
+                common.ERROR, detail="session failed: " + common.first_line(proc.stderr)
+            )
         results[name] = {
             "status": verdict.status,
             "kinds": sorted(verdict.kinds),
